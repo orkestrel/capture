@@ -1,8 +1,7 @@
-import type { TestProjectConfiguration } from 'vitest/config'
 import type { CaptureDestination, CaptureStoredManifest } from '@src/core'
 import type {
 	CaptureArtifactReading,
-	CaptureCheckHandler,
+	CaptureCheckFrame,
 	CaptureImageReading,
 	CaptureJudgedFrame,
 	CaptureJudgedRecord,
@@ -17,7 +16,6 @@ import type {
 import { existsSync, readFileSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { loadConfigFromFile } from 'vite'
 import {
 	arrayOf,
 	attempt,
@@ -37,14 +35,15 @@ import {
 	resolveCaptureKey,
 } from '@src/core'
 import {
+	CAPTURE_DEFAULTS,
 	CAPTURE_EXIT,
-	CAPTURE_FLAG,
-	CAPTURE_FLAG_VALUE,
 	CAPTURE_MINIMUM_IMAGE,
 	CAPTURE_REPORT_LINES,
 	CAPTURE_RUNS_DIRECTORY,
 } from './constants.js'
+import { CaptureDiscovery } from './CaptureDiscovery.js'
 import { CaptureIntegrity } from './CaptureIntegrity.js'
+import { CaptureInvocation } from './CaptureInvocation.js'
 import {
 	buildCaptureIntegrityOptions,
 	collectCaptureErrors,
@@ -52,8 +51,6 @@ import {
 	collectCaptureIdentical,
 	computeCaptureHash,
 	decodeCapturePicture,
-	readCaptureProject,
-	readCaptureViewport,
 	requireCaptureProjects,
 	resolveCaptureRelative,
 } from './helpers.js'
@@ -63,9 +60,9 @@ import {
  *
  * @remarks
  * A successful preflight is iteration evidence and never assembled-portfolio acceptance. The reader
- * loads the host's wrapper in process through Vite's `loadConfigFromFile`, with the capture variable
- * set for the inspection and the inherited value restored, and reads its projects the way the
- * runner does: it names no portfolio, owner, variant, or path the wrapper does not declare. It
+ * reads the host's wrapper through a `CaptureDiscovery`, the consumer's own Vitest in discovery
+ * mode, and reads its projects the way the runner does: it names no portfolio, owner, variant, or
+ * path the wrapper does not declare, and it imports neither Vite nor Vitest. It
  * judges each frame by the artifact the frame's own stamp names, never by a variant's latest file.
  * Rules that belong to one product, such as a page-title check or a pixel comparison, live in a
  * host module named by the `checks` option. The reader loads that module with a dynamic `import()`
@@ -216,52 +213,43 @@ export class CapturePreflight implements CapturePreflightInterface {
 		}
 	}
 
-	// Loads the wrapper in process, reading each project's declarations and its producing viewport.
+	// Discovers the wrapper through the consumer's own Vitest and keeps each project beside its producing viewport.
 	async #load(
 		config: string,
-	): Promise<readonly { readonly project: CaptureProject; readonly producer: CaptureProducer }[]> {
-		const inherited = Object.entries(process.env).filter(
-			([name]) => name.toLowerCase() === CAPTURE_FLAG.toLowerCase(),
-		)
-		for (const [name] of inherited) delete process.env[name]
-		// Inspection must not execute the wrapper's destructive no-capture directory initialization.
-		process.env[CAPTURE_FLAG] = CAPTURE_FLAG_VALUE
+	): Promise<
+		ReadonlyArray<{ readonly project: CaptureProject; readonly producer: CaptureProducer }>
+	> {
+		const { root, requests, deadline } = this.#options
+		// A discovery child's output is the runner's log, never the reader's report.
+		const invocation = new CaptureInvocation({
+			command: 'stale',
+			root,
+			requests: requests ?? CAPTURE_DEFAULTS.requests,
+			stdout: () => undefined,
+			stderr: () => undefined,
+		})
+		invocation.attach()
 		try {
-			const loaded = await loadConfigFromFile(
-				{ command: 'serve', mode: 'test' },
+			const description = await new CaptureDiscovery({
+				root,
 				config,
-				this.#options.root,
-				'silent',
-				undefined,
-				'runner',
-			)
-			const projects = loaded?.config.test?.projects
-			if (projects === undefined)
-				throw new CaptureError('The reader wrapper declares no projects', { code: 'HOST' })
-			return await Promise.all(projects.map((entry) => this.#project(entry)))
+				invocation,
+				...(deadline === undefined ? {} : { deadline }),
+			}).describe()
+			return description.projects.map(({ project, viewport }) => {
+				if (viewport === undefined)
+					throw new CaptureError('A reader project declares no viewport geometry', {
+						code: 'HOST',
+					})
+				return { project, producer: { ...viewport, project: project.name } }
+			})
 		} finally {
-			delete process.env[CAPTURE_FLAG]
-			for (const [name, value] of inherited) process.env[name] = value
-		}
-	}
-
-	async #project(input: TestProjectConfiguration): Promise<{
-		readonly project: CaptureProject
-		readonly producer: CaptureProducer
-	}> {
-		const project =
-			typeof input === 'function' ? await input({ command: 'serve', mode: 'test' }) : await input
-		if (typeof project === 'string')
-			throw new CaptureError('The reader wrapper must declare inline projects', { code: 'HOST' })
-		const declared = readCaptureProject(project.test)
-		return {
-			project: declared,
-			producer: { ...readCaptureViewport(project.test), project: declared.name },
+			await invocation.release()
 		}
 	}
 
 	// Loads the host's check readers; a reader without a checks module has none.
-	async #checks(): Promise<readonly CaptureCheckHandler[]> {
+	async #checks(): Promise<ReadonlyArray<(frame: CaptureCheckFrame) => unknown>> {
 		const { checks, root } = this.#options
 		if (checks === undefined) return []
 		const loaded: unknown = await import(

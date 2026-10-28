@@ -3,11 +3,15 @@ import type { CaptureImageReading, CaptureProducer } from '@src/server'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { deflateSync, inflateSync } from 'node:zlib'
+import { parseJSON } from '@orkestrel/contract'
 import { createScratch } from '@orkestrel/test/server'
 import { isCaptureError } from '@src/core'
 import {
+	CAPTURE_DEFAULTS,
+	answerCaptureDiscovery,
 	buildCaptureArguments,
 	buildCaptureDigest,
+	buildCaptureDiscoveryConfig,
 	buildCaptureFilter,
 	buildCaptureIntegrityOptions,
 	buildCaptureRegistry,
@@ -26,12 +30,13 @@ import {
 	encodeCaptureWord,
 	escapeCapturePattern,
 	inflateCaptureStream,
-	loadCaptureProjects,
 	matchesCaptureSignature,
 	normalizeSlashes,
 	predictCaptureByte,
 	readCaptureArguments,
 	readCaptureChunks,
+	readCaptureDescription,
+	readCaptureEntry,
 	readCaptureInputs,
 	readCapturePortfolios,
 	readCaptureProject,
@@ -41,11 +46,12 @@ import {
 	readCaptureRequestOwner,
 	readCaptureRunning,
 	readCaptureViewport,
-	readCaptureWrapperProject,
+	resolveCaptureWrapperProject,
 	readFlag,
 	readFlags,
 	requireCaptureProjects,
 	resolveCaptureRelative,
+	resolveCaptureRequests,
 	resolveCaptureStages,
 	shrinkCapturePicture,
 	unfilterCaptureRow,
@@ -53,7 +59,11 @@ import {
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { createPngBytes } from '../../fixtures/capture/createPngBytes.js'
-import { ProcessFixture } from '../../fixtures/capture/ProcessFixture.js'
+import {
+	readExitedPid,
+	startSleeper,
+	stopFixtureChild,
+} from '../../fixtures/capture/ProcessFixture.js'
 import {
 	FIXTURE_HASH,
 	createDestinationFixture,
@@ -64,25 +74,17 @@ import {
 import {
 	ALPHA_PICTURE,
 	ARGUMENT_REFUSALS,
-	COMPOSED_FIRST,
-	COMPOSED_OWNERS,
 	FILTERED_PICTURE,
 	HASH_VECTORS,
-	INPUTS,
 	PNG,
 	PREDICTOR_CASES,
 	PROJECT_REFUSALS,
-	READER_CONFIG,
 	REGISTRY_ARGUMENT_REFUSALS,
 	RUNNER_CLOSING,
 	UNFILTER_CASES,
-	VARIANTS,
 	WIRE_BYTES,
 	WIRE_CONFIG,
-	WIRE_OWNERS,
 	WIRE_REFUSALS,
-	WIRE_VARIANTS,
-	createComposedWrapper,
 	createProjectFixture,
 	createWireOptions,
 	createWireRequest,
@@ -1198,6 +1200,48 @@ describe('readCaptureRequest', () => {
 			scratch.destroy()
 		}
 	})
+
+	it('reads the directory the runner handed this child when the wrapper names none', async () => {
+		const scratch = createScratch({ prefix: 'request-' })
+		try {
+			scratch.write(
+				`journey-selection-${String(PPID)}.json`,
+				JSON.stringify(createWireRequest(PPID, ARGV)),
+			)
+			const options = createWireOptions(scratch.path, PPID, ARGV)
+			await withEnvironment({ CAPTURE_REQUESTS: scratch.path }, async () => {
+				expect(
+					readCaptureRequest({
+						ppid: options.ppid,
+						argv: options.argv,
+						config: options.config,
+						owners: options.owners,
+						variants: options.variants,
+					})?.pid,
+				).toBe(PPID)
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('refuses a discovery request as no stage request, so a wrapper that skipped its answer fails loudly', () => {
+		const scratch = createScratch({ prefix: 'request-' })
+		try {
+			scratch.write(
+				`journey-selection-${String(PPID)}.json`,
+				JSON.stringify(createWireRequest(PPID, ARGV, { phase: 'discover' })),
+			)
+			expect(
+				readFailure(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
+			).toMatchObject({
+				code: 'HOST',
+				message: expect.stringContaining('Invalid journey selection request'),
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
 })
 
 describe('readCaptureReaderArguments', () => {
@@ -1590,142 +1634,352 @@ describe('collectCaptureErrors', () => {
 describe('readCaptureRunning', () => {
 	it('reads this process as running and an exited process as not', async () => {
 		expect(readCaptureRunning(process.pid)).toBe(true)
-		expect(readCaptureRunning(await ProcessFixture.exited())).toBe(false)
+		expect(readCaptureRunning(await readExitedPid())).toBe(false)
 	})
 
 	it('reads a live child as running until it is stopped', async () => {
-		const child = await ProcessFixture.sleeper()
+		const child = await startSleeper()
 		try {
 			expect(readCaptureRunning(child.pid ?? 0)).toBe(true)
 		} finally {
-			await ProcessFixture.stop(child)
+			await stopFixtureChild(child)
 		}
 		expect(readCaptureRunning(child.pid ?? 0)).toBe(false)
 	})
 })
 
-describe('readCaptureWrapperProject', () => {
-	it('reads an inline project, a promise of one, and a factory the way Vitest calls it', async () => {
-		const project = {
-			test: {
-				name: 'bench:wide',
-				tags: [{ name: 'owner:app' }],
-				provide: {
-					variant: 'wide',
-					variants: [{ name: 'wide' }],
-					directory: '/workspace/out/frames',
-					record: 'out/frames/runs/a/wide.json',
-					inputs: ['lib/**'],
-					closing: RUNNER_CLOSING,
-					first: 'wide',
-					portfolios: [{ portfolio: 'frames', directory: 'out/frames', scoped: true }],
-				},
-			},
-		}
-		const expected = readCaptureProject(project.test)
-		expect(expected).toMatchObject({ name: 'bench:wide', variant: 'wide', first: 'wide' })
-		expect(await readCaptureWrapperProject(project)).toEqual(expected)
-		expect(await readCaptureWrapperProject(Promise.resolve(project))).toEqual(expected)
+const PROJECT = { test: createProjectFixture() }
+
+describe('resolveCaptureWrapperProject', () => {
+	it('resolves an inline project, a promise of one, and a factory the way Vitest calls it', async () => {
+		const invocations: unknown[] = []
+		expect(await resolveCaptureWrapperProject(PROJECT)).toBe(PROJECT)
+		expect(await resolveCaptureWrapperProject(Promise.resolve(PROJECT))).toBe(PROJECT)
 		expect(
-			await readCaptureWrapperProject((invocation) => {
-				expect(invocation).toEqual({ command: 'serve', mode: 'test' })
-				return project
+			await resolveCaptureWrapperProject((invocation: unknown) => {
+				invocations.push(invocation)
+				return PROJECT
 			}),
-		).toEqual(expected)
+		).toBe(PROJECT)
+		expect(invocations).toEqual([{ command: 'serve', mode: 'test' }])
 	})
 
-	it('refuses a project declared by path, and a project whose declarations are malformed, as host faults', async () => {
-		const path = await readCaptureWrapperProject('./project.config.ts').catch(
-			(error: unknown) => error,
-		)
-		expect(path).toMatchObject({
-			code: 'HOST',
-			message: 'The journey wrapper must declare inline projects',
-		})
-		const malformed = await readCaptureWrapperProject({ test: {} }).catch((error: unknown) => error)
-		expect(isCaptureError(malformed)).toBe(true)
-		expect(malformed).toMatchObject({ code: 'HOST' })
+	it('hands back a project declared by path unjudged, for the runner to refuse', async () => {
+		expect(await resolveCaptureWrapperProject('./project.config.ts')).toBe('./project.config.ts')
 	})
 })
 
-describe('loadCaptureProjects', () => {
-	it('reads every project of a wrapper in declaration order, with its host data', async () => {
-		const scratch = createScratch({ prefix: 'loader-' })
-		try {
-			scratch.write(READER_CONFIG, createComposedWrapper(scratch.path))
-			const projects = await loadCaptureProjects(scratch.path, READER_CONFIG)
-			expect(projects.map((project) => project.variant)).toEqual([...VARIANTS])
-			expect(projects.map((project) => project.name)).toEqual(
-				VARIANTS.map((variant) => `journey:${variant}`),
-			)
-			expect(projects.every((project) => project.first === COMPOSED_FIRST)).toBe(true)
-			expect(projects.at(0)?.tags).toEqual(COMPOSED_OWNERS.map((owner) => `owner:${owner}`))
-			expect(projects.at(0)?.inputs).toEqual([...INPUTS])
-		} finally {
-			scratch.destroy()
+describe('readCaptureEntry', () => {
+	it('reads the declarations and no viewport for a project that declares no geometry', () => {
+		const entry = readCaptureEntry(PROJECT)
+		expect(entry.project).toEqual(readCaptureProject(PROJECT.test))
+		expect(entry.viewport).toBeUndefined()
+		expect('viewport' in entry).toBe(false)
+	})
+
+	it('reads the producing variant as the viewport when the project declares geometry', () => {
+		const geometry = {
+			test: createProjectFixture({
+				provide: {
+					variants: [
+						{ name: 'wide', width: 390, height: 844 },
+						{ name: 'compact', width: 128, height: 128 },
+					],
+				},
+			}),
 		}
+		expect(readCaptureEntry(geometry).viewport).toEqual({ name: 'wide', width: 390, height: 844 })
 	})
 
-	it('sets the capture variable for the inspection and restores the inherited value', async () => {
-		const scratch = createScratch({ prefix: 'loader-' })
-		try {
-			const marker = resolve(scratch.path, 'seen.txt')
-			scratch.write(
-				READER_CONFIG,
-				`import { writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(marker)}, process.env.CAPTURE ?? 'unset')\n${createComposedWrapper(scratch.path)}`,
-			)
-			await withEnvironment({ CAPTURE: '0' }, async () => {
-				await loadCaptureProjects(scratch.path, READER_CONFIG)
-				expect(process.env.CAPTURE).toBe('0')
-			})
-			expect(scratch.read('seen.txt')).toBe('1')
-			expect(process.env.CAPTURE).toBeUndefined()
-		} finally {
-			scratch.destroy()
-		}
-	})
-
-	it('refuses a wrapper outside the workspace as usage, before it loads', async () => {
-		const failure = await loadCaptureProjects(resolve('workspace'), '../outside.config.ts').catch(
-			(error: unknown) => error,
-		)
-		expect(isCaptureError(failure)).toBe(true)
-		expect(failure).toMatchObject({
-			code: 'USAGE',
-			message: 'Config must be a contained repository path',
-		})
-	})
-
-	it('refuses a wrapper that declares no projects as a host fault', async () => {
-		const scratch = createScratch({ prefix: 'loader-' })
-		try {
-			scratch.write(READER_CONFIG, 'export default { test: {} }\n')
-			const failure = await loadCaptureProjects(scratch.path, READER_CONFIG).catch(
-				(error: unknown) => error,
-			)
-			expect(failure).toMatchObject({
-				code: 'HOST',
-				message: 'The wrapper declares no projects',
-			})
-		} finally {
-			scratch.destroy()
-		}
-	})
-
-	it('refuses a project declared by path as a host fault', async () => {
-		const scratch = createScratch({ prefix: 'loader-' })
-		try {
-			scratch.write(
-				READER_CONFIG,
-				"export default { test: { projects: ['./project.config.ts'] } }\n",
-			)
-			const failure = await loadCaptureProjects(scratch.path, READER_CONFIG).catch(
-				(error: unknown) => error,
-			)
-			expect(failure).toMatchObject({
+	it.each(['./project.config.ts', 42, null, undefined])(
+		'refuses %j as a project that is not declared inline',
+		(value) => {
+			expect(readFailure(() => readCaptureEntry(value))).toMatchObject({
 				code: 'HOST',
 				message: 'The journey wrapper must declare inline projects',
 			})
+		},
+	)
+
+	it.each(PROJECT_REFUSALS)(
+		'refuses $title with the reader that owns the declaration',
+		(refusal) => {
+			const failure = readFailure(() =>
+				readCaptureEntry({ test: createProjectFixture(refusal.overrides) }),
+			)
+			expect(failure).toMatchObject({ code: refusal.code })
+			expect(failure instanceof Error ? failure.message : '').toContain(refusal.message)
+		},
+	)
+})
+
+describe('resolveCaptureRequests', () => {
+	it('prefers the directory the wrapper names, then the one the runner handed, then the one default', async () => {
+		expect(resolveCaptureRequests('named')).toBe(resolve('named'))
+		await withEnvironment({ CAPTURE_REQUESTS: resolve('handed') }, async () => {
+			expect(resolveCaptureRequests()).toBe(resolve('handed'))
+			expect(resolveCaptureRequests('named')).toBe(resolve('named'))
+		})
+		expect(resolveCaptureRequests()).toBe(resolve(CAPTURE_DEFAULTS.requests))
+	})
+})
+
+describe('buildCaptureDiscoveryConfig', () => {
+	it('builds a fresh configuration that holds no project, no setup file, and nothing to collect', () => {
+		const config = buildCaptureDiscoveryConfig()
+		expect(config).toEqual({ test: { include: [], passWithNoTests: true, watch: false } })
+		expect(buildCaptureDiscoveryConfig()).not.toBe(config)
+	})
+})
+
+describe('readCaptureDescription', () => {
+	const EXPECTED = {
+		id: 'run-1',
+		nonce: 'nonce-1',
+		config: 'wrapper.config.ts',
+		parent: 4242,
+		pid: 4343,
+	}
+
+	function createDescription(patch: Readonly<Record<string, unknown>> = {}): unknown {
+		return Object.fromEntries(
+			Object.entries({ version: 1, ...EXPECTED, projects: [PROJECT], ...patch }).filter(
+				([, value]) => value !== undefined,
+			),
+		)
+	}
+
+	it('accepts a description that echoes this exchange and validates each project', () => {
+		const description = readCaptureDescription(createDescription(), EXPECTED)
+		expect(description).toMatchObject({ version: 1, ...EXPECTED })
+		expect(description.projects).toEqual([readCaptureEntry(PROJECT)])
+	})
+
+	it.each([
+		{ title: 'another invocation', patch: { id: 'run-2' }, message: 'answers another invocation' },
+		{
+			title: 'a replayed challenge',
+			patch: { nonce: 'old' },
+			message: 'answers another challenge',
+		},
+		{
+			title: 'another wrapper',
+			patch: { config: 'other.config.ts' },
+			message: 'names another wrapper',
+		},
+		{
+			title: 'another parent',
+			patch: { parent: 1 },
+			message: 'written for another parent process',
+		},
+		{ title: 'another writer', patch: { pid: 1 }, message: 'not written by the discovery child' },
+		{
+			title: 'no writer',
+			patch: { pid: undefined },
+			message: 'not written by the discovery child',
+		},
+		{
+			title: 'another version',
+			patch: { version: 2 },
+			message: 'The host description is malformed',
+		},
+		{ title: 'a project list that is no list', patch: { projects: 'x' }, message: 'malformed' },
+		{
+			title: 'an empty project list',
+			patch: { projects: [] },
+			message: 'The wrapper declares no projects',
+		},
+	])('refuses $title', ({ patch, message }) => {
+		const failure = readFailure(() => readCaptureDescription(createDescription(patch), EXPECTED))
+		expect(failure).toMatchObject({ code: 'HOST' })
+		expect(failure instanceof Error ? failure.message : '').toContain(message)
+	})
+
+	it.each([undefined, null, [], 'text', 42])('refuses %j as no document', (value) => {
+		expect(readFailure(() => readCaptureDescription(value, EXPECTED))).toMatchObject({
+			code: 'HOST',
+			message: 'The host description is malformed',
+		})
+	})
+
+	it('refuses an expectation that names no discovery child', () => {
+		const failure = readFailure(() =>
+			readCaptureDescription(createDescription(), { ...EXPECTED, pid: undefined }),
+		)
+		expect(failure).toMatchObject({
+			code: 'HOST',
+			message: 'The host description was not written by the discovery child',
+		})
+	})
+
+	it('refuses a project the wrapper declares malformed, with the reader that owns it', () => {
+		const failure = readFailure(() =>
+			readCaptureDescription(createDescription({ projects: [{ test: {} }] }), EXPECTED),
+		)
+		expect(failure).toMatchObject({ code: 'HOST' })
+	})
+})
+
+describe('answerCaptureDiscovery', () => {
+	const PPID = 4242
+	const ARGV = ['/workspace/node_modules/vitest/vitest.mjs', 'list', '--filesOnly']
+	const CONFIG = 'configs/wrapper.config.ts'
+
+	function createDiscoveryRequest(patch: Readonly<Record<string, unknown>> = {}): unknown {
+		return Object.fromEntries(
+			Object.entries({
+				version: 1,
+				phase: 'discover',
+				id: 'run-1',
+				nonce: 'nonce-1',
+				config: CONFIG,
+				pid: PPID,
+				args: ARGV,
+				...patch,
+			}).filter(([, value]) => value !== undefined),
+		)
+	}
+
+	function describeAnswer(directory: string, projects: readonly unknown[] = [PROJECT]) {
+		return answerCaptureDiscovery({ ppid: PPID, argv: ARGV, directory, config: CONFIG, projects })
+	}
+
+	async function readRejection(attempt: Promise<unknown>): Promise<unknown> {
+		return await attempt.then(
+			() => undefined,
+			(error: unknown) => error,
+		)
+	}
+
+	it('writes the projects the wrapper declares, unjudged, to the invocation directory and answers true', async () => {
+		const scratch = createScratch({ prefix: 'answer-' })
+		try {
+			scratch.write(
+				`requests/journey-selection-${String(PPID)}.json`,
+				JSON.stringify(createDiscoveryRequest()),
+			)
+			const directory = resolve(scratch.path, 'requests')
+			expect(
+				await describeAnswer(directory, [PROJECT, Promise.resolve(PROJECT), () => PROJECT]),
+			).toBe(true)
+			const written: unknown = parseJSON(scratch.read('requests/runs/run-1/description.json') ?? '')
+			expect(written).toEqual({
+				version: 1,
+				id: 'run-1',
+				nonce: 'nonce-1',
+				config: CONFIG,
+				parent: PPID,
+				pid: process.pid,
+				projects: [PROJECT, PROJECT, PROJECT],
+			})
+			expect(scratch.names('requests/runs/run-1')).toEqual(['description.json'])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('answers the same request again from the same process, as Vitest may load a configuration twice', async () => {
+		const scratch = createScratch({ prefix: 'answer-' })
+		try {
+			scratch.write(
+				`requests/journey-selection-${String(PPID)}.json`,
+				JSON.stringify(createDiscoveryRequest()),
+			)
+			const directory = resolve(scratch.path, 'requests')
+			expect(await describeAnswer(directory)).toBe(true)
+			expect(await describeAnswer(directory)).toBe(true)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('reads the directory the runner handed this child when the wrapper names none', async () => {
+		const scratch = createScratch({ prefix: 'answer-' })
+		try {
+			scratch.write(
+				`requests/journey-selection-${String(PPID)}.json`,
+				JSON.stringify(createDiscoveryRequest()),
+			)
+			await withEnvironment({ CAPTURE_REQUESTS: resolve(scratch.path, 'requests') }, async () => {
+				expect(
+					await answerCaptureDiscovery({
+						ppid: PPID,
+						argv: ARGV,
+						config: CONFIG,
+						projects: [PROJECT],
+					}),
+				).toBe(true)
+			})
+			expect(scratch.has('requests/runs/run-1/description.json')).toBe(true)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('answers false, and writes nothing, when there is no request, no record, or only a stage request', async () => {
+		const scratch = createScratch({ prefix: 'answer-' })
+		try {
+			const directory = resolve(scratch.path, 'requests')
+			scratch.ensure('requests')
+			expect(await describeAnswer(directory)).toBe(false)
+			const file = `requests/journey-selection-${String(PPID)}.json`
+			scratch.write(file, '{')
+			expect(await describeAnswer(directory)).toBe(false)
+			scratch.write(file, 'null')
+			expect(await describeAnswer(directory)).toBe(false)
+			scratch.write(file, JSON.stringify(createWireRequest(PPID, ARGV)))
+			expect(await describeAnswer(directory)).toBe(false)
+			expect(scratch.has('requests/runs')).toBe(false)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it.each([
+		{
+			title: 'a request from another parent',
+			patch: { pid: 1 },
+			message: 'Invalid journey selection request',
+		},
+		{ title: 'different arguments', patch: { args: ['other'] }, message: 'arguments differ' },
+		{ title: 'another version', patch: { version: 2 }, message: 'invalid version' },
+		{ title: 'an identity with a separator', patch: { id: '../run' }, message: 'invalid identity' },
+		{ title: 'a challenge with a space', patch: { nonce: 'a b' }, message: 'invalid identity' },
+		{ title: 'no challenge', patch: { nonce: undefined }, message: 'invalid identity' },
+		{
+			title: 'another wrapper',
+			patch: { config: 'configs/other.config.ts' },
+			message: 'invalid config',
+		},
+	])('refuses $title as a host fault and writes no answer', async ({ patch, message }) => {
+		const scratch = createScratch({ prefix: 'answer-' })
+		try {
+			scratch.write(
+				`requests/journey-selection-${String(PPID)}.json`,
+				JSON.stringify(createDiscoveryRequest(patch)),
+			)
+			const failure = await readRejection(describeAnswer(resolve(scratch.path, 'requests')))
+			expect(failure).toMatchObject({ code: 'HOST' })
+			expect(failure instanceof Error ? failure.message : '').toContain(message)
+			expect(scratch.has('requests/runs')).toBe(false)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('refuses an answer that another process already wrote for the request, and keeps its bytes', async () => {
+		const scratch = createScratch({ prefix: 'answer-' })
+		try {
+			scratch.write(
+				`requests/journey-selection-${String(PPID)}.json`,
+				JSON.stringify(createDiscoveryRequest()),
+			)
+			const prior = JSON.stringify({ pid: process.pid + 1, projects: [] })
+			scratch.write('requests/runs/run-1/description.json', prior)
+			const failure = await readRejection(describeAnswer(resolve(scratch.path, 'requests')))
+			expect(failure).toMatchObject({ code: 'HOST' })
+			expect(failure instanceof Error ? failure.message : '').toContain('already answered')
+			expect(scratch.read('requests/runs/run-1/description.json')).toBe(prior)
 		} finally {
 			scratch.destroy()
 		}

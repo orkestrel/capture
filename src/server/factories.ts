@@ -1,4 +1,6 @@
 import type {
+	CaptureDiscoveryInterface,
+	CaptureDiscoveryRunOptions,
 	CaptureIntegrityInterface,
 	CaptureIntegrityOptions,
 	CapturePreflightInterface,
@@ -10,6 +12,7 @@ import type {
 	CaptureSheetOptions,
 	CaptureSheetsInterface,
 } from './types.js'
+import { CaptureDiscovery } from './CaptureDiscovery.js'
 import { CaptureIntegrity } from './CaptureIntegrity.js'
 import { CapturePreflight } from './CapturePreflight.js'
 import { CaptureRegistrar } from './CaptureRegistrar.js'
@@ -99,6 +102,24 @@ export function createCapturePreflight(options: CaptureReaderOptions): CapturePr
  */
 export function createCaptureSheets(options: CaptureSheetOptions): CaptureSheetsInterface {
 	return new CaptureSheets(options)
+}
+
+/**
+ * Creates the discovery that reads a consumer's wrapper through the consumer's own Vitest.
+ *
+ * @param options - The workspace, the absolute wrapper path, the invocation that owns the child, and the optional mode and deadline
+ * @returns A new discovery whose `describe` publishes the request and returns the wrapper's host description
+ *
+ * @example
+ * ```ts
+ * const discovery = createCaptureDiscovery({ root: process.cwd(), config, invocation })
+ * const { projects } = await discovery.describe()
+ * ```
+ */
+export function createCaptureDiscovery(
+	options: CaptureDiscoveryRunOptions,
+): CaptureDiscoveryInterface {
+	return new CaptureDiscovery(options)
 }
 
 /**

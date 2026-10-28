@@ -6,7 +6,11 @@ import { isRunning } from '@orkestrel/test/server'
 import { isCaptureError } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { InvocationFixture } from '../../fixtures/capture/InvocationFixture.js'
-import { ProcessFixture } from '../../fixtures/capture/ProcessFixture.js'
+import {
+	readExitedPid,
+	startSleeper,
+	stopFixtureChild,
+} from '../../fixtures/capture/ProcessFixture.js'
 import { createRequestFixture } from '../../setup.js'
 import { FIXTURE_TIMEOUT, RUNNER_REQUESTS, withEnvironment } from '../../setupServer.js'
 
@@ -57,10 +61,10 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 
 	it('prunes a request under a dead process id and keeps a live one, an unrelated name, and its own', async () => {
 		const fixture = new InvocationFixture()
-		const live = await ProcessFixture.sleeper()
+		const live = await startSleeper()
 		try {
 			const { invocation, scratch } = fixture
-			const dead = await ProcessFixture.exited()
+			const dead = await readExitedPid()
 			const kept = [
 				`journey-selection-${String(live.pid)}.json`,
 				`journey-selection-${String(live.pid)}.json.tmp`,
@@ -87,7 +91,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 				expect(scratch.read(`${RUNNER_REQUESTS}/${name}`)).toBe(`bytes of ${name}`)
 			expect(scratch.has(`${RUNNER_REQUESTS}/runs/${invocation.id}`)).toBe(true)
 		} finally {
-			await ProcessFixture.stop(live)
+			await stopFixtureChild(live)
 			fixture.destroy()
 		}
 	})
@@ -100,12 +104,15 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			const log = resolve(invocation.directory, 'journey-narrow.log')
 			expect(invocation.launched(log)).toBe(false)
 			const outcome = await invocation.spawn([REPORTER, '3'], log, false)
-			expect(outcome).toEqual({ code: 3, signal: null })
+			expect(outcome).toEqual({ code: 3, signal: null, pid: expect.any(Number) })
+			expect(stdout.join('')).toContain(`pid=${String(outcome.pid)}\n`)
 			expect(invocation.launched(log)).toBe(true)
 			expect(stdout.join('')).toMatch(/^pid=\d+\n/u)
+			// The child reads the request directory the runner publishes to, so a wrapper never repeats it.
 			expect(parseJSON(stdout.join('').split(/\r\n|\n/u)[1] ?? '')).toEqual({
 				cwd: realpathSync(scratch.path),
 				capture: [],
+				requests: resolve(scratch.path, RUNNER_REQUESTS),
 			})
 			expect(stderr.join('')).toBe('reporter stderr\n')
 			const text = scratch.read(log) ?? ''
@@ -173,6 +180,27 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 
+	it('ends a child that outlives its deadline and says the deadline ended it, not an interrupt', async () => {
+		const fixture = new InvocationFixture()
+		try {
+			const { invocation, stdout } = fixture
+			invocation.prepare()
+			const outcome = await invocation.spawn(
+				[SLEEPER],
+				resolve(invocation.directory, 'late.log'),
+				false,
+				1_500,
+			)
+			const pid = Number(/pid=(\d+)/u.exec(stdout.join(''))?.[1])
+			expect(outcome).toMatchObject({ pid, expired: true })
+			await waitForCondition('the expired child has exited', () => !isRunning(pid))
+			expect(invocation.interrupted).toBe(false)
+			expect(invocation.signal.aborted).toBe(false)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
 	it('releases without an interrupt and leaves no handler behind', async () => {
 		const fixture = new InvocationFixture()
 		try {
@@ -189,12 +217,12 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 
 	it('lists each other live process that holds a request file once, and no dead, unrelated, or own file', async () => {
 		const fixture = new InvocationFixture()
-		const live = await ProcessFixture.sleeper()
+		const live = await startSleeper()
 		try {
 			const { invocation, scratch } = fixture
 			scratch.ensure(RUNNER_REQUESTS)
 			expect(invocation.holders()).toEqual([])
-			const dead = await ProcessFixture.exited()
+			const dead = await readExitedPid()
 			for (const name of [
 				`journey-selection-${String(live.pid)}.json`,
 				`journey-selection-${String(live.pid)}.json.tmp`,
@@ -208,7 +236,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			// Listing changes nothing: the dead process's file is pruned by `prepare`, not by this read.
 			expect(scratch.has(`${RUNNER_REQUESTS}/journey-selection-${String(dead)}.json`)).toBe(true)
 		} finally {
-			await ProcessFixture.stop(live)
+			await stopFixtureChild(live)
 			fixture.destroy()
 		}
 	})

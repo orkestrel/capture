@@ -25,6 +25,7 @@ import {
 	readCaptureReport,
 	validateCaptureRun,
 } from '@src/core'
+import { CaptureDiscovery } from './CaptureDiscovery.js'
 import { CaptureIntegrity } from './CaptureIntegrity.js'
 import { CaptureInvocation } from './CaptureInvocation.js'
 import {
@@ -41,7 +42,6 @@ import {
 	buildCaptureIntegrityOptions,
 	buildCaptureRegistry,
 	computeCaptureHash,
-	loadCaptureProjects,
 	readCaptureInputs,
 	readCaptureRegistryArguments,
 	requireCaptureProjects,
@@ -55,7 +55,7 @@ import {
  * @remarks
  * The refresh is the one route that bootstraps or replaces the registry the stage transaction
  * requires, so it cannot stamp through the integrity engine. It reads the wrapper through the same
- * loader the runner uses, takes the same invocation entity, request file, and Vitest child, and runs
+ * discovery the runner uses, takes the same invocation entity, request file, and Vitest child, and runs
  * each producing variant as a stage of its own with the `all` selector and no capture variable. It
  * reads each stage's reporter and closing record, takes the project's input population before and
  * after, and builds the receipts through `buildCaptureRegistry`. The registry is written to a
@@ -103,8 +103,18 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		invocation.attach()
 		try {
 			const parsed = readCaptureRegistryArguments(argv, root, config)
-			const projects = await loadCaptureProjects(root, parsed.config)
-			return await this.#refresh(invocation, parsed, projects)
+			const description = await new CaptureDiscovery({
+				root,
+				config: parsed.config,
+				invocation,
+				...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
+				...(this.#options.deadline === undefined ? {} : { deadline: this.#options.deadline }),
+			}).describe()
+			return await this.#refresh(
+				invocation,
+				parsed,
+				description.projects.map((entry) => entry.project),
+			)
 		} catch (error) {
 			this.#stderr(`${describeCaptureError(error)}\n`)
 			return isCaptureError(error) && error.code === 'USAGE'
@@ -142,7 +152,6 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		}
 		const directory = resolveCaptureRelative(root, primary.directory)
 		const target = `${directory}/${CAPTURE_REGISTRY_FILE}`
-		invocation.prepare()
 		const holders = invocation.holders()
 		if (holders.length > 0)
 			throw new CaptureError(

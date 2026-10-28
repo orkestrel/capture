@@ -216,7 +216,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 	}
 
 	// Splits a list into consecutive runs of at most `size` members.
-	#pages<T>(items: readonly T[], size: number): readonly (readonly T[])[] {
+	#pages<T>(items: readonly T[], size: number): ReadonlyArray<readonly T[]> {
 		return Array.from({ length: Math.ceil(items.length / size) }, (_, index) =>
 			items.slice(index * size, index * size + size),
 		)

@@ -12,7 +12,7 @@ import { encodeCaptureChunk, encodeCaptureWord } from '@src/server'
 export function createPngBytes(options: {
 	readonly width: number
 	readonly height: number
-	readonly rows: readonly (readonly number[])[]
+	readonly rows: ReadonlyArray<readonly number[]>
 	readonly depth?: number
 	readonly color?: number
 	readonly interlace?: number

@@ -1,11 +1,14 @@
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
+	CaptureDiscovery,
 	CaptureIntegrity,
+	CaptureInvocation,
 	CapturePreflight,
 	CaptureRegistrar,
 	CaptureRunner,
 	CaptureSheets,
+	createCaptureDiscovery,
 	createCaptureIntegrity,
 	createCapturePreflight,
 	createCaptureRegistrar,
@@ -13,6 +16,7 @@ import {
 	createCaptureSheets,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
+import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import { IntegrityFixture } from '../../fixtures/capture/IntegrityFixture.js'
 import { ReaderFixture } from '../../fixtures/capture/ReaderFixture.js'
 import { readFailure } from '../../setup.js'
@@ -21,6 +25,7 @@ import {
 	READER_CONFIG,
 	READER_JOURNEYS,
 	RUNNER_REQUESTS,
+	VARIANTS,
 } from '../../setupServer.js'
 
 describe('createCaptureIntegrity', { timeout: FIXTURE_TIMEOUT }, () => {
@@ -143,6 +148,31 @@ describe('createCaptureSheets', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(await sheets.execute()).toBe(0)
 			expect(existsSync(resolve(fixture.root, 'tmp/sheets/sheet-001.png'))).toBe(true)
 			expect(lines.join('')).toContain('"acceptance":false')
+		} finally {
+			fixture.destroy()
+		}
+	})
+})
+
+describe('createCaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('creates a discovery bound to the wrapper, whose describe returns the host description it answers', async () => {
+		const fixture = new ComposedFixture()
+		try {
+			const invocation = new CaptureInvocation({
+				command: 'journey',
+				root: fixture.root,
+				requests: fixture.requests,
+				stdout: () => undefined,
+				stderr: () => undefined,
+			})
+			const discovery = createCaptureDiscovery({
+				root: fixture.root,
+				config: resolve(fixture.root, fixture.config),
+				invocation,
+			})
+			expect(discovery).toBeInstanceOf(CaptureDiscovery)
+			const description = await discovery.describe()
+			expect(description.projects.map((entry) => entry.project.variant)).toEqual([...VARIANTS])
 		} finally {
 			fixture.destroy()
 		}

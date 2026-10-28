@@ -4,7 +4,12 @@ import {
 	createCaptureSheets,
 	readCaptureReaderArguments,
 } from '@src/server'
-import { READER_CONFIG, READER_JOURNEYS, createReaderWrapper } from '../../setupServer.js'
+import {
+	READER_CONFIG,
+	READER_JOURNEYS,
+	createReaderWrapper,
+	createStandIn,
+} from '../../setupServer.js'
 import { IntegrityFixture } from './IntegrityFixture.js'
 
 /** Carries what one reader execution printed and the exit it returned. */
@@ -19,15 +24,16 @@ export interface ReaderRun {
  *
  * @remarks
  * The readers are the subject, so they run here with their output captured through their writers. The
- * producer is still a real Node child writing real files, and the wrapper is a real module that Vite
- * loads from the workspace.
+ * producer is still a real Node child writing real files, and the wrapper is a real module that the
+ * Vitest stand-in imports when a reader discovers it, so the readers import no Vite.
  */
 export class ReaderFixture extends IntegrityFixture {
-	/** Creates the committed workspace and writes the wrapper the readers load. */
+	/** Creates the committed workspace and writes the wrapper the readers discover and the stand-in that answers. */
 	constructor() {
 		super()
 		try {
 			this.write(READER_CONFIG, createReaderWrapper(this.root))
+			this.write('node_modules/vitest/vitest.mjs', createStandIn())
 		} catch (error) {
 			// A throwing constructor returns no instance, so no caller's finally block can destroy it.
 			this.destroy()

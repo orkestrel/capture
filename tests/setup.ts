@@ -266,11 +266,11 @@ export function createManifestFixture(overrides: Partial<CaptureManifest> = {}):
 /**
  * Creates a Vitest JSON reporter fixture for a run that passed.
  *
- * @param assertions - The assertions the one passed test file reports, each carrying ullName, status, an optional duration, and a meta record. Default: the one declared case
+ * @param assertions - The assertions the one passed test file reports, each carrying a full name, a status, an optional duration, and a meta record. Default: the one declared case
  * @returns The parsed reporter document `readCaptureReport` reads
  */
 export function createVitestFixture(
-	assertions: readonly Readonly<Record<string, unknown>>[] = [
+	assertions: ReadonlyArray<Readonly<Record<string, unknown>>> = [
 		{
 			fullName: FIXTURE_CASE,
 			status: 'passed',

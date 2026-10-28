@@ -16,6 +16,12 @@ import {
 
 const LOOKUPS = `${COMPOSED_DIRECTORY}/lookups.json`
 const PREFIX = 'INTEGRITY '
+// Every child the runner spawns announces its process id, so the count tells discovery's one child from an execution child.
+const CHILD_LINE = /^pid=\d+$/gmu
+
+function countChildren(stdout: string): number {
+	return stdout.match(CHILD_LINE)?.length ?? 0
+}
 
 function readIntegrity(stdout: string): readonly unknown[] {
 	return stdout
@@ -51,21 +57,21 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(run.stderr).toContain(
 			'Missing accepted registry; run the explicit complete-registry refresh',
 		)
-		expect(run.stdout).not.toContain('pid=')
+		expect(countChildren(run.stdout)).toBe(1)
 		expect(readFixtureManifest(fixture.root)).toBeUndefined()
 		expect(readHeld(fixture)).toEqual([])
 	})
 
 	it('refreshes the registry, which the engine then reads for every producing variant', async () => {
 		const run = await fixture.refresh()
-		expect(run.code, run.stderr).toBe(0)
+		expect(run.code === 0 ? 0 : run.stderr).toBe(0)
 		const read = await fixture.engine.read({ selector: 'all' })
 		expect(read.entries.length).toBeGreaterThan(0)
 	})
 
 	it('runs the first variant alone, then the rest, and publishes lookups but stamps no frame', async () => {
 		const run = await fixture.run('journey', ['all'])
-		expect(run.code, run.stderr).toBe(0)
+		expect(run.code === 0 ? 0 : run.stderr).toBe(0)
 		expect(run.stdout).toContain(`journey narrow: ${COMPOSED_FIRST}; all;`)
 		expect(run.stdout).toContain(
 			`journey rest: ${VARIANTS.filter((variant) => variant !== COMPOSED_FIRST).join(', ')}; all;`,
@@ -93,7 +99,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 
 	it('stamps exactly the selected owner on a capture, and reads those frames as current', async () => {
 		const run = await fixture.run('capture', ['pages:mail'])
-		expect(run.code, run.stderr).toBe(0)
+		expect(run.code === 0 ? 0 : run.stderr).toBe(0)
 		expect(run.stdout).toContain(`capture narrow: ${COMPOSED_FIRST}; pages:mail;`)
 		const manifest: unknown = parseJSON(
 			requireValue(readFixtureManifest(fixture.root), 'No manifest'),
@@ -105,7 +111,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 			new Set(['pages']),
 		)
 		const stale = await fixture.run('stale', ['pages:mail'])
-		expect(stale.code, stale.stdout).toBe(0)
+		expect(stale.code === 0 ? 0 : stale.stdout).toBe(0)
 		expect(new Set(readStatuses(stale.stdout))).toEqual(new Set(['current']))
 	})
 
@@ -145,7 +151,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(refused.stderr).toContain(
 			`Refresh explicitly with: capture journey pages:mail --variant ${COMPOSED_FIRST}`,
 		)
-		expect(refused.stdout).not.toContain('pid=')
+		expect(countChildren(refused.stdout)).toBe(1)
 		const run = await fixture.run('capture', [
 			'pages:mail',
 			'--state',
@@ -153,7 +159,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 			'--variant',
 			COMPOSED_FIRST,
 		])
-		expect(run.code, run.stderr).toBe(0)
+		expect(run.code === 0 ? 0 : run.stderr).toBe(0)
 		expect(run.stdout).toContain(`capture narrow: ${COMPOSED_FIRST}; pages:mail (case-scoped);`)
 	})
 
@@ -161,7 +167,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		const before = readFixtureManifest(fixture.root)
 		const run = await fixture.run('capture', ['pages:mail', '--variant', COMPOSED_FIRST], {
 			environment: { CAPTURE_PRODUCER_MODE: 'hang' },
-			interrupt: true,
+			interrupt: 'emit',
 		})
 		expect(run.code).toBe(1)
 		expect(readFixtureManifest(fixture.root)).toBe(before)

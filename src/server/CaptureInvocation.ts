@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import type { CaptureRequest } from '@src/core'
 import type {
+	CaptureDiscoveryRequest,
 	CaptureExecutionResult,
 	CaptureInvocationInterface,
 	CaptureInvocationOptions,
@@ -12,7 +13,12 @@ import { resolve } from 'node:path'
 import { PROCESS_CONFIRMATION } from '@orkestrel/process'
 import { killProcess, killTree } from '@orkestrel/process/server'
 import { CAPTURE_REQUEST_PREFIX, CaptureError } from '@src/core'
-import { CAPTURE_FLAG, CAPTURE_FLAG_VALUE, CAPTURE_RUNS_DIRECTORY } from './constants.js'
+import {
+	CAPTURE_FLAG,
+	CAPTURE_FLAG_VALUE,
+	CAPTURE_REQUESTS_FLAG,
+	CAPTURE_RUNS_DIRECTORY,
+} from './constants.js'
 import { readCaptureRequestOwner, readCaptureRunning } from './helpers.js'
 
 /**
@@ -41,6 +47,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 	readonly #id = randomUUID()
 	readonly #controller = new AbortController()
 	readonly #children = new Set<ChildProcess>()
+	readonly #expired = new Set<ChildProcess>()
 	readonly #launches: string[] = []
 	readonly #interrupt = this.#abort.bind(this)
 	readonly #request: string
@@ -116,7 +123,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		]
 	}
 
-	publish(request: CaptureRequest): void {
+	publish(request: CaptureRequest | CaptureDiscoveryRequest): void {
 		writeFileSync(`${this.#request}.tmp`, `${JSON.stringify(request)}\n`)
 		renameSync(`${this.#request}.tmp`, this.#request)
 	}
@@ -130,22 +137,41 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		return this.#launches.includes(log)
 	}
 
-	spawn(args: readonly string[], log: string, capture: boolean): Promise<CaptureExecutionResult> {
+	spawn(
+		args: readonly string[],
+		log: string,
+		capture: boolean,
+		deadline?: number,
+	): Promise<CaptureExecutionResult> {
 		this.#launches.push(log)
 		writeFileSync(log, '')
 		const environment = Object.fromEntries(
 			Object.entries(process.env).filter(
-				([name]) => name.toLowerCase() !== CAPTURE_FLAG.toLowerCase(),
+				([name]) =>
+					name.toLowerCase() !== CAPTURE_FLAG.toLowerCase() &&
+					name.toLowerCase() !== CAPTURE_REQUESTS_FLAG.toLowerCase(),
 			),
 		)
+		// The child reads the directory the runner publishes to, so a wrapper never repeats it.
+		const inherited = {
+			...environment,
+			[CAPTURE_REQUESTS_FLAG]: resolve(this.#options.root, this.#options.requests),
+		}
 		const child = spawn(process.execPath, args, {
 			cwd: this.#options.root,
-			env: capture ? { ...environment, [CAPTURE_FLAG]: CAPTURE_FLAG_VALUE } : environment,
+			env: capture ? { ...inherited, [CAPTURE_FLAG]: CAPTURE_FLAG_VALUE } : inherited,
 			stdio: ['ignore', 'pipe', 'pipe'],
 			windowsHide: true,
 			detached: process.platform !== 'win32',
 		})
 		this.#children.add(child)
+		const timer =
+			deadline === undefined
+				? undefined
+				: setTimeout(() => {
+						this.#expired.add(child)
+						void this.#terminate(child)
+					}, deadline)
 		this.#options.stdout(`pid=${String(child.pid)}\n`)
 		child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
 			this.#options.stdout(chunk)
@@ -160,8 +186,14 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 				this.#options.stderr(`${error.message}\n`)
 			})
 			child.once('close', (code, signal) => {
+				clearTimeout(timer)
 				this.#children.delete(child)
-				done({ code, signal })
+				done({
+					code,
+					signal,
+					...(child.pid === undefined ? {} : { pid: child.pid }),
+					...(this.#expired.has(child) ? { expired: true } : {}),
+				})
 			})
 		})
 	}

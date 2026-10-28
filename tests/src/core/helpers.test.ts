@@ -46,10 +46,9 @@ function checkRun(
 	validateCaptureRun(run, against, project)
 }
 
-function expectEvidence(callback: () => unknown, message: string): void {
+function readEvidence(callback: () => unknown): unknown {
 	const failure = readFailure(callback)
-	expect(isCaptureError(failure)).toBe(true)
-	expect(failure).toMatchObject({ code: 'EVIDENCE', message })
+	return isCaptureError(failure) ? failure : undefined
 }
 
 describe('describeCaptureError', () => {
@@ -82,10 +81,9 @@ describe('collectCaptureDuplicates and requireCaptureUnique', () => {
 			message: 'Duplicate owners: mail, mail',
 			context: { label: 'owners', duplicates: ['mail', 'mail'] },
 		})
-		expectEvidence(
-			() => requireCaptureUnique(['Pages', 'pages'], 'scopes', true),
-			'Duplicate scopes: Pages, pages',
-		)
+		expect(
+			readEvidence(() => requireCaptureUnique(['Pages', 'pages'], 'scopes', true)),
+		).toMatchObject({ code: 'EVIDENCE', message: 'Duplicate scopes: Pages, pages' })
 	})
 })
 
@@ -291,12 +289,18 @@ describe('readCaptureReport', () => {
 		['no test files', { testResults: [] }],
 		['a non-array test file list', { testResults: {} }],
 	])('refuses %s as unsuccessful', (_label, overrides) => {
-		expectEvidence(() => readReport(overrides), 'Invalid or unsuccessful Vitest JSON report')
+		expect(readEvidence(() => readReport(overrides))).toMatchObject({
+			code: 'EVIDENCE',
+			message: 'Invalid or unsuccessful Vitest JSON report',
+		})
 	})
 
 	it('refuses a non-record document', () => {
 		for (const value of [null, undefined, [], 'report', 0]) {
-			expectEvidence(() => readCaptureReport(value), 'Invalid or unsuccessful Vitest JSON report')
+			expect(readEvidence(() => readCaptureReport(value))).toMatchObject({
+				code: 'EVIDENCE',
+				message: 'Invalid or unsuccessful Vitest JSON report',
+			})
 		}
 	})
 
@@ -307,10 +311,9 @@ describe('readCaptureReport', () => {
 		['non-array assertions', { assertionResults: 'x' }],
 	])('refuses %s', (_label, overrides) => {
 		const file = { status: 'passed', startTime: 1, endTime: 2, assertionResults: [], ...overrides }
-		expectEvidence(
-			() => readCaptureReport({ ...createVitestFixture([]), testResults: [file] }),
-			'Invalid Vitest file report',
-		)
+		expect(
+			readEvidence(() => readCaptureReport({ ...createVitestFixture([]), testResults: [file] })),
+		).toMatchObject({ code: 'EVIDENCE', message: 'Invalid Vitest file report' })
 	})
 
 	it('refuses an assertion without a metadata record', () => {
@@ -320,10 +323,9 @@ describe('readCaptureReport', () => {
 			endTime: 2,
 			assertionResults: [{ fullName: 'a', status: 'passed' }],
 		}
-		expectEvidence(
-			() => readCaptureReport({ ...createVitestFixture([]), testResults: [file] }),
-			'Invalid Vitest assertion metadata',
-		)
+		expect(
+			readEvidence(() => readCaptureReport({ ...createVitestFixture([]), testResults: [file] })),
+		).toMatchObject({ code: 'EVIDENCE', message: 'Invalid Vitest assertion metadata' })
 	})
 
 	it.each([
@@ -339,10 +341,10 @@ describe('readCaptureReport', () => {
 			meta: { owner: 'pages:mail', variant: 'light-390' },
 			...overrides,
 		}
-		expectEvidence(
-			() => readCaptureReport(createVitestFixture([assertion])),
-			'Invalid owner-bearing Vitest assertion',
-		)
+		expect(readEvidence(() => readCaptureReport(createVitestFixture([assertion])))).toMatchObject({
+			code: 'EVIDENCE',
+			message: 'Invalid owner-bearing Vitest assertion',
+		})
 	})
 
 	it('refuses two assertions that share a case and producing variant', () => {
@@ -351,10 +353,12 @@ describe('readCaptureReport', () => {
 			status: 'passed',
 			meta: { owner: 'pages:mail', variant: 'light-390' },
 		}
-		expectEvidence(
-			() => readCaptureReport(createVitestFixture([assertion, assertion])),
-			`Duplicate reporter case identities: ["light-390","${FIXTURE_CASE}"], ["light-390","${FIXTURE_CASE}"]`,
-		)
+		expect(
+			readEvidence(() => readCaptureReport(createVitestFixture([assertion, assertion]))),
+		).toMatchObject({
+			code: 'EVIDENCE',
+			message: `Duplicate reporter case identities: ["light-390","${FIXTURE_CASE}"], ["light-390","${FIXTURE_CASE}"]`,
+		})
 		expect(
 			readCaptureReport(
 				createVitestFixture([
@@ -467,21 +471,26 @@ describe('validateCaptureRun', () => {
 			`Emitted duration differs from its producing case: ${FIXTURE_CASE}`,
 		],
 	])('refuses %s', (_label, overrides, message) => {
-		expectEvidence(() => checkRun(createRunFixture(overrides)), message)
+		expect(readEvidence(() => checkRun(createRunFixture(overrides)))).toMatchObject({
+			code: 'EVIDENCE',
+			message: message,
+		})
 	})
 
 	it('refuses a destination produced by another project', () => {
-		expectEvidence(
-			() => checkRun(createRunFixture(), readReport(), 'journey:dark-1280'),
-			`Registry differs from eligible declaration: ${FIXTURE_CASE}`,
-		)
+		expect(
+			readEvidence(() => checkRun(createRunFixture(), readReport(), 'journey:dark-1280')),
+		).toMatchObject({
+			code: 'EVIDENCE',
+			message: `Registry differs from eligible declaration: ${FIXTURE_CASE}`,
+		})
 	})
 
 	it('refuses a record the reporter disagrees with', () => {
-		expectEvidence(
-			() => checkRun(createRunFixture(), mismatched),
-			'Run declarations differ from full reporter declarations',
-		)
+		expect(readEvidence(() => checkRun(createRunFixture(), mismatched))).toMatchObject({
+			code: 'EVIDENCE',
+			message: 'Run declarations differ from full reporter declarations',
+		})
 	})
 
 	it('refuses a registry entry no eligible declaration owns', () => {
@@ -490,74 +499,94 @@ describe('validateCaptureRun', () => {
 			state: 'sent',
 			file: 'tmp/captures/states/pages/sent--light-390.png',
 		})
-		expectEvidence(
-			() => checkRun(createRunFixture({ registry: [createDestinationFixture(), extra] })),
-			'Registry contains an ineligible or undeclared case',
-		)
+		expect(
+			readEvidence(() =>
+				checkRun(createRunFixture({ registry: [createDestinationFixture(), extra] })),
+			),
+		).toMatchObject({
+			code: 'EVIDENCE',
+			message: 'Registry contains an ineligible or undeclared case',
+		})
 	})
 
 	it('refuses a destination whose owner the declaration does not select', () => {
-		expectEvidence(
-			() => checkRun(createRunFixture({ registry: [createDestinationFixture({ part: 'files' })] })),
-			`Registry differs from eligible declaration: ${FIXTURE_CASE}`,
-		)
+		expect(
+			readEvidence(() =>
+				checkRun(createRunFixture({ registry: [createDestinationFixture({ part: 'files' })] })),
+			),
+		).toMatchObject({
+			code: 'EVIDENCE',
+			message: `Registry differs from eligible declaration: ${FIXTURE_CASE}`,
+		})
 	})
 
 	it('refuses a request its record contradicts', () => {
 		const identity = createIdentityFixture()
-		expectEvidence(
-			() =>
+		expect(
+			readEvidence(() =>
 				checkRun(
 					createRunFixture({
 						identity: { ...identity, id: 'other' },
 						request: createRequestFixture(),
 					}),
 				),
-			'Run identity differs from its request',
-		)
-		expectEvidence(
-			() =>
+			),
+		).toMatchObject({ code: 'EVIDENCE', message: 'Run identity differs from its request' })
+		expect(
+			readEvidence(() =>
 				checkRun(
 					createRunFixture({
 						identity,
 						request: createRequestFixture({ variants: ['dark-1280'] }),
 					}),
 				),
-			'Run identity differs from its request',
-		)
-		expectEvidence(
-			() =>
+			),
+		).toMatchObject({ code: 'EVIDENCE', message: 'Run identity differs from its request' })
+		expect(
+			readEvidence(() =>
 				checkRun(
 					createRunFixture({
 						identity,
 						request: createRequestFixture({ selector: 'pages:files' }),
 					}),
 				),
-			'Selected full case names differ from passed results',
-		)
-		expectEvidence(
-			() =>
+			),
+		).toMatchObject({
+			code: 'EVIDENCE',
+			message: 'Selected full case names differ from passed results',
+		})
+		expect(
+			readEvidence(() =>
 				checkRun(createRunFixture({ identity, request: createRequestFixture({ state: 'sent' }) })),
-			'Requested state differs from its selected declaring case',
-		)
-		expectEvidence(
-			() =>
+			),
+		).toMatchObject({
+			code: 'EVIDENCE',
+			message: 'Requested state differs from its selected declaring case',
+		})
+		expect(
+			readEvidence(() =>
 				checkRun(
 					createRunFixture({ identity, request: createRequestFixture({ command: 'journey' }) }),
 				),
-			'Emitted entries differ from exact requested projection',
-		)
+			),
+		).toMatchObject({
+			code: 'EVIDENCE',
+			message: 'Emitted entries differ from exact requested projection',
+		})
 	})
 
 	it('refuses a request whose case name selects nothing the record passed', () => {
 		const identity = createIdentityFixture()
-		expectEvidence(
-			() =>
+		expect(
+			readEvidence(() =>
 				checkRun(
 					createRunFixture({ identity, request: createRequestFixture({ case: 'another case' }) }),
 				),
-			'Selected full case names differ from passed results',
-		)
+			),
+		).toMatchObject({
+			code: 'EVIDENCE',
+			message: 'Selected full case names differ from passed results',
+		})
 	})
 })
 
@@ -631,7 +660,10 @@ describe('validateCaptureReceipt', () => {
 			'Registry receipt contains an undeclared output or mixes producing projects',
 		],
 	])('refuses %s', (_label, receipt, against, message) => {
-		expectEvidence(() => validateCaptureReceipt(receipt, against), message)
+		expect(readEvidence(() => validateCaptureReceipt(receipt, against))).toMatchObject({
+			code: 'EVIDENCE',
+			message: message,
+		})
 	})
 
 	it('refuses a receipt whose destinations come from two producing projects', () => {
@@ -656,10 +688,10 @@ describe('validateCaptureReceipt', () => {
 				}),
 			],
 		})
-		expectEvidence(
-			() => validateCaptureReceipt(receipt, wide),
-			'Registry receipt contains an undeclared output or mixes producing projects',
-		)
+		expect(readEvidence(() => validateCaptureReceipt(receipt, wide))).toMatchObject({
+			code: 'EVIDENCE',
+			message: 'Registry receipt contains an undeclared output or mixes producing projects',
+		})
 		expect(
 			readFailure(() =>
 				validateCaptureReceipt(
@@ -690,14 +722,17 @@ describe('validateCaptureReceipt', () => {
 				},
 			]),
 		)
-		expectEvidence(
-			() =>
+		expect(
+			readEvidence(() =>
 				validateCaptureReceipt(
 					createReceiptFixture({ declarations: [createDeclarationFixture({ states })] }),
 					wide,
 				),
-			'Duplicate states within a declaration: inbox, Inbox',
-		)
+			),
+		).toMatchObject({
+			code: 'EVIDENCE',
+			message: 'Duplicate states within a declaration: inbox, Inbox',
+		})
 	})
 })
 
@@ -751,6 +786,9 @@ describe('readCaptureDirty', () => {
 	})
 
 	it('refuses a rename with no original path', () => {
-		expectEvidence(() => readCaptureDirty('R  src/new.ts\0'), 'Incomplete Git rename provenance')
+		expect(readEvidence(() => readCaptureDirty('R  src/new.ts\0'))).toMatchObject({
+			code: 'EVIDENCE',
+			message: 'Incomplete Git rename provenance',
+		})
 	})
 })

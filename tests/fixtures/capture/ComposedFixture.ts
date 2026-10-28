@@ -34,15 +34,21 @@ export class ComposedFixture extends IntegrityFixture {
 	 * Creates the committed workspace and writes the wrapper and the Vitest stand-in it spawns.
 	 *
 	 * @param options - The wrapper path and request directory to use in place of the fixture's own, as
-	 * an executable's built-in defaults need
+	 * an executable's built-in defaults need, and the variant the wrapper stages alone first
 	 */
-	constructor(options: { readonly config?: string; readonly requests?: string } = {}) {
+	constructor(
+		options: {
+			readonly config?: string
+			readonly requests?: string
+			readonly first?: string
+		} = {},
+	) {
 		super()
 		this.config = options.config ?? READER_CONFIG
 		this.requests = options.requests ?? COMPOSED_REQUESTS
 		try {
-			this.write(this.config, createComposedWrapper(this.root))
-			this.write('node_modules/vitest/vitest.mjs', createStandIn(this.requests))
+			this.write(this.config, createComposedWrapper(this.root, options.first))
+			this.write('node_modules/vitest/vitest.mjs', createStandIn())
 		} catch (error) {
 			// A throwing constructor returns no instance, so no caller's finally block can destroy it.
 			this.destroy()
@@ -55,7 +61,7 @@ export class ComposedFixture extends IntegrityFixture {
 	 *
 	 * @param command - The runner command
 	 * @param argv - The command line after the subcommand
-	 * @param options - The environment and whether to interrupt once the child is up
+	 * @param options - The environment, how to interrupt once the child is up, and the discovery deadline
 	 * @returns The exit and what the runner printed
 	 */
 	async run(
@@ -75,6 +81,7 @@ export class ComposedFixture extends IntegrityFixture {
 					argv,
 					stdout: (text) => stdout.push(text),
 					stderr: (text) => stderr.push(text),
+					...(options.deadline === undefined ? {} : { deadline: options.deadline }),
 				}).execute(),
 			options,
 		)
@@ -85,7 +92,7 @@ export class ComposedFixture extends IntegrityFixture {
 	 * Runs the registry refresh over the workspace.
 	 *
 	 * @param argv - The command line after the subcommand
-	 * @param options - The environment and whether to interrupt once the child is up
+	 * @param options - The environment, how to interrupt once the child is up, and the discovery deadline
 	 * @returns The exit and what the refresh printed
 	 */
 	async refresh(
@@ -103,32 +110,47 @@ export class ComposedFixture extends IntegrityFixture {
 					argv,
 					stdout: (text) => stdout.push(text),
 					stderr: (text) => stderr.push(text),
+					...(options.deadline === undefined ? {} : { deadline: options.deadline }),
 				}).execute(),
 			options,
 		)
 		return { code, stdout: stdout.join(''), stderr: stderr.join('') }
 	}
 
+	/**
+	 * Reads the process ids the producer reported once its stage child and descendant were up.
+	 *
+	 * @returns The child and, when it had one, its descendant; empty before the producer reported ready
+	 */
+	readReady(): readonly number[] {
+		const ready = resolve(this.root, 'ready.json')
+		if (!existsSync(ready)) return []
+		const reading: unknown = parseJSON(readFileSync(ready, 'utf8'))
+		if (!isRecord(reading)) return []
+		return [reading.pid, reading.descendant].filter((pid): pid is number => typeof pid === 'number')
+	}
+
 	async #watch(start: () => Promise<number>, options: ComposedExecution): Promise<number> {
 		const ready = resolve(this.root, 'ready.json')
 		rmSync(ready, { force: true })
 		const running = withEnvironment(options.environment ?? {}, start)
-		if (options.interrupt === true) {
+		if (options.interrupt !== undefined) {
 			await waitForCondition('the producer reports ready', () => existsSync(ready), {
 				budget: 20_000,
 			})
-			process.emit('SIGINT')
+			// A real signal reaches the installed handler only on a POSIX host, so a proof that asks for
+			// one runs only there; the emitted signal runs the same handler on every host.
+			if (options.interrupt === 'emit') process.emit('SIGINT')
+			else process.kill(process.pid, 'SIGINT')
 		}
 		const code = await running
-		if (existsSync(ready)) {
-			const reading: unknown = parseJSON(readFileSync(ready, 'utf8'))
-			if (isRecord(reading) && typeof reading.pid === 'number') {
-				const { pid } = reading
-				await waitForCondition('the producer has exited', () => !isRunning(pid), {
-					budget: 20_000,
-				})
-			}
-		}
+		const pids = this.readReady()
+		if (pids.length > 0)
+			await waitForCondition(
+				'the producer and its descendant have exited',
+				() => pids.every((pid) => !isRunning(pid)),
+				{ budget: 20_000 },
+			)
 		return code
 	}
 }

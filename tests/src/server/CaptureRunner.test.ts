@@ -1,454 +1,570 @@
+import { readdirSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { requireValue } from '@orkestrel/test'
+import { isRecord, parseJSON } from '@orkestrel/contract'
 import { isRunning } from '@orkestrel/test/server'
-import { isCaptureError } from '@src/core'
-import { describe, expect, it } from 'vitest'
-import { RunnerFixture } from '../../fixtures/capture/RunnerFixture.js'
+import { isCaptureRun } from '@src/core'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import {
+	readExitedPid,
+	startSleeper,
+	stopFixtureChild,
+} from '../../fixtures/capture/ProcessFixture.js'
+import {
+	BOARD,
+	COMPOSED_DIRECTORY,
+	COMPOSED_FIRST,
+	COMPOSED_OWNERS,
 	FIXTURE_TIMEOUT,
-	RUNNER_CASE,
-	RUNNER_CLOSING,
+	MAIL,
+	QUOTED,
+	READER_CLOSING,
 	RUNNER_COMMANDS,
-	RUNNER_DIRECTORY,
-	RUNNER_INPUTS,
-	RUNNER_PORTFOLIOS,
 	RUNNER_REFUSALS,
-	RUNNER_REQUESTS,
-	RUNNER_STANDALONE,
 	SUPPORTS_GROUP_SIGNAL,
-	readRunnerReceipt,
+	VARIANTS,
+	readFixtureManifest,
 } from '../../setupServer.js'
 
-// Each execution loads a Vite configuration, spawns real Node children, and removes a scratch
+// A stage line is printed only when an execution child is about to start; discovery prints none.
+const STAGE_LINE = /^(?:journey|capture) (?:narrow|rest):/mu
+const INTEGRITY = 'INTEGRITY '
+
+function readInvocation(stdout: string): string {
+	return /runs[\\/]([0-9a-f-]{36})[\\/]/u.exec(stdout)?.[1] ?? ''
+}
+
+function readRequest(fixture: ComposedFixture, stdout: string, stage: string, variant: string) {
+	const record: unknown = parseJSON(
+		fixture
+			.read(`${COMPOSED_DIRECTORY}/runs/${readInvocation(stdout)}/${stage}/${variant}.json`)
+			.toString('utf8'),
+	)
+	return isCaptureRun(record) ? record.request : undefined
+}
+
+function readHeld(fixture: ComposedFixture): readonly string[] {
+	return readdirSync(resolve(fixture.root, fixture.requests)).filter((name) =>
+		name.startsWith('journey-selection'),
+	)
+}
+
+function readFilter(args: readonly string[] = []): string | undefined {
+	return args[args.indexOf('--tags-filter') + 1]
+}
+
+function rmFile(fixture: ComposedFixture, file: string): void {
+	rmSync(resolve(fixture.root, file), { force: true })
+}
+
+function readReceipt(fixture: ComposedFixture): unknown {
+	return parseJSON(fixture.read('receipt.json').toString('utf8'))
+}
+
+function readStatuses(stdout: string): readonly unknown[] {
+	const line = stdout.split('\n').find((entry) => entry.startsWith(INTEGRITY))
+	const reading: unknown = parseJSON(line?.slice(INTEGRITY.length) ?? '')
+	return isRecord(reading) && Array.isArray(reading.entries)
+		? reading.entries.map((entry: unknown) => (isRecord(entry) ? entry.status : undefined))
+		: []
+}
+
+// One seeded workspace serves the command-line and process cases that only read it: the registry
+// exists before any stage can stamp, and the runner and the engine are the real ones throughout.
+const base = new ComposedFixture()
+
+beforeAll(() => base.seed(), FIXTURE_TIMEOUT)
+
+afterAll(() => base.destroy())
+
+// Each execution discovers a wrapper through a real child, runs real stages, and removes a scratch
 // workspace, so the default five-second budget is thin on a contended host.
-describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
-	it('resolves a labeled-object project name and passes it to --project', async () => {
-		const run = await RunnerFixture.execute('journey', ['app:mail', '--variant', 'compact'], {
-			environment: { CAPTURE_FIXTURE_NAME: 'labeled' },
-		})
-		expect(run.code).toBe(0)
-		const { args, request } = readRunnerReceipt(run)
-		expect(args.slice(args.indexOf('--project'), args.indexOf('--project') + 2)).toEqual([
-			'--project',
-			'bench:compact',
-		])
-		expect(request.variants).toEqual(['compact'])
-	})
-
-	it('refuses an unsupported project name before spawning', async () => {
-		const run = await RunnerFixture.execute('journey', ['app:mail', '--variant', 'compact'], {
-			environment: { CAPTURE_FIXTURE_NAME: 'unsupported' },
-		})
-		expect(run.code).toBe(1)
-		expect(run.stderr).toContain(
-			'Unsupported journey project name: expected a string or an object with a string label',
+describe.each(RUNNER_COMMANDS)(
+	'CaptureRunner %s command',
+	{ timeout: FIXTURE_TIMEOUT },
+	(command) => {
+		it.each(RUNNER_REFUSALS)(
+			'refuses $title before any execution child starts',
+			async (refusal) => {
+				const run = await base.run(command, refusal.args)
+				expect(run.code).toBe(64)
+				expect(run.stdout + run.stderr).toContain(refusal.message)
+				expect(run.stdout).not.toMatch(STAGE_LINE)
+				expect(readHeld(base)).toEqual([])
+			},
 		)
-		expect(run.receipt).toBeUndefined()
-		expect(run.request).toBe(false)
-	})
-
-	it('refuses wrapper projects that disagree on a host declaration before spawning', async () => {
-		const run = await RunnerFixture.execute('journey', ['app:mail'], {
-			environment: { CAPTURE_FIXTURE_DISAGREE: 'phone' },
-		})
-		expect(run.code).toBe(1)
-		expect(run.stderr).toContain('Host project integrity declarations disagree')
-		expect(run.receipt).toBeUndefined()
-		expect(run.engines).toEqual([])
-	})
-
-	it('refuses a wrapper that sits outside the repository before loading it', async () => {
-		const run = await RunnerFixture.execute('journey', [
-			'app:mail',
-			'--config',
-			resolve(import.meta.dirname, 'outside.config.ts'),
-		])
-		expect(run.code).toBe(64)
-		expect(run.stderr).toContain('Config must be a contained repository path')
-		expect(run.receipt).toBeUndefined()
-	})
-
-	describe.each(RUNNER_COMMANDS)('%s', (command) => {
-		it.each(RUNNER_REFUSALS)('refuses $title before spawning', async ({ args, message }) => {
-			const run = await RunnerFixture.execute(command, args)
-			expect(run.code).toBe(64)
-			expect(run.stdout + run.stderr).toContain(message)
-			expect(run.receipt).toBeUndefined()
-			expect(run.request).toBe(false)
-			expect(run.engines.flatMap((engine) => engine.stages)).toEqual([])
-		})
 
 		it('lists every declared owner, ancestors included, when no selector is given', async () => {
-			const run = await RunnerFixture.execute(command, [])
+			const run = await base.run(command, [])
 			expect(run.code).toBe(64)
-			expect(run.stderr.split(/\r\n|\n/u)).toEqual(
-				expect.arrayContaining(['app', 'app:board', 'app:mail', 'tools', 'tools:search']),
-			)
+			expect(run.stderr.split(/\r\n|\n/u)).toEqual(expect.arrayContaining([...COMPOSED_OWNERS]))
 			expect(run.stderr).toContain(command === 'capture' ? 'capture frames' : 'capture journey')
 		})
 
-		it('writes the exact request, preserves spaces and quotes, tees output, and removes the request', async () => {
-			const run = await RunnerFixture.execute(command, [
-				'app:mail',
+		it('writes the exact request, keeps a quoted case whole, tees output, and withdraws the request', async () => {
+			const run = await base.run(command, [
+				'pages:mail',
 				'--variant',
-				'compact',
+				COMPOSED_FIRST,
 				'--case',
-				RUNNER_CASE,
+				QUOTED,
 			])
-			expect(run.code).toBe(0)
-			const { request, args, report, parent } = readRunnerReceipt(run)
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+			const request = readRequest(base, run.stdout, 'narrow', COMPOSED_FIRST)
 			expect(request).toMatchObject({
 				version: 1,
 				stage: 'narrow',
 				command,
-				selector: 'app:mail',
-				case: RUNNER_CASE,
-				variants: ['compact'],
-				config: 'fixture with spaces.config.ts',
+				selector: 'pages:mail',
+				case: QUOTED,
+				variants: [COMPOSED_FIRST],
+				config: base.config,
 				pid: process.pid,
 			})
-			expect(parent).toBe(process.pid)
-			expect(request.args).toEqual(args)
-			expect(report.replaceAll('\\', '/')).toContain(`/runs/${String(request.id)}/`)
+			const args = request?.args ?? []
+			expect(args.slice(args.indexOf('--project'), args.indexOf('--project') + 2)).toEqual([
+				'--project',
+				`journey:${COMPOSED_FIRST}`,
+			])
 			// The anchored pattern is read by a second mechanism, a regular expression engine, so it must
 			// match each of the two names exactly and nothing that merely resembles them.
 			const pattern = new RegExp(args[args.indexOf('-t') + 1] ?? '', 'u')
-			expect(pattern.test(RUNNER_CASE)).toBe(true)
-			expect(pattern.test(RUNNER_CLOSING)).toBe(true)
-			expect(pattern.test(`${RUNNER_CASE} extra`)).toBe(false)
-			expect(pattern.test(`x${RUNNER_CLOSING}`)).toBe(false)
-			expect(pattern.test('closes a states + writes aab')).toBe(false)
-			expect(run.request).toBe(false)
-			expect(run.temporary).toBe(false)
-			expect(run.stdout).toContain('fixture stdout')
-			expect(run.stderr).toContain('fixture stderr')
-			expect(run.log).toContain('fixture stdout')
-			expect(run.log).toContain('fixture stderr')
+			expect(pattern.test(QUOTED)).toBe(true)
+			expect(pattern.test(READER_CLOSING)).toBe(true)
+			expect(pattern.test(`${QUOTED} extra`)).toBe(false)
+			expect(pattern.test(`x${READER_CLOSING}`)).toBe(false)
+			expect(run.stdout).toMatch(/^pid=\d+\n/mu)
+			expect(
+				base.read(`${base.requests}/runs/${readInvocation(run.stdout)}/${command}-narrow.log`),
+			).toBeDefined()
+			expect(readHeld(base)).toEqual([])
+			expect(readReceipt(base)).toMatchObject({ requests: resolve(base.root, base.requests) })
 		})
 
 		it('runs the first variant alone, then the others together, in declaration order', async () => {
-			const run = await RunnerFixture.execute(command, ['app:mail'])
-			expect(run.code).toBe(0)
-			const engine = requireValue(run.engines.at(0), 'The runner created no engine')
-			expect(
-				engine.stages.map((stage) => ({
-					stage: stage.request.stage,
-					variants: stage.request.variants,
-					projects: stage.projects.map((project) => project.name),
-				})),
-			).toEqual([
-				{ stage: 'narrow', variants: ['compact'], projects: ['bench:compact'] },
-				{ stage: 'rest', variants: ['wide', 'phone'], projects: ['bench:wide', 'bench:phone'] },
-			])
-			expect(run.stdout).toContain('bench:compact: 1 owner-bearing passed cases')
-			expect(run.stdout).toContain('bench:wide: 1 owner-bearing passed cases')
-			expect(run.stdout).toContain('bench:phone: 1 owner-bearing passed cases')
+			const run = await base.run(command, ['pages:mail'])
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+			expect(run.stdout).toContain(`${command} narrow: ${COMPOSED_FIRST};`)
+			expect(run.stdout).toContain(
+				`${command} rest: ${VARIANTS.filter((variant) => variant !== COMPOSED_FIRST).join(', ')};`,
+			)
+			for (const variant of VARIANTS)
+				expect(run.stdout).toMatch(
+					new RegExp(`journey:${variant}: \\d+ owner-bearing passed cases`, 'u'),
+				)
 		})
 
 		it('adds no variant the caller did not select, and runs a lone non-first variant in one stage', async () => {
-			const run = await RunnerFixture.execute(command, ['app:mail', '--variant', 'phone'])
-			expect(run.code).toBe(0)
-			const engine = requireValue(run.engines.at(0), 'The runner created no engine')
-			expect(engine.stages.map((stage) => [stage.request.stage, stage.request.variants])).toEqual([
-				['rest', ['phone']],
-			])
-		})
-
-		it('derives the engine options and each stage record path from the wrapper declarations', async () => {
-			const run = await RunnerFixture.execute(command, ['app:mail'])
-			expect(run.code).toBe(0)
-			const engine = requireValue(run.engines.at(0), 'The runner created no engine')
-			expect(engine.options).toEqual({
-				root: engine.options.root,
-				directory: RUNNER_DIRECTORY,
-				inputs: [...RUNNER_INPUTS],
-				registry: `${RUNNER_DIRECTORY}/registry.json`,
-				manifest: `${RUNNER_DIRECTORY}/manifest.json`,
-				lookups: `${RUNNER_DIRECTORY}/lookups.json`,
-				portfolios: [...RUNNER_PORTFOLIOS],
-			})
-			const narrow = requireValue(engine.stages.at(0), 'The runner ran no stage')
-			expect(narrow.projects).toEqual([
-				{
-					name: 'bench:compact',
-					variant: 'compact',
-					inputs: [...RUNNER_INPUTS],
-					record: `${RUNNER_DIRECTORY}/runs/${narrow.request.id}/narrow/compact.json`,
-				},
-			])
-			expect(narrow.report.startsWith(`${RUNNER_REQUESTS}/runs/${narrow.request.id}/`)).toBe(true)
-			expect(run.stdout).toContain(
-				`records=${RUNNER_DIRECTORY}/runs/${narrow.request.id}/narrow/<variant>.json`,
-			)
+			const run = await base.run(command, ['pages:mail', '--variant', 'dark-390'])
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+			expect(run.stdout).toContain(`${command} rest: dark-390;`)
+			expect(run.stdout).not.toContain(`${command} narrow:`)
 		})
 
 		it('selects an owner and its capture tag, and the union of declared scopes for all', async () => {
-			const owner = await RunnerFixture.execute(command, ['tools:search', '--variant', 'compact'])
-			const all = await RunnerFixture.execute(command, ['all', '--variant', 'compact'])
-			const filters = [owner, all].map((run) => {
-				const { args } = readRunnerReceipt(run)
-				return args[args.indexOf('--tags-filter') + 1]
-			})
+			const owner = await base.run(command, ['examples:files', '--variant', COMPOSED_FIRST])
+			const all = await base.run(command, ['all', '--variant', COMPOSED_FIRST])
+			const filters = [owner, all].map((run) =>
+				readFilter(readRequest(base, run.stdout, 'narrow', COMPOSED_FIRST)?.args),
+			)
 			expect(filters).toEqual(
 				command === 'journey'
-					? ['owner:tools:search', '(owner:app || owner:tools)']
-					: ['owner:tools:search && tools:search', '(owner:app || owner:tools) && (app || tools)'],
+					? ['owner:examples:files', '(owner:pages || owner:examples)']
+					: [
+							'owner:examples:files && examples:files',
+							'(owner:pages || owner:examples) && (pages || examples)',
+						],
 			)
 		})
 
-		it('removes the request on child failure, runs no later stage, and exits 1', async () => {
-			const run = await RunnerFixture.execute(command, ['app:mail'], { mode: 'fail' })
-			expect(run.code).toBe(1)
-			expect(readRunnerReceipt(run).request).toMatchObject({ command, selector: 'app:mail' })
-			expect(run.engines.flatMap((engine) => engine.stages)).toHaveLength(1)
-			expect(run.request).toBe(false)
-			expect(run.temporary).toBe(false)
-		})
-
-		it('exits 1 for a malformed report and removes the request', async () => {
-			const run = await RunnerFixture.execute(command, ['app:mail', '--variant', 'compact'], {
-				mode: 'invalid',
+		it('removes the request on a failed child, runs no later stage, and exits 1', async () => {
+			const run = await base.run(command, ['pages:mail'], {
+				environment: { CAPTURE_PRODUCER_MODE: 'failed-child' },
 			})
 			expect(run.code).toBe(1)
-			expect(readRunnerReceipt(run).request).toMatchObject({ command })
-			expect(run.request).toBe(false)
+			expect(run.stdout).toContain(`${command} narrow:`)
+			expect(run.stdout).not.toContain(`${command} rest:`)
+			expect(readHeld(base)).toEqual([])
 		})
 
 		it('exits 1 when no requested project held applicable work', async () => {
-			const run = await RunnerFixture.execute(command, ['app:mail'], {
-				script: { passed: { wide: 0, compact: 0, phone: 0 } },
-			})
+			const run = await base.run(command, [
+				'examples:files',
+				'--variant',
+				'light-1280',
+				'--variant',
+				'dark-390',
+			])
 			expect(run.code).toBe(1)
 			expect(run.stderr).toContain('Empty selected workload')
-			expect(run.stdout).toContain(
-				'compact is inapplicable; the rest stage carries app:mail when requested',
-			)
+			expect(readHeld(base)).toEqual([])
 		})
 
 		it('keeps the rest stage when only the first variant held no work', async () => {
-			const run = await RunnerFixture.execute(command, ['app:mail'], {
-				script: { passed: { compact: 0 } },
-			})
-			expect(run.code).toBe(0)
-			expect(run.stdout).toContain('compact is inapplicable')
-			expect(run.engines.flatMap((engine) => engine.stages)).toHaveLength(2)
+			const fixture = new ComposedFixture({ first: 'light-1280' })
+			try {
+				fixture.seed()
+				const run = await fixture.run(command, ['examples:files'])
+				expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+				expect(run.stdout).toContain(
+					'light-1280 is inapplicable; the rest stage carries examples:files when requested',
+				)
+				expect(run.stdout).toContain(`${command} narrow: light-1280;`)
+				expect(run.stdout).toContain(`${command} rest: dark-1280, light-390, dark-390;`)
+			} finally {
+				fixture.destroy()
+			}
 		})
-	})
+	},
+)
 
+describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('removes an inherited capture variable under journey', async () => {
-		const run = await RunnerFixture.execute('journey', ['app:mail', '--variant', 'compact'], {
+		const run = await base.run('journey', ['pages:mail', '--variant', COMPOSED_FIRST], {
 			environment: { Capture: '1' },
 		})
-		expect(run.code).toBe(0)
-		expect(readRunnerReceipt(run).capture).toEqual([])
+		expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+		expect(readReceipt(base)).toMatchObject({ capture: [], parent: process.pid })
 	})
 
 	it('replaces an inherited capture variable with one CAPTURE under capture', async () => {
-		const run = await RunnerFixture.execute('capture', ['app:mail', '--variant', 'compact'], {
+		const run = await base.run('capture', ['pages:mail', '--variant', COMPOSED_FIRST], {
 			environment: { Capture: 'old' },
 		})
-		expect(run.code).toBe(0)
-		expect(readRunnerReceipt(run).capture).toEqual([['CAPTURE', '1']])
+		expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+		expect(readReceipt(base)).toMatchObject({ capture: [['CAPTURE', '1']], parent: process.pid })
 	})
 
-	it('refuses journey state projection before spawning', async () => {
-		const run = await RunnerFixture.execute('journey', [
-			'app:mail',
-			'--variant',
-			'compact',
-			'--state',
-			'inbox',
-		])
+	it('refuses journey state projection before any execution child starts', async () => {
+		const run = await base.run('journey', ['pages:mail', '--state', 'mail-reader'])
 		expect(run.code).toBe(64)
 		expect(run.stderr).toContain('State selection is available only to capture and stale')
-		expect(run.receipt).toBeUndefined()
-		expect(run.request).toBe(false)
+		expect(run.stdout).not.toMatch(STAGE_LINE)
 	})
 
-	it('resolves a state through the engine and selects its declaring case without widening', async () => {
-		const run = await RunnerFixture.execute(
-			'capture',
-			['app:mail', '--variant', 'compact', '--state', 'inbox'],
-			{ script: { lookup: { case: RUNNER_CASE } } },
-		)
-		expect(run.code).toBe(0)
-		const engine = requireValue(run.engines.at(0), 'The runner created no engine')
-		expect(engine.lookups).toEqual([
-			{ selector: 'app:mail', variants: ['compact'], state: 'inbox' },
+	it('resolves a state through the real engine and selects its declaring case without widening', async () => {
+		const journey = await base.run('journey', ['pages:mail', '--variant', COMPOSED_FIRST])
+		expect(journey.code === 0 ? 0 : journey.stderr).toBe(0)
+		const run = await base.run('capture', [
+			'pages:mail',
+			'--state',
+			'mail-reader',
+			'--variant',
+			COMPOSED_FIRST,
 		])
-		expect(readRunnerReceipt(run).request).toMatchObject({
-			state: 'inbox',
-			case: RUNNER_CASE,
-			variants: ['compact'],
+		expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+		expect(run.stdout).toContain(`capture narrow: ${COMPOSED_FIRST}; pages:mail (case-scoped);`)
+		expect(readRequest(base, run.stdout, 'narrow', COMPOSED_FIRST)).toMatchObject({
+			state: 'mail-reader',
+			case: MAIL,
+			variants: [COMPOSED_FIRST],
 		})
-	})
-
-	it.each([
-		{ title: 'a missing lookup', fault: 'Refresh explicitly with: capture journey app:mail' },
-		{
-			title: 'a stale lookup',
-			fault: 'The lookup is stale: capture journey app:mail --variant compact',
-		},
-		{ title: 'a state outside the selector', fault: 'State board is not owned by app:mail' },
-	])('refuses $title without an automatic process', async ({ fault }) => {
-		const run = await RunnerFixture.execute(
-			'capture',
-			['app:mail', '--variant', 'compact', '--state', 'inbox'],
-			{ script: { lookup: { fault } } },
-		)
-		expect(run.code).toBe(64)
-		expect(run.stderr).toContain(fault)
-		expect(run.receipt).toBeUndefined()
-		expect(run.request).toBe(false)
 	})
 
 	it('passes an explicit case with its state so the engine can refuse a disagreement', async () => {
-		const run = await RunnerFixture.execute(
-			'capture',
-			['app:mail', '--variant', 'compact', '--state', 'inbox', '--case', 'another case'],
-			{ script: { lookup: { fault: 'The case disagrees with the state' } } },
-		)
-		expect(run.code).toBe(64)
-		expect(requireValue(run.engines.at(0)).lookups).toEqual([
-			{ selector: 'app:mail', variants: ['compact'], state: 'inbox', case: 'another case' },
+		const run = await base.run('capture', [
+			'pages:mail',
+			'--state',
+			'mail-reader',
+			'--case',
+			BOARD,
+			'--variant',
+			COMPOSED_FIRST,
 		])
+		expect(run.code).toBe(64)
+		expect(run.stderr).toContain('State declaring case disagrees')
+		expect(run.stdout).not.toMatch(STAGE_LINE)
+		expect(readHeld(base)).toEqual([])
 	})
 
 	it('preserves a live runner request, prunes a dead one and its temporary file, and removes its own', async () => {
-		const run = await RunnerFixture.execute('journey', ['app:mail', '--variant', 'compact'], {
-			ownership: true,
-		})
-		expect(run.code).toBe(0)
-		expect(run.live).toBe('live request bytes\n')
-		expect(run.pending).toBe('live temporary bytes\n')
-		const { files } = readRunnerReceipt(run)
-		expect(files).toContain(`journey-selection-${String(process.pid)}.json`)
-		expect(files).not.toContain(`journey-selection-${String(run.dead)}.json`)
-		expect(files).not.toContain(`journey-selection-${String(run.dead)}.json.tmp`)
-		expect(run.stale).toBe(false)
-		expect(run.abandoned).toBe(false)
-		expect(run.request).toBe(false)
-		expect(run.temporary).toBe(false)
+		const live = await startSleeper()
+		const held = `${base.requests}/journey-selection-${String(live.pid)}`
+		const dead = `${base.requests}/journey-selection-${String(await readExitedPid())}`
+		try {
+			base.write(`${held}.json`, 'live request bytes\n')
+			base.write(`${held}.json.tmp`, 'live temporary bytes\n')
+			base.write(`${dead}.json`, 'dead request bytes\n')
+			base.write(`${dead}.json.tmp`, 'dead temporary bytes\n')
+			const run = await base.run('journey', ['pages:mail', '--variant', COMPOSED_FIRST])
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+			const names = readdirSync(resolve(base.root, base.requests))
+			expect(base.read(`${held}.json`).toString('utf8')).toBe('live request bytes\n')
+			expect(base.read(`${held}.json.tmp`).toString('utf8')).toBe('live temporary bytes\n')
+			expect(
+				names.filter((name) => name.startsWith(`journey-selection-${String(process.pid)}`)),
+			).toEqual([])
+			const deadName = dead.slice(dead.lastIndexOf('/') + 1)
+			expect(names).not.toContain(`${deadName}.json`)
+			expect(names).not.toContain(`${deadName}.json.tmp`)
+		} finally {
+			await stopFixtureChild(live)
+			for (const name of [held, dead])
+				for (const suffix of ['.json', '.json.tmp']) rmFile(base, name + suffix)
+		}
 	})
 
-	it('ends the recorded child and its descendant on an interrupt, removes the request, and restores the handlers', async () => {
-		const run = await RunnerFixture.execute('journey', ['app:mail', '--variant', 'compact'], {
-			mode: 'interrupt',
+	it('ends the recorded child and its descendant on an interrupt, withdraws the request, and restores the handlers', async () => {
+		const before = [process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]
+		const manifest = readFixtureManifest(base.root)
+		const run = await base.run('capture', ['pages:mail', '--variant', COMPOSED_FIRST], {
+			environment: { CAPTURE_PRODUCER_MODE: 'hang' },
 			interrupt: 'emit',
 		})
 		expect(run.code).toBe(1)
-		expect(run.request).toBe(false)
-		expect(run.temporary).toBe(false)
-		expect(run.listeners.after).toBe(run.listeners.before)
-		const stage = requireValue(run.engines.at(0)?.stages.at(0), 'The runner ran no stage')
-		expect(stage.signal?.aborted).toBe(true)
-		expect(isCaptureError(stage.signal?.reason)).toBe(true)
-		const tree = run.tree
-		if (
-			typeof tree !== 'object' ||
-			tree === null ||
-			!('child' in tree) ||
-			!('descendant' in tree) ||
-			typeof tree.child !== 'number' ||
-			typeof tree.descendant !== 'number'
-		)
-			throw new Error('Missing descendant receipt')
-		expect(isRunning(tree.child)).toBe(false)
-		expect(isRunning(tree.descendant)).toBe(false)
-		expect(run.engines.flatMap((engine) => engine.stages)).toHaveLength(1)
+		expect(run.stdout).not.toContain('capture rest:')
+		const pids = base.readReady()
+		expect(pids).toHaveLength(2)
+		expect(pids.filter((pid) => isRunning(pid))).toEqual([])
+		expect(readHeld(base)).toEqual([])
+		expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]).toEqual(before)
+		expect(readFixtureManifest(base.root)).toBe(manifest)
 	})
 
 	// Windows has no signal a process group can receive, so a real signal reaches the installed
-	// handler only on a POSIX host. This reading signals the runner's own process, which on POSIX
-	// runs the handler instead of ending the process; the process-group reading through the built
-	// executable waits for it (U5), and until a POSIX host runs this case it is an unrun limit.
+	// handler only on a POSIX host. This reading signals the runner's own process, which on POSIX runs
+	// the handler instead of ending the process; the process-group reading through the built
+	// executable waits for a POSIX host, and until one runs this case it is an unrun limit.
 	it.runIf(SUPPORTS_GROUP_SIGNAL)(
 		'ends the recorded child and its descendant on a real SIGINT',
 		async () => {
-			const run = await RunnerFixture.execute('journey', ['app:mail', '--variant', 'compact'], {
-				mode: 'interrupt',
+			const run = await base.run('journey', ['pages:mail', '--variant', COMPOSED_FIRST], {
+				environment: { CAPTURE_PRODUCER_MODE: 'hang' },
 				interrupt: 'signal',
 			})
 			expect(run.code).toBe(1)
-			expect(run.request).toBe(false)
-			expect(run.listeners.after).toBe(run.listeners.before)
-			expect(run.engines.flatMap((engine) => engine.stages)).toHaveLength(1)
+			expect(base.readReady().filter((pid) => isRunning(pid))).toEqual([])
+			expect(readHeld(base)).toEqual([])
 		},
 	)
 })
 
-describe('CaptureRunner stale command', { timeout: FIXTURE_TIMEOUT }, () => {
-	it('exits 0 for current frames, 1 for a noncurrent frame, and spawns no child', async () => {
-		const current = await RunnerFixture.execute('stale', ['app:mail', '--variant', 'compact'])
-		expect(current.code).toBe(0)
-		expect(current.stdout).toContain('"status":"current"')
-		expect(current.receipt).toBeUndefined()
-		const noncurrent = await RunnerFixture.execute('stale', ['app:mail', '--variant', 'compact'], {
-			script: { statuses: ['current', 'stale-own'] },
+describe('CaptureRunner wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('resolves a labeled-object project name and refuses an unsupported one before any execution child', async () => {
+		const fixture = new ComposedFixture()
+		try {
+			fixture.seed()
+			const labeled = await fixture.run('journey', ['pages:mail', '--variant', COMPOSED_FIRST])
+			expect(labeled.code === 0 ? 0 : labeled.stderr).toBe(0)
+			fixture.write(
+				fixture.config,
+				fixture
+					.read(fixture.config)
+					.toString('utf8')
+					.replaceAll('"label":"journey:', '"label":42,"was":"journey:'),
+			)
+			const run = await fixture.run('journey', ['pages:mail', '--variant', COMPOSED_FIRST])
+			expect(run.code).toBe(1)
+			expect(run.stderr).toContain(
+				'Unsupported journey project name: expected a string or an object with a string label',
+			)
+			expect(run.stdout).not.toMatch(STAGE_LINE)
+			expect(readHeld(fixture)).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('refuses wrapper projects that disagree on a host declaration before any execution child', async () => {
+		const fixture = new ComposedFixture()
+		try {
+			fixture.seed()
+			fixture.write(
+				fixture.config,
+				fixture.read(fixture.config).toString('utf8').replace(READER_CLOSING, 'closes another run'),
+			)
+			const run = await fixture.run('journey', ['pages:mail'])
+			expect(run.code).toBe(1)
+			expect(run.stderr).toContain('Host project integrity declarations disagree')
+			expect(run.stdout).not.toMatch(STAGE_LINE)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('refuses a wrapper that sits outside the repository before discovering it', async () => {
+		const run = await base.run('journey', [
+			'pages:mail',
+			'--config',
+			resolve(base.root, '..', 'outside.config.ts'),
+		])
+		expect(run.code).toBe(64)
+		expect(run.stderr).toContain('Config must be a contained repository path')
+		expect(run.stdout).toBe('')
+	})
+
+	it('refuses a wrapper that does not exist before any child starts', async () => {
+		const run = await base.run('journey', ['pages:mail', '--config', 'configs/missing.config.ts'])
+		expect(run.code).toBe(64)
+		expect(run.stderr).toContain('Cannot find the journey wrapper')
+		expect(run.stdout).toBe('')
+	})
+
+	it('refuses a wrapper that never answers, naming it, and starts no execution child', async () => {
+		const run = await base.run('journey', ['pages:mail'], {
+			environment: { CAPTURE_PRODUCER_DISCOVERY: 'silent' },
 		})
-		expect(noncurrent.code).toBe(1)
-		expect(noncurrent.stdout).toContain('"status":"stale-own"')
-		expect(noncurrent.receipt).toBeUndefined()
+		expect(run.code).toBe(1)
+		expect(run.stderr).toContain('answered no discovery request')
+		expect(run.stdout).not.toMatch(STAGE_LINE)
+		expect(readHeld(base)).toEqual([])
+	})
+
+	it('refuses a wrapper whose answer is a replay of another exchange, and starts no execution child', async () => {
+		const run = await base.run('journey', ['pages:mail'], {
+			environment: { CAPTURE_PRODUCER_DISCOVERY: 'replay' },
+		})
+		expect(run.code).toBe(1)
+		expect(run.stderr).toContain('answers another challenge')
+		expect(run.stdout).not.toMatch(STAGE_LINE)
+	})
+
+	it('ends a wrapper that hangs at the deadline and refuses it without any execution child', async () => {
+		const run = await base.run('journey', ['pages:mail'], {
+			environment: { CAPTURE_PRODUCER_DISCOVERY: 'hang' },
+			deadline: 1_500,
+		})
+		expect(run.code).toBe(1)
+		expect(run.stderr).toContain('did not finish within')
+		expect(run.stdout).not.toMatch(STAGE_LINE)
+		expect(readHeld(base)).toEqual([])
+	})
+})
+
+describe('CaptureRunner stale command', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('exits 0 for current frames, 1 for a noncurrent frame, and starts no execution child', async () => {
+		const fixture = new ComposedFixture()
+		try {
+			fixture.seed()
+			await fixture.capture({ variants: [...VARIANTS] })
+			const current = await fixture.run('stale', ['pages:mail', '--variant', COMPOSED_FIRST])
+			expect(current.code).toBe(0)
+			expect(new Set(readStatuses(current.stdout))).toEqual(new Set(['current']))
+			expect(current.stdout).not.toMatch(STAGE_LINE)
+			fixture.write('src/mail/view.ts', '// edited after the capture\n')
+			const noncurrent = await fixture.run('stale', ['pages:mail', '--variant', COMPOSED_FIRST])
+			expect(noncurrent.code).toBe(1)
+			expect(new Set(readStatuses(noncurrent.stdout))).toEqual(new Set(['stale-own']))
+			expect(noncurrent.stdout).not.toMatch(STAGE_LINE)
+		} finally {
+			fixture.destroy()
+		}
 	})
 
 	it('refuses an invalid reading with exit 64 and a missing selector with the usage', async () => {
-		const invalid = await RunnerFixture.execute('stale', ['app:unknown'], {
-			script: { checkFault: 'Unknown selector: app:unknown' },
-		})
+		const invalid = await base.run('stale', ['pages:unknown'])
 		expect(invalid.code).toBe(64)
-		expect(invalid.stderr).toContain('Unknown selector: app:unknown')
-		const bare = await RunnerFixture.execute('stale', [])
+		expect(invalid.stderr).toContain('Empty or unknown selector')
+		const bare = await base.run('stale', [])
 		expect(bare.code).toBe(64)
 		expect(bare.stderr).toContain('capture stale <selector>')
 	})
 
-	it('passes the selection, declared variants, and flags to the engine unchanged', async () => {
-		const run = await RunnerFixture.execute('stale', [
-			'app:mail',
-			'--variant',
-			'compact',
-			'--state',
-			'inbox',
-			'--case',
-			RUNNER_CASE,
-			'--portfolio',
-			'extras',
-		])
-		expect(requireValue(run.engines.at(0)).checks).toEqual([
-			{
-				selector: 'app:mail',
-				declared: ['wide', 'compact', 'phone'],
-				variants: ['compact'],
-				case: RUNNER_CASE,
-				state: 'inbox',
-				portfolio: 'extras',
-			},
-		])
+	it('refuses a wrapper-declared variant the registry never attested when the variant is omitted', async () => {
+		const attested = VARIANTS.filter((variant) => variant !== 'light-1280')
+		const fixture = new ComposedFixture()
+		const control = new ComposedFixture()
+		try {
+			fixture.seed({ variants: attested })
+			await fixture.capture({ variants: attested })
+			control.seed()
+			await control.capture({ variants: [...VARIANTS] })
+			for (const args of [['examples:board'], ['examples:files', '--portfolio', 'files-focused']]) {
+				const current = await control.run('stale', args)
+				expect({
+					args,
+					code: current.code,
+					failure: current.code === 0 ? undefined : current.stdout + current.stderr,
+				}).toEqual({
+					args,
+					code: 0,
+					failure: undefined,
+				})
+				const refused = await fixture.run('stale', args)
+				expect({ args, code: refused.code, reading: refused.stdout.includes(INTEGRITY) }).toEqual({
+					args,
+					code: 64,
+					reading: false,
+				})
+				expect(refused.stderr).toContain('Unattested declared variant: light-1280')
+			}
+			const explicit = await fixture.run('stale', ['examples:board', '--variant', COMPOSED_FIRST])
+			expect({
+				code: explicit.code,
+				failure: explicit.code === 0 ? undefined : explicit.stdout + explicit.stderr,
+			}).toEqual({
+				code: 0,
+				failure: undefined,
+			})
+		} finally {
+			fixture.destroy()
+			control.destroy()
+		}
 	})
 
-	it.each([
-		{ title: 'the selector', args: ['gallery:summer'] },
-		{ title: 'the portfolio flag', args: ['app:mail', '--portfolio', 'gallery'] },
-	])(
-		'reads a standalone portfolio through its own registry when $title names it',
-		async ({ args }) => {
-			const run = await RunnerFixture.execute('stale', args)
-			const engine = requireValue(run.engines.at(0), 'The runner created no engine')
-			expect(engine.options).toMatchObject({
-				directory: 'out/gallery',
-				registry: 'out/gallery/registry.json',
-				manifest: 'out/gallery/manifest.json',
-				lookups: 'out/gallery/lookups.json',
-				portfolios: [...RUNNER_STANDALONE],
+	it('checks primary and auxiliary Files frames through the runner when the variant is omitted', async () => {
+		const fixture = new ComposedFixture()
+		try {
+			fixture.seed({ population: 'files' })
+			await fixture.capture({ population: 'files', variants: [...VARIANTS] })
+			const current = await fixture.run('stale', ['examples:files'])
+			expect({
+				code: current.code,
+				failure: current.code === 0 ? undefined : current.stdout + current.stderr,
+			}).toEqual({
+				code: 0,
+				failure: undefined,
 			})
-		},
-	)
+			for (const file of [
+				'tmp/captures/states/examples/files-empty--light-390.png',
+				'tmp/captures/states/examples/files-empty--dark-1280.png',
+				'tmp/captures/files-focused/files-reading--light-320.png',
+				'tmp/captures/files-focused/files-reading--dark-320.png',
+			])
+				expect(current.stdout).toContain(`"file":"${file}","state"`)
+			rmFile(fixture, 'tmp/captures/states/examples/files-empty--light-390.png')
+			const missing = await fixture.run('stale', ['examples:files'])
+			expect(missing.code).toBe(1)
+			expect(missing.stdout).toContain(
+				'"file":"tmp/captures/states/examples/files-empty--light-390.png","state":"files-empty","variant":"light-390","status":"missing"',
+			)
+			const focused = await fixture.run('stale', ['examples:files', '--portfolio', 'files-focused'])
+			expect({ code: focused.code, primary: focused.stdout.includes('files-empty') }).toEqual({
+				code: 0,
+				primary: false,
+			})
+			expect((await fixture.run('stale', ['examples:board'])).code).toBe(0)
+		} finally {
+			fixture.destroy()
+		}
+	})
 
-	it('reads the primary registry for a selector that names no standalone portfolio', async () => {
-		const run = await RunnerFixture.execute('stale', ['app:mail'])
-		expect(requireValue(run.engines.at(0)).options).toMatchObject({
-			directory: RUNNER_DIRECTORY,
-			portfolios: [...RUNNER_PORTFOLIOS],
-		})
+	it('keeps stale all to the browser scopes and reports Vue only under its own selection', async () => {
+		const fixture = new ComposedFixture()
+		try {
+			fixture.seed()
+			await fixture.capture({ variants: [...VARIANTS] })
+			fixture.seed({ vue: true })
+			const browser = await fixture.run('stale', ['all'])
+			expect({
+				code: browser.code,
+				failure: browser.code === 0 ? undefined : browser.stdout + browser.stderr,
+			}).toEqual({
+				code: 0,
+				failure: undefined,
+			})
+			expect(browser.stdout).toContain('files-reading--dark-320.png')
+			expect(browser.stdout).not.toContain('vue-home')
+			for (const args of [['vue'], ['all', '--portfolio', 'vue']]) {
+				const vue = await fixture.run('stale', args)
+				expect(vue.code).toBe(1)
+				expect(vue.stdout).toContain(
+					'"file":"tmp/captures/vue/vue-home--light-390.png","state":"vue-home","variant":"light-390","status":"unstamped"',
+				)
+				expect(vue.stdout).not.toContain('tmp/captures/states')
+			}
+		} finally {
+			fixture.destroy()
+		}
 	})
 })

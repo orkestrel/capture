@@ -7,6 +7,7 @@ class Reporter {
 			`${JSON.stringify({
 				cwd: realpathSync(process.cwd()),
 				capture: Object.entries(process.env).filter(([name]) => name.toLowerCase() === 'capture'),
+				requests: process.env.CAPTURE_REQUESTS,
 			})}\n`,
 		)
 		process.stderr.write('reporter stderr\n')

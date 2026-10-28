@@ -204,7 +204,8 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 			expect(result.stderr).toContain(REFUSAL)
 			expect(result.stdout).toBe('')
 			expect(existsSync(resolve(fixture.root, output, 'index.json'))).toBe(false)
-			if (!prepare) expect(existsSync(resolve(fixture.root, output))).toBe(false)
+			// The directory exists only where the case made it first: a refusal creates none of its own.
+			expect(existsSync(resolve(fixture.root, output))).toBe(prepare)
 			// A fresh directory beside the refusals still writes.
 			const accepted = await fixture.run('contact-sheets', [
 				'pages:mail',

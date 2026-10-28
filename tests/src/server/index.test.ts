@@ -5,21 +5,29 @@ import { describe, expect, it } from 'vitest'
 // list is a floor: reconcile it with the other modules' lists into one exact set at the barrel.
 const ENGINE_VALUES = [
 	'CAPTURE_DEFAULTS',
+	'CAPTURE_DISCOVERY',
+	'CAPTURE_REQUESTS_FLAG',
 	'CAPTURE_REGISTRY_FLAGS',
 	'CAPTURE_REGISTRY_LINE',
 	'CAPTURE_REGISTRY_STAGE',
 	'CAPTURE_SUBCOMMANDS',
 	'CAPTURE_USAGE',
+	'CaptureDiscovery',
 	'CaptureIntegrity',
 	'CapturePreflight',
 	'CaptureRegistrar',
 	'CaptureSheets',
+	'answerCaptureDiscovery',
+	'buildCaptureDiscoveryConfig',
+	'createCaptureDiscovery',
 	'createCaptureRegistrar',
-	'loadCaptureProjects',
+	'readCaptureDescription',
+	'readCaptureEntry',
+	'resolveCaptureRequests',
+	'resolveCaptureWrapperProject',
 	'readCaptureInputs',
 	'readCaptureRegistryArguments',
 	'readCaptureRunning',
-	'readCaptureWrapperProject',
 	'writeCaptureDocument',
 	'buildCaptureDigest',
 	'buildCaptureIntegrityOptions',
@@ -56,8 +64,11 @@ describe('src server entry', () => {
 	})
 
 	it('resolves every integrity engine value', () => {
-		for (const name of ENGINE_VALUES) {
-			expect(Reflect.get(entry, name), `${name} resolved to undefined`).toBeDefined()
-		}
+		expect(ENGINE_VALUES.filter((name) => Reflect.get(entry, name) === undefined)).toEqual([])
+	})
+
+	it('publishes no loader of the wrapper, because the package imports neither Vite nor Vitest', () => {
+		expect(Object.keys(entry)).not.toContain('loadCaptureProjects')
+		expect(Object.keys(entry)).not.toContain('readCaptureWrapperProject')
 	})
 })

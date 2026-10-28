@@ -39,7 +39,7 @@ function execute(args: readonly string[], environment: Readonly<Record<string, s
 
 describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('is built, opens with the interpreter line, and names the executable the manifest publishes', () => {
-		expect(existsSync(BUILT), 'run `npm run build` before this proof').toBe(true)
+		expect(existsSync(BUILT) ? BUILT : 'run `npm run build` before this proof').toBe(BUILT)
 		expect(readFileSync(BUILT, 'utf8')).toMatch(/^#!\/usr\/bin\/env node\r?\n/u)
 		const manifest: unknown = parseJSON(readFileSync(resolve(ROOT, 'package.json'), 'utf8'))
 		expect(isRecord(manifest) && isRecord(manifest.bin) ? manifest.bin.capture : undefined).toBe(
@@ -53,7 +53,8 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 			const run = execute(argv)
 			expect(run.status).toBe(64)
 			expect(run.stderr).toContain(reason)
-			expect(run.stdout).toBe('')
+			// A refusal after discovery prints the discovery child's id and no report or stage line.
+			expect(run.stdout.replaceAll(/^pid=\d+\r?\n/gmu, '')).toBe('')
 		},
 	)
 
@@ -72,27 +73,27 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 
 	it('refreshes the registry, runs a journey, captures frames, and reads them as current', () => {
 		const registry = execute(['registry'])
-		expect(registry.status, registry.stderr).toBe(0)
+		expect(registry.status === 0 ? 0 : registry.stderr).toBe(0)
 		expect(registry.stdout).toContain('REGISTRY {')
 		expect(existsSync(resolve(fixture.root, COMPOSED_DIRECTORY, 'registry.json'))).toBe(true)
 		const journey = execute(['journey', 'pages:mail', '--variant', 'light-390'])
-		expect(journey.status, journey.stderr).toBe(0)
+		expect(journey.status === 0 ? 0 : journey.stderr).toBe(0)
 		expect(journey.stdout).toContain('journey narrow: light-390; pages:mail;')
 		expect(readFixtureManifest(fixture.root)).toBeUndefined()
 		const frames = execute(['frames', 'pages:mail', '--variant', 'light-390'], {
 			CAPTURE_PRODUCER_PICTURE: '1',
 		})
-		expect(frames.status, frames.stderr).toBe(0)
+		expect(frames.status === 0 ? 0 : frames.stderr).toBe(0)
 		expect(frames.stdout).toContain('capture narrow: light-390; pages:mail;')
 		expect(readFixtureManifest(fixture.root)).toBeDefined()
 		const stale = execute(['stale', 'pages:mail', '--variant', 'light-390'])
-		expect(stale.status, stale.stdout).toBe(0)
+		expect(stale.status === 0 ? 0 : stale.stdout).toBe(0)
 		expect(stale.stdout.match(/"status":"current"/gu)).toHaveLength(3)
 	})
 
 	it('reads the captured frames through the preflight and writes their contact sheets', () => {
 		const preflight = execute(['preflight', 'pages:mail', '--variant', 'light-390'])
-		expect(preflight.status, preflight.stderr).toBe(0)
+		expect(preflight.status === 0 ? 0 : preflight.stderr).toBe(0)
 		expect(preflight.stdout).toContain('READER ')
 		const sheets = execute([
 			'sheets',
@@ -102,7 +103,7 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 			'--output',
 			'tmp/sheets',
 		])
-		expect(sheets.status, sheets.stderr).toBe(0)
+		expect(sheets.status === 0 ? 0 : sheets.stderr).toBe(0)
 		expect(existsSync(resolve(fixture.root, 'tmp/sheets/sheet-001.png'))).toBe(true)
 	})
 

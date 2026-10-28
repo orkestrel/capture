@@ -24,6 +24,7 @@ import {
 	isCaptureError,
 	isCapturePath,
 } from '@src/core'
+import { CaptureDiscovery } from './CaptureDiscovery.js'
 import { CaptureIntegrity } from './CaptureIntegrity.js'
 import { CaptureInvocation } from './CaptureInvocation.js'
 import {
@@ -38,7 +39,6 @@ import {
 	buildCaptureArguments,
 	buildCaptureFilter,
 	describeCaptureSelectorFault,
-	loadCaptureProjects,
 	readCaptureArguments,
 	requireCaptureProjects,
 	resolveCaptureRelative,
@@ -51,9 +51,9 @@ import {
  * @remarks
  * The wrapper and the installed Vitest supply the registry and the execution protocol, and the
  * wrapper's provided values supply every name the runner uses: the variants, the first-stage
- * variant, the closing case, the portfolio roots, and the request directory the options name. The
- * runner reads the wrapper in process through Vite's `loadConfigFromFile`, with the capture
- * variable set for the inspection and the inherited value restored. It creates one
+ * variant, the closing case, and the portfolio roots. The runner never loads the wrapper itself: a
+ * `CaptureDiscovery` runs the consumer's installed Vitest in discovery mode and reads back the host
+ * description the wrapper writes, so the runner imports neither Vite nor Vitest. It creates one
  * `CaptureInvocation` per `execute` call and holds none of that call's state itself.
  *
  * @example
@@ -96,7 +96,13 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		invocation.attach()
 		try {
 			const parsed = readCaptureArguments(argv, command, root, config)
-			const projects = await loadCaptureProjects(root, parsed.config)
+			const description = await new CaptureDiscovery({
+				root,
+				config: parsed.config,
+				invocation,
+				...(this.#options.deadline === undefined ? {} : { deadline: this.#options.deadline }),
+			}).describe()
+			const projects = description.projects.map((entry) => entry.project)
 			return command === 'stale'
 				? await this.#check(parsed, projects)
 				: await this.#run(invocation, command, parsed, projects)
@@ -158,7 +164,6 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			directory: resolveCaptureRelative(root, primary.directory),
 			config: resolveCaptureRelative(root, parsed.config),
 		}
-		invocation.prepare()
 		const outcomes: CaptureOutcome[] = []
 		for (const stage of resolveCaptureStages(variants, primary.first)) {
 			if (invocation.interrupted) return CAPTURE_EXIT.failed

@@ -120,7 +120,10 @@ export interface CaptureStageProject {
 /**
  * Carries the native child close outcome without treating a signal as a successful exit.
  *
- * @remarks The null values mirror the `close` event of a Node child process.
+ * @remarks
+ * The null values mirror the `close` event of a Node child process. `pid` is the id of the child the
+ * runner spawned, when it spawned one, and `expired` is present and `true` only when the runner ended
+ * the child because its deadline passed.
  *
  * @example
  * ```ts
@@ -130,6 +133,8 @@ export interface CaptureStageProject {
 export interface CaptureExecutionResult {
 	readonly code: number | null
 	readonly signal: NodeJS.Signals | null
+	readonly pid?: number
+	readonly expired?: boolean
 }
 
 /**
@@ -682,16 +687,19 @@ export interface CaptureArgumentsOptions {
  * @remarks
  * `ppid` is the wrapper process's parent id, which names the request file the runner wrote.
  * `argv` is the wrapper process's own arguments after its executable, which the request records
- * exactly. `directory` is the absolute directory that holds request files. `config` is the
- * repository-relative, slash-separated path of the wrapper the request must name. `owners` lists
- * every owner path the wrapper declares and `variants` every variant name it declares.
+ * exactly. `directory` is the directory that holds request files, absolute or relative to the
+ * working directory. The runner names the directory it publishes to in the child's environment, so
+ * a wrapper that omits `directory` reads the runner's own and never has to repeat it; a wrapper
+ * that names one declares it, and it must be the runner's. With neither, the directory is
+ * `CAPTURE_DEFAULTS.requests`. `config` is the repository-relative, slash-separated path of the
+ * wrapper the request must name. `owners` lists every owner path the wrapper declares and
+ * `variants` every variant name it declares.
  *
  * @example
  * ```ts
  * const options: CaptureRequestOptions = {
  * 	ppid: process.ppid,
  * 	argv: process.argv.slice(1),
- * 	directory: '/repo/tmp/units',
  * 	config: 'configs/vite.journey.config.ts',
  * 	owners: ['pages:mail'],
  * 	variants: ['light-390'],
@@ -701,10 +709,189 @@ export interface CaptureArgumentsOptions {
 export interface CaptureRequestOptions {
 	readonly ppid: number
 	readonly argv: readonly string[]
-	readonly directory: string
+	readonly directory?: string
 	readonly config: string
 	readonly owners: readonly string[]
 	readonly variants: readonly string[]
+}
+
+/**
+ * Carries the request the runner publishes for the discovery child that reads its wrapper.
+ *
+ * @remarks
+ * `phase` is always `discover`, which is what tells a wrapper this is no execution request. `nonce`
+ * is the challenge the wrapper must echo in its answer, `pid` the runner's process id, `config` the
+ * repository-relative wrapper path, and `args` the exact arguments the discovery child was spawned
+ * with. The file has the name and location of an execution request, so one lease covers both.
+ *
+ * @example
+ * ```ts
+ * const request: CaptureDiscoveryRequest = {
+ * 	version: 1,
+ * 	phase: 'discover',
+ * 	id: 'run-1',
+ * 	nonce: 'a1b2',
+ * 	config: 'configs/vite.journey.config.ts',
+ * 	pid: 4242,
+ * 	args: ['/repo/node_modules/vitest/vitest.mjs', 'list', '--filesOnly'],
+ * }
+ * ```
+ */
+export interface CaptureDiscoveryRequest {
+	readonly version: 1
+	readonly phase: 'discover'
+	readonly id: string
+	readonly nonce: string
+	readonly config: string
+	readonly pid: number
+	readonly args: readonly string[]
+}
+
+/**
+ * Describes one wrapper project to the runner: its host declarations and, when it has one, its viewport.
+ *
+ * @remarks
+ * The viewport is the geometry of the project's producing variant. A runner command needs none; a
+ * reader refuses a project that declares none.
+ *
+ * @example
+ * ```ts
+ * const entry: CaptureHostEntry = { project, viewport: { name: 'light-390', width: 390, height: 844 } }
+ * ```
+ */
+export interface CaptureHostEntry {
+	readonly project: CaptureProject
+	readonly viewport?: CaptureViewport
+}
+
+/**
+ * Carries the description a wrapper writes back to the runner that discovered it.
+ *
+ * @remarks
+ * `id`, `nonce`, and `config` echo the request. `parent` is the runner's process id the wrapper read
+ * as its own parent and `pid` the wrapper process's own id, so the runner can tie the answer to the
+ * child it spawned. `projects` lists one entry per wrapper project in declaration order.
+ *
+ * @example
+ * ```ts
+ * const description: CaptureHostDescription = {
+ * 	version: 1,
+ * 	id: 'run-1',
+ * 	nonce: 'a1b2',
+ * 	config: 'configs/vite.journey.config.ts',
+ * 	parent: 4242,
+ * 	pid: 4343,
+ * 	projects: [{ project }],
+ * }
+ * ```
+ */
+export interface CaptureHostDescription {
+	readonly version: 1
+	readonly id: string
+	readonly nonce: string
+	readonly config: string
+	readonly parent: number
+	readonly pid: number
+	readonly projects: readonly CaptureHostEntry[]
+}
+
+/**
+ * Names what a description must echo for the runner to accept it.
+ *
+ * @remarks
+ * `id`, `nonce`, and `config` are the request's own. `parent` is the runner's process id and `pid`
+ * the discovery child's, which the runner read from the spawn.
+ *
+ * @example
+ * ```ts
+ * const expected: CaptureDescriptionExpectation = {
+ * 	id: 'run-1',
+ * 	nonce: 'a1b2',
+ * 	config: 'configs/vite.journey.config.ts',
+ * 	parent: process.pid,
+ * 	pid: 4343,
+ * }
+ * ```
+ */
+export interface CaptureDescriptionExpectation {
+	readonly id: string
+	readonly nonce: string
+	readonly config: string
+	readonly parent: number
+	readonly pid: number | undefined
+}
+
+/**
+ * Configures how a wrapper answers the runner's discovery request.
+ *
+ * @remarks
+ * `ppid`, `argv`, `directory`, and `config` are the ones `CaptureRequestOptions` names. `projects`
+ * is the wrapper's own `test.projects` list, each entry an inline project, a promise of one, or a
+ * factory, which the answer resolves the way Vitest does.
+ *
+ * @example
+ * ```ts
+ * const options: CaptureDiscoveryOptions = {
+ * 	ppid: process.ppid,
+ * 	argv: process.argv.slice(1),
+ * 	config: 'configs/vite.journey.config.ts',
+ * 	projects,
+ * }
+ * ```
+ */
+export interface CaptureDiscoveryOptions {
+	readonly ppid: number
+	readonly argv: readonly string[]
+	readonly directory?: string
+	readonly config: string
+	readonly projects: readonly unknown[]
+}
+
+/**
+ * Configures one discovery: the workspace, the wrapper, the invocation that owns the child, and its bounds.
+ *
+ * @remarks
+ * `root` is the absolute workspace path and `config` the absolute wrapper path. `invocation` owns
+ * the request file, the child, and its interruption. `mode` is Vitest's `--mode` value when the
+ * command forwards one. `deadline` bounds the child in milliseconds; default:
+ * `CAPTURE_DISCOVERY.deadline`.
+ *
+ * @example
+ * ```ts
+ * const options: CaptureDiscoveryRunOptions = { root: process.cwd(), config, invocation }
+ * ```
+ */
+export interface CaptureDiscoveryRunOptions {
+	readonly root: string
+	readonly config: string
+	readonly invocation: CaptureInvocationInterface
+	readonly mode?: string
+	readonly deadline?: number
+}
+
+/**
+ * Reads a consumer's wrapper by running its installed Vitest in discovery mode.
+ *
+ * @example
+ * ```ts
+ * const discovery: CaptureDiscoveryInterface = createCaptureDiscovery(options)
+ * ```
+ */
+export interface CaptureDiscoveryInterface {
+	/**
+	 * Publishes the discovery request, runs the wrapper's Vitest as a bounded child, and reads back its description.
+	 *
+	 * @returns The validated host description, accepted only after the exchange and the child's exit both succeeded
+	 * @throws Thrown as a `USAGE` capture error for a wrapper outside the workspace, and as a `HOST`
+	 * capture error for a missing Vitest, an interrupted, failed, or expired child, and a missing,
+	 * replayed, mismatched, or malformed description.
+	 *
+	 * @example
+	 * ```ts
+	 * const { projects } = await discovery.describe()
+	 * ```
+	 */
+	describe(): Promise<CaptureHostDescription>
 }
 
 /**
@@ -854,16 +1041,16 @@ export interface CaptureInvocationInterface {
 	holders(): readonly number[]
 
 	/**
-	 * Writes the stage request atomically, so no reader sees a partial file.
+	 * Writes the stage or discovery request atomically, so no reader sees a partial file.
 	 *
-	 * @param request - The stage request
+	 * @param request - The stage request, or the discovery request that precedes the stages
 	 *
 	 * @example
 	 * ```ts
 	 * invocation.publish(request)
 	 * ```
 	 */
-	publish(request: CaptureRequest): void
+	publish(request: CaptureRequest | CaptureDiscoveryRequest): void
 
 	/**
 	 * Removes this process's request file and its temporary sibling.
@@ -894,14 +1081,20 @@ export interface CaptureInvocationInterface {
 	 * @param args - The Node argument array, starting with the Vitest entry
 	 * @param log - The absolute path of the file that receives the child's output
 	 * @param capture - If `true`, sets the capture variable in the child; if `false`, removes it
-	 * @returns The native close outcome of the child
+	 * @param deadline - Milliseconds after which the runner ends the child's process tree; default: unbounded
+	 * @returns The native close outcome of the child, its process id, and whether the deadline ended it
 	 *
 	 * @example
 	 * ```ts
 	 * const { code } = await invocation.spawn(args, log, true)
 	 * ```
 	 */
-	spawn(args: readonly string[], log: string, capture: boolean): Promise<CaptureExecutionResult>
+	spawn(
+		args: readonly string[],
+		log: string,
+		capture: boolean,
+		deadline?: number,
+	): Promise<CaptureExecutionResult>
 }
 
 /**
@@ -910,11 +1103,13 @@ export interface CaptureInvocationInterface {
  * @remarks
  * `root` is the absolute workspace path. `config` is the repository-relative wrapper default,
  * used when the command line names no `--config`. `requests` is the repository-relative
- * directory that holds the runner's request file, which the wrapper reads back through the same
- * path. `argv` is the command line after the entry name. `stdout` and `stderr` receive the
+ * directory that holds the runner's request file. The runner hands it to every child it spawns in
+ * the `CAPTURE_REQUESTS` variable, so a wrapper that names no directory of its own reads the same
+ * one. `argv` is the command line after the entry name. `stdout` and `stderr` receive the
  * runner's own lines and each child's output; default: the process streams. `integrity` creates
  * the engine from the options the runner derives from the wrapper; default: the package's own
- * engine.
+ * engine. `deadline` bounds the discovery child in milliseconds; default:
+ * `CAPTURE_DISCOVERY.deadline`.
  *
  * @example
  * ```ts
@@ -936,6 +1131,7 @@ export interface CaptureRunnerOptions {
 	readonly stdout?: CaptureWriteHandler
 	readonly stderr?: CaptureWriteHandler
 	readonly integrity?: CaptureIntegrityHandler
+	readonly deadline?: number
 }
 
 /**
@@ -1000,8 +1196,10 @@ export interface CapturePicture {
  * population, and `journeys` is the absolute directory of journey artifacts. `checks`, when
  * supplied, is the path of a module, absolute or relative to `root`, that exports the host's
  * `CAPTURE_CHECKS` list of frame readers. The reader loads it with a dynamic `import()` of the
- * module's file URL, so a TypeScript module needs a Node that strips types. `stdout` receives the
- * report line and `stderr` each refusal; default: the process streams.
+ * module's file URL, so a TypeScript module needs a Node that strips types. `requests` is the
+ * repository-relative directory that holds the discovery request; default: `CAPTURE_DEFAULTS.requests`.
+ * `deadline` bounds the discovery child in milliseconds; default: `CAPTURE_DISCOVERY.deadline`.
+ * `stdout` receives the report line and `stderr` each refusal; default: the process streams.
  *
  * @example
  * ```ts
@@ -1020,6 +1218,8 @@ export interface CaptureReaderOptions {
 	readonly selection: CaptureReadOptions
 	readonly journeys: string
 	readonly checks?: string
+	readonly requests?: string
+	readonly deadline?: number
 	readonly stdout?: CaptureWriteHandler
 	readonly stderr?: CaptureWriteHandler
 }
@@ -1042,9 +1242,11 @@ export interface CaptureProducer extends CaptureViewport {
 }
 
 /**
- * Supplies the wrapper path and the journey artifact directory a reader command line falls back to.
+ * Supplies the wrapper path, the journey artifact directory, and the request directory a reader command line falls back to.
  *
- * @remarks Both are repository-relative; the command line's `--config` and `--journeys` replace them.
+ * @remarks
+ * All are repository-relative; the command line's `--config` and `--journeys` replace the first two.
+ * An omitted `requests` is `CAPTURE_DEFAULTS.requests`.
  *
  * @example
  * ```ts
@@ -1054,6 +1256,7 @@ export interface CaptureProducer extends CaptureViewport {
 export interface CaptureReaderDefaults {
 	readonly config: string
 	readonly journeys: string
+	readonly requests?: string
 }
 
 /**
@@ -1369,7 +1572,8 @@ export interface CaptureRegistryArguments {
  * when the command line names no `--config`. `requests` is the repository-relative directory that
  * holds the request file the wrapper reads back. `argv` is the command line after the subcommand.
  * `stdout` and `stderr` receive the refresh's own lines and each child's output; default: the
- * process streams.
+ * process streams. `deadline` bounds the discovery child in milliseconds; default:
+ * `CAPTURE_DISCOVERY.deadline`.
  *
  * @example
  * ```ts
@@ -1388,6 +1592,7 @@ export interface CaptureRegistrarOptions {
 	readonly argv: readonly string[]
 	readonly stdout?: CaptureWriteHandler
 	readonly stderr?: CaptureWriteHandler
+	readonly deadline?: number
 }
 
 /**

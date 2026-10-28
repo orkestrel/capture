@@ -559,7 +559,7 @@ describe('CapturePreflight wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () =
 		{
 			title: 'a wrapper that declares no projects',
 			text: () => 'export default {}\n',
-			message: 'The reader wrapper declares no projects',
+			message: 'The wrapper declares no projects',
 		},
 		{
 			title: 'projects that disagree on a host declaration',
@@ -602,7 +602,7 @@ describe('CapturePreflight wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () =
 		}
 	})
 
-	it('restores the inherited capture variable after loading the wrapper', async () => {
+	it('leaves the inherited capture variable of this process alone while the wrapper is discovered', async () => {
 		const fixture = new ReaderFixture()
 		try {
 			fixture.seed()

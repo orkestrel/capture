@@ -144,70 +144,77 @@ Pure leaves from [`helpers.ts`](../src/core/helpers.ts). A helper that refuses a
 
 Engine, runner, preflight, and contact-sheet contracts from [`types.ts`](../src/server/types.ts).
 
-| Name                         | Kind      | Summary                                                                                                       |
-| ---------------------------- | --------- | ------------------------------------------------------------------------------------------------------------- |
-| `CaptureCommand`             | type      | Names one command the runner executes: a journey, a frame capture, or a stale reading.                        |
-| `CapturePortfolioRoot`       | interface | Supplies a host-authorized physical portfolio root without repeating its states or variants.                  |
-| `CaptureHashHandler`         | type      | Digests the exact bytes of one file reading and returns the lowercase hexadecimal digest.                     |
-| `CaptureIntegrityOptions`    | interface | Configures the engine's workspace and separate evidence documents.                                            |
-| `CaptureStageProject`        | interface | Supplies one selected project's expected closing record and bounded input population.                         |
-| `CaptureExecutionResult`     | interface | Carries the native child close outcome without treating a signal as a successful exit.                        |
-| `CaptureExecutionHandler`    | type      | Executes the runner's child after the engine captures its input snapshot.                                     |
-| `CaptureStageOptions`        | interface | Binds a stage transaction to its exact request, projects, reporter, and process boundary.                     |
-| `CaptureFileSnapshot`        | interface | Records one physical file's bytes and native modification readings at a stage boundary.                       |
-| `CaptureProjectSnapshot`     | interface | Preserves one project's declared patterns and sorted expansion before execution.                              |
-| `CaptureSnapshot`            | interface | Holds a stage boundary's input populations and existing output identities.                                    |
-| `CaptureProjectResult`       | interface | Reports validated project evidence, retaining empty successful selections explicitly.                         |
-| `CaptureStageResult`         | interface | Reports the successful stage's committed stamps and validated lookup evidence.                                |
-| `CaptureReadOptions`         | interface | Selects a declaration population without requiring current images or passing state lookups.                   |
-| `CaptureStaleOptions`        | interface | Selects a freshness population and names the producing variants the host wrapper declares.                    |
-| `CaptureCheckOptions`        | interface | Selects required output pairs and attributable extras for a freshness reading.                                |
-| `CaptureReadResult`          | interface | Returns the exact current declaration destinations and their complete-anchor identity.                        |
-| `CaptureCheckResult`         | interface | Reports the exact judged population, every mismatch reason, and conservative test warnings.                   |
-| `CaptureLookupOptions`       | interface | Requests a state-to-case resolution before the runner starts any selected project.                            |
-| `CaptureLookupResult`        | interface | Resolves one declaring case and its actual output pairs with their passing evidence.                          |
-| `CaptureRunEvidence`         | interface | Binds a decoded run record to the physical file whose digest authenticated it.                                |
-| `CaptureDirectoryReading`    | interface | Carries one physical-directory ancestry while enumerating logical portfolio paths.                            |
-| `CaptureEvidence`            | interface | Carries accepted registry anchors and separately persisted passing run evidence.                              |
-| `CaptureCollectionEvidence`  | interface | Carries the authenticated external record beside its collection receipt.                                      |
-| `CaptureReceiptInput`        | interface | Supplies a verifier's actual process outcome and exact reporter bytes for registry import.                    |
-| `CaptureIntegrityInterface`  | interface | Defines the shared stage transaction, freshness reading, and state resolution engine.                         |
-| `CaptureProject`             | interface | Preserves the wrapper's host declarations for the runner.                                                     |
-| `CaptureRunnerOptions`       | interface | Configures one runner invocation: its command, its workspace, and the command line it reads.                  |
-| `CaptureRunnerArguments`     | interface | Carries parsed runner arguments while leaving omitted selectors available to the usage diagnostic.            |
-| `CaptureRunnerInterface`     | interface | Drives owner-selected journeys through narrow and remaining variant stages.                                   |
-| `CaptureWriteHandler`        | type      | Writes one chunk of runner output to the stream the host chooses.                                             |
-| `CaptureIntegrityHandler`    | type      | Creates the integrity engine the runner reads and stamps through, from the options it derives.                |
-| `CaptureStagePlan`           | interface | Names one planned stage and the variants it runs in one Vitest process.                                       |
-| `CaptureArgumentsOptions`    | interface | Configures the Vitest argument list one stage spawns with.                                                    |
-| `CaptureRequestOptions`      | interface | Configures how a wrapper reads the runner's request for its own Vitest process.                               |
-| `CaptureOutcome`             | interface | Carries one project's owner-bearing passed work count from a finished stage.                                  |
-| `CaptureRunPlan`             | interface | Carries everything every stage of one invocation shares.                                                      |
-| `CaptureInvocationOptions`   | interface | Configures one runner invocation's identity, workspace, and output.                                           |
-| `CaptureInvocationInterface` | interface | Owns one runner invocation's identity, request file, children, and interruption.                              |
-| `CapturePicture`             | interface | Carries a decoded RGB image for the image checks and the contact sheets.                                      |
-| `CaptureReaderOptions`       | interface | Configures a read-only capture consumer using the wrapper's host declarations.                                |
-| `CaptureProducer`            | interface | Declares the viewport one wrapper project produces beside the project's own name.                             |
-| `CaptureReaderDefaults`      | interface | Supplies the wrapper path and the journey artifact directory a reader command line falls back to.             |
-| `CaptureReaderSelection`     | interface | Returns a reader's authenticated selection and the same engine for pixel classification.                      |
-| `CaptureArtifactReading`     | interface | Carries a judged run record and the verified text of the journey artifact it names.                           |
-| `CaptureJudgedRecord`        | interface | Names the run record a judged frame's stamp points at and the case that stamped it.                           |
-| `CaptureJudgedFrame`         | interface | Pairs a judged frame with its verified artifact, when one was read, and its coverage issues.                  |
-| `CaptureImageReading`        | interface | Records one selected image's real bytes, geometry, and canonical destination.                                 |
-| `CaptureCheckFrame`          | interface | Carries one judged frame to a host check: its destination, its decoded pixels, and its artifact.              |
-| `CaptureCheckHandler`        | type      | Reads one judged frame against a host rule and returns the issues it finds, none when it passes.              |
-| `CapturePreflightResult`     | interface | Reports selected image checks without upgrading their engine freshness classifications.                       |
-| `CapturePreflightInterface`  | interface | Reads the selected population's frames and reports their freshness, framing, and coverage.                    |
-| `CaptureSheetOptions`        | interface | Carries a contact-sheet output request separately from the population selection.                              |
-| `CaptureSheetCell`           | interface | Holds one contact-sheet cell: a frame's destination, its shrunk picture, and what the sheet reports about it. |
-| `CaptureSheetGroup`          | interface | Holds the cells of one portfolio, owner, and state side by side as one composite picture.                     |
-| `CaptureSheetRow`            | interface | Holds a pair of groups side by side as one composite picture.                                                 |
-| `CaptureSheetPage`           | interface | Holds one written sheet: its file name, the rows it stacks, and the composite picture.                        |
-| `CaptureReaderCommand`       | interface | Carries parsed reader arguments and an optional contact-sheet output directory.                               |
-| `CaptureSheetsInterface`     | interface | Composes exactly the authenticated sparse state and output pairs for iteration review.                        |
-| `CaptureRegistryArguments`   | interface | Carries the parsed registry command line: the wrapper, the variants to refresh, and the mode.                 |
-| `CaptureRegistrarOptions`    | interface | Configures one registry refresh: its workspace, wrapper default, request directory, and command line.         |
-| `CaptureRegistrarInterface`  | interface | Refreshes the accepted registry from one complete capture-free journey per producing variant.                 |
+| Name                            | Kind      | Summary                                                                                                                   |
+| ------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `CaptureCommand`                | type      | Names one command the runner executes: a journey, a frame capture, or a stale reading.                                    |
+| `CapturePortfolioRoot`          | interface | Supplies a host-authorized physical portfolio root without repeating its states or variants.                              |
+| `CaptureHashHandler`            | type      | Digests the exact bytes of one file reading and returns the lowercase hexadecimal digest.                                 |
+| `CaptureIntegrityOptions`       | interface | Configures the engine's workspace and separate evidence documents.                                                        |
+| `CaptureStageProject`           | interface | Supplies one selected project's expected closing record and bounded input population.                                     |
+| `CaptureExecutionResult`        | interface | Carries the native child close outcome without treating a signal as a successful exit.                                    |
+| `CaptureExecutionHandler`       | type      | Executes the runner's child after the engine captures its input snapshot.                                                 |
+| `CaptureStageOptions`           | interface | Binds a stage transaction to its exact request, projects, reporter, and process boundary.                                 |
+| `CaptureFileSnapshot`           | interface | Records one physical file's bytes and native modification readings at a stage boundary.                                   |
+| `CaptureProjectSnapshot`        | interface | Preserves one project's declared patterns and sorted expansion before execution.                                          |
+| `CaptureSnapshot`               | interface | Holds a stage boundary's input populations and existing output identities.                                                |
+| `CaptureProjectResult`          | interface | Reports validated project evidence, retaining empty successful selections explicitly.                                     |
+| `CaptureStageResult`            | interface | Reports the successful stage's committed stamps and validated lookup evidence.                                            |
+| `CaptureReadOptions`            | interface | Selects a declaration population without requiring current images or passing state lookups.                               |
+| `CaptureStaleOptions`           | interface | Selects a freshness population and names the producing variants the host wrapper declares.                                |
+| `CaptureCheckOptions`           | interface | Selects required output pairs and attributable extras for a freshness reading.                                            |
+| `CaptureReadResult`             | interface | Returns the exact current declaration destinations and their complete-anchor identity.                                    |
+| `CaptureCheckResult`            | interface | Reports the exact judged population, every mismatch reason, and conservative test warnings.                               |
+| `CaptureLookupOptions`          | interface | Requests a state-to-case resolution before the runner starts any selected project.                                        |
+| `CaptureLookupResult`           | interface | Resolves one declaring case and its actual output pairs with their passing evidence.                                      |
+| `CaptureRunEvidence`            | interface | Binds a decoded run record to the physical file whose digest authenticated it.                                            |
+| `CaptureDirectoryReading`       | interface | Carries one physical-directory ancestry while enumerating logical portfolio paths.                                        |
+| `CaptureEvidence`               | interface | Carries accepted registry anchors and separately persisted passing run evidence.                                          |
+| `CaptureCollectionEvidence`     | interface | Carries the authenticated external record beside its collection receipt.                                                  |
+| `CaptureReceiptInput`           | interface | Supplies a verifier's actual process outcome and exact reporter bytes for registry import.                                |
+| `CaptureIntegrityInterface`     | interface | Defines the shared stage transaction, freshness reading, and state resolution engine.                                     |
+| `CaptureProject`                | interface | Preserves the wrapper's host declarations for the runner.                                                                 |
+| `CaptureRunnerOptions`          | interface | Configures one runner invocation: its command, its workspace, and the command line it reads.                              |
+| `CaptureRunnerArguments`        | interface | Carries parsed runner arguments while leaving omitted selectors available to the usage diagnostic.                        |
+| `CaptureRunnerInterface`        | interface | Drives owner-selected journeys through narrow and remaining variant stages.                                               |
+| `CaptureWriteHandler`           | type      | Writes one chunk of runner output to the stream the host chooses.                                                         |
+| `CaptureIntegrityHandler`       | type      | Creates the integrity engine the runner reads and stamps through, from the options it derives.                            |
+| `CaptureStagePlan`              | interface | Names one planned stage and the variants it runs in one Vitest process.                                                   |
+| `CaptureArgumentsOptions`       | interface | Configures the Vitest argument list one stage spawns with.                                                                |
+| `CaptureRequestOptions`         | interface | Configures how a wrapper reads the runner's request for its own Vitest process.                                           |
+| `CaptureOutcome`                | interface | Carries one project's owner-bearing passed work count from a finished stage.                                              |
+| `CaptureRunPlan`                | interface | Carries everything every stage of one invocation shares.                                                                  |
+| `CaptureInvocationOptions`      | interface | Configures one runner invocation's identity, workspace, and output.                                                       |
+| `CaptureInvocationInterface`    | interface | Owns one runner invocation's identity, request file, children, and interruption.                                          |
+| `CaptureDiscoveryRequest`       | interface | Carries the request the runner publishes for the discovery child that reads its wrapper.                                  |
+| `CaptureHostEntry`              | interface | Describes one wrapper project to the runner: its host declarations and, when it has one, its viewport.                    |
+| `CaptureHostDescription`        | interface | Carries the description a wrapper writes back to the runner that discovered it.                                           |
+| `CaptureDescriptionExpectation` | interface | Names what a description must echo for the runner to accept it.                                                           |
+| `CaptureDiscoveryOptions`       | interface | Configures how a wrapper answers the runner's discovery request.                                                          |
+| `CaptureDiscoveryRunOptions`    | interface | Configures one discovery: the workspace, the wrapper, the invocation that owns the child, and its bounds.                 |
+| `CaptureDiscoveryInterface`     | interface | Reads a consumer's wrapper by running its installed Vitest in discovery mode.                                             |
+| `CapturePicture`                | interface | Carries a decoded RGB image for the image checks and the contact sheets.                                                  |
+| `CaptureReaderOptions`          | interface | Configures a read-only capture consumer using the wrapper's host declarations.                                            |
+| `CaptureProducer`               | interface | Declares the viewport one wrapper project produces beside the project's own name.                                         |
+| `CaptureReaderDefaults`         | interface | Supplies the wrapper path, the journey artifact directory, and the request directory a reader command line falls back to. |
+| `CaptureReaderSelection`        | interface | Returns a reader's authenticated selection and the same engine for pixel classification.                                  |
+| `CaptureArtifactReading`        | interface | Carries a judged run record and the verified text of the journey artifact it names.                                       |
+| `CaptureJudgedRecord`           | interface | Names the run record a judged frame's stamp points at and the case that stamped it.                                       |
+| `CaptureJudgedFrame`            | interface | Pairs a judged frame with its verified artifact, when one was read, and its coverage issues.                              |
+| `CaptureImageReading`           | interface | Records one selected image's real bytes, geometry, and canonical destination.                                             |
+| `CaptureCheckFrame`             | interface | Carries one judged frame to a host check: its destination, its decoded pixels, and its artifact.                          |
+| `CaptureCheckHandler`           | type      | Reads one judged frame against a host rule and returns the issues it finds, none when it passes.                          |
+| `CapturePreflightResult`        | interface | Reports selected image checks without upgrading their engine freshness classifications.                                   |
+| `CapturePreflightInterface`     | interface | Reads the selected population's frames and reports their freshness, framing, and coverage.                                |
+| `CaptureSheetOptions`           | interface | Carries a contact-sheet output request separately from the population selection.                                          |
+| `CaptureSheetCell`              | interface | Holds one contact-sheet cell: a frame's destination, its shrunk picture, and what the sheet reports about it.             |
+| `CaptureSheetGroup`             | interface | Holds the cells of one portfolio, owner, and state side by side as one composite picture.                                 |
+| `CaptureSheetRow`               | interface | Holds a pair of groups side by side as one composite picture.                                                             |
+| `CaptureSheetPage`              | interface | Holds one written sheet: its file name, the rows it stacks, and the composite picture.                                    |
+| `CaptureReaderCommand`          | interface | Carries parsed reader arguments and an optional contact-sheet output directory.                                           |
+| `CaptureSheetsInterface`        | interface | Composes exactly the authenticated sparse state and output pairs for iteration review.                                    |
+| `CaptureRegistryArguments`      | interface | Carries the parsed registry command line: the wrapper, the variants to refresh, and the mode.                             |
+| `CaptureRegistrarOptions`       | interface | Configures one registry refresh: its workspace, wrapper default, request directory, and command line.                     |
+| `CaptureRegistrarInterface`     | interface | Refreshes the accepted registry from one complete capture-free journey per producing variant.                             |
 
 ### Server constants
 
@@ -233,13 +240,15 @@ The runner's names and bounds from [`constants.ts`](../src/server/constants.ts).
 | `CAPTURE_REGISTRY_FLAGS` | const | Lists the command-line flags the registry refresh reads, each followed by exactly one value.                                                                                                                                    |
 | `CAPTURE_REGISTRY_STAGE` | const | Names the stage each producing variant's complete journey runs in, ahead of the variant's name.                                                                                                                                 |
 | `CAPTURE_REGISTRY_LINE`  | const | Names the first word of the line the registry refresh prints, followed by its JSON summary.                                                                                                                                     |
+| `CAPTURE_REQUESTS_FLAG`  | const | Names the environment variable that carries the absolute request directory to a Vitest child.                                                                                                                                   |
+| `CAPTURE_DISCOVERY`      | const | Holds the discovery exchange's fixed names and bound.                                                                                                                                                                           |
 | `CAPTURE_SUBCOMMANDS`    | const | Names the executable's subcommands in the order its usage text lists them.                                                                                                                                                      |
 | `CAPTURE_DEFAULTS`       | const | Holds the repository-relative paths the executable falls back to when the command line names none.                                                                                                                              |
 | `CAPTURE_USAGE`          | const | Holds the usage text the executable prints when it is given no subcommand or an unknown one.                                                                                                                                    |
 
 ### Server helpers
 
-Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry import, flag reading, the PNG codec, the runner's parsing, and the few reads and writes of the filesystem the runner and the registry refresh make (`loadCaptureProjects`, `readCaptureInputs`, `readCaptureRunning`, `readCaptureRequest`, `writeCaptureDocument`). A helper that refuses an image or a receipt throws a `CaptureError` with the `EVIDENCE` condition.
+Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry import, flag reading, the PNG codec, the runner's parsing, and the few reads and writes of the filesystem the runner and the registry refresh make (`resolveCaptureWrapperProject`, `answerCaptureDiscovery`, `readCaptureInputs`, `readCaptureRunning`, `readCaptureRequest`, `writeCaptureDocument`). A helper that refuses an image or a receipt throws a `CaptureError` with the `EVIDENCE` condition.
 
 | Name                           | Kind     | Summary                                                                                                   |
 | ------------------------------ | -------- | --------------------------------------------------------------------------------------------------------- |
@@ -282,8 +291,12 @@ Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry
 | `collectCaptureIdentical`      | function | Groups the selected images whose bytes are identical.                                                     |
 | `collectCaptureErrors`         | function | Finds the journey artifact lines that report an uncaught, unhandled, or logged error.                     |
 | `readCaptureRunning`           | function | Checks whether a process with this id is running, counting one the caller may not signal.                 |
-| `readCaptureWrapperProject`    | function | Resolves one entry of a wrapper's project list and reads its host declarations.                           |
-| `loadCaptureProjects`          | function | Loads the wrapper in this process and reads every project's host declarations.                            |
+| `resolveCaptureWrapperProject` | function | Resolves one entry of a wrapper's project list to the project it declares.                                |
+| `readCaptureEntry`             | function | Reads one wrapper project, as the description file holds it, into its host declarations and viewport.     |
+| `resolveCaptureRequests`       | function | Resolves the directory that holds the runner's request files for the process that reads them.             |
+| `buildCaptureDiscoveryConfig`  | function | Builds the empty Node configuration a wrapper returns once it has answered a discovery request.           |
+| `readCaptureDescription`       | function | Accepts the description a wrapper wrote only when it answers this exchange and no other.                  |
+| `answerCaptureDiscovery`       | function | Answers the runner's discovery request from the wrapper, before the wrapper does any other work.          |
 | `readCaptureRegistryArguments` | function | Reads the registry command line into the wrapper path, the variants to refresh, and the mode.             |
 | `readCaptureInputs`            | function | Reads the bounded input population a project declares, as file paths and content hashes.                  |
 | `writeCaptureDocument`         | function | Writes one JSON document atomically, so a reader sees the old bytes or the new and never a part.          |
@@ -298,6 +311,8 @@ The integrity engine from [`CaptureIntegrity.ts`](../src/server/CaptureIntegrity
 | `createCaptureIntegrity` | function | Creates the integrity engine bound to an explicit workspace and host portfolio mapping.                      |
 | `CaptureRunner`          | class    | Drives owner-selected journeys through narrow and remaining variant stages.                                  |
 | `CaptureInvocation`      | class    | Owns one runner invocation's identity, request file, children, and interruption.                             |
+| `CaptureDiscovery`       | class    | Reads a consumer's wrapper by running the consumer's installed Vitest in discovery mode.                     |
+| `createCaptureDiscovery` | function | Creates the discovery that reads a consumer's wrapper through the consumer's own Vitest.                     |
 | `createCaptureRunner`    | function | Creates the runner that drives owner-selected journeys for one command line.                                 |
 | `CapturePreflight`       | class    | Reads the selected population's frames and reports their freshness, framing, and coverage.                   |
 | `CaptureSheets`          | class    | Composes exactly the authenticated sparse state and output pairs for iteration review.                       |
@@ -316,6 +331,12 @@ The integrity engine from [`CaptureIntegrity.ts`](../src/server/CaptureIntegrity
 | `stamp`  | Validates an executed stage before atomically publishing its authorized evidence.        |
 | `check`  | Checks the explicitly selected output population without changing evidence or images.    |
 | `lookup` | Resolves an explicitly requested state through fresh registry and passing case evidence. |
+
+#### `CaptureDiscoveryInterface`
+
+| Name       | Summary                                                                                                        |
+| ---------- | -------------------------------------------------------------------------------------------------------------- |
+| `describe` | Publishes the discovery request, runs the wrapper's Vitest as a bounded child, and reads back its description. |
 
 #### `CapturePreflightInterface`
 
@@ -344,7 +365,7 @@ The integrity engine from [`CaptureIntegrity.ts`](../src/server/CaptureIntegrity
 | `release`     | Waits for any interrupt termination to finish, then removes the interrupt handler.            |
 | `prepare`     | Creates the report directory and removes request files that name a process no longer running. |
 | `holders`     | Lists the other live processes that hold a request file in the request directory.             |
-| `publish`     | Writes the stage request atomically, so no reader sees a partial file.                        |
+| `publish`     | Writes the stage or discovery request atomically, so no reader sees a partial file.           |
 | `retract`     | Removes this process's request file and its temporary sibling.                                |
 | `launched`    | Reports whether a child with this log path has been spawned by this invocation.               |
 | `spawn`       | Spawns the Vitest child and tees its output to the host streams and the log.                  |
@@ -393,7 +414,7 @@ The engine reads each file once per pass through a memo it discards when the pas
 
 ### Runner
 
-The request protocol, the stage order, and the process supervision. `createCaptureRunner` binds one command (`journey`, `capture`, or `stale`), a workspace root, the wrapper's default path, the request directory, and the command line after the entry name. The runner loads the wrapper in process through Vite's `loadConfigFromFile` with the capture variable set for the inspection and the inherited value restored, so the wrapper's destructive no-capture initialization never runs. It reads every name it uses from the wrapper's provided values: `variant` and `variants`, `first`, `closing`, `portfolios`, `standalone`, `directory`, `record`, and `inputs`, and the project tags that carry `owner:` paths. It validates uniqueness, tag syntax, references, and containment before it spawns anything.
+The request protocol, the stage order, and the process supervision. `createCaptureRunner` binds one command (`journey`, `capture`, or `stale`), a workspace root, the wrapper's default path, the request directory, and the command line after the entry name. The runner never loads the wrapper itself, so the package imports neither Vite nor Vitest: it discovers the wrapper through the consumer's own Vitest, as the Discovery paragraph below describes. It reads every name it uses from the wrapper's provided values: `variant` and `variants`, `first`, `closing`, `portfolios`, `standalone`, `directory`, `record`, and `inputs`, and the project tags that carry `owner:` paths. It validates uniqueness, tag syntax, references, and containment before it spawns anything.
 
 ```ts
 import { createCaptureRunner } from '@orkestrel/capture/server'
@@ -414,6 +435,22 @@ The exit is 0 when every stage is green and work ran, 1 for a failed stage, an i
 
 **Selection.** A selector is `all` or an owner path the wrapper's tags declare; each segment is checked, and the refusal names the first unknown one, labelled `scope` at the first depth and `owner` below it. A journey filters on `owner:<selector>`. A capture also intersects the capture tag, which is the selector's scope and part, and `all` unions every declared scope. `--case` selects one case by its exact full name, and the runner passes the anchored pattern for that case and the closing case with every regular-expression metacharacter quoted. `--state` asks the engine for the declaring case and refuses, before any process starts, when the engine's evidence is missing, stale, or ambiguous.
 
+**Discovery.** Before it plans anything, the runner publishes an atomic request whose phase is `discover` and spawns the consumer's installed Vitest entry directly (`process.execPath` with `node_modules/vitest/vitest.mjs`) as `list --filesOnly --config <wrapper> --configLoader runner`, with the capture variable set so a wrapper's destructive no-capture initialization never runs. The wrapper calls `answerCaptureDiscovery` before it does any other work, writes its description atomically beside the invocation's logs, and returns `buildCaptureDiscoveryConfig()`, an empty Node configuration, so Vitest sets up no browser, initializes no output, and collects no test. The runner accepts the description only after the child exited zero and every echo in it matches the exchange: the invocation, a fresh challenge, the wrapper, the runner as the wrapper's parent, and the spawned child as its writer. A wrapper that never answers, answers another exchange, writes an unreadable or empty description, exits nonzero, or outlives the deadline (`CAPTURE_DISCOVERY.deadline`, replaceable through the `deadline` option) is refused as a `HOST` condition, and a request from another parent, with other arguments, version, identity, or wrapper, is refused by the wrapper. A syntax error in the command line refuses before any child; an unknown selector or variant refuses after discovery and before any execution child.
+
+````ts
+import { answerCaptureDiscovery, buildCaptureDiscoveryConfig } from '@orkestrel/capture/server'
+
+const projects = [/* the wrapper's own test.projects */]
+const answered = await answerCaptureDiscovery({
+	ppid: process.ppid,
+	argv: process.argv.slice(1),
+	config: 'configs/app/vite.journey.config.ts',
+	projects,
+})
+export default answered ? buildCaptureDiscoveryConfig() : { test: { projects } }
+```n
+**Request directory.** The one default is `CAPTURE_DEFAULTS.requests`. The runner hands the directory it publishes to every child it spawns in `CAPTURE_REQUESTS`, and `readCaptureRequest` and `answerCaptureDiscovery` read it from there when the wrapper names no `directory` of its own, so a consumer never repeats a constant it could mismatch. A wrapper that does name one declares it, and it must be the runner's.
+
 **Request.** Before each stage the runner writes `journey-selection-<pid>.json` in the request directory, named by its own process id, through a temporary sibling and a rename, and removes both in a `finally` block. Before it writes, it removes every request file named for a process that is no longer running, and never one that is. The wrapper reads the file back through `readCaptureRequest`, which accepts only the file its parent's id names, only a record whose `pid` matches, and only arguments equal to its own process's.
 
 ```ts
@@ -422,21 +459,20 @@ import { readCaptureRequest } from '@orkestrel/capture/server'
 const request = readCaptureRequest({
 	ppid: process.ppid,
 	argv: process.argv.slice(1),
-	directory: '/workspace/tmp/units',
 	config: 'configs/app/vite.journey.config.ts',
 	owners: ['pages:mail'],
 	variants: ['light-390'],
 })
 request?.selector // 'pages:mail' when a runner is the parent, otherwise undefined
-```
+````
 
-**Processes.** The runner spawns `process.execPath` with the installed `node_modules/vitest/vitest.mjs`, an argument array, and no shell. The child inherits the environment with every case-folded `capture` name removed, and a `capture` command sets exactly one `CAPTURE=1`. Each stage writes its own log and JSON report under `<requests>/runs/<id>/`, and the child's output is teed to the host's streams and the log. An interrupt aborts the stage's signal and ends each child's process tree: `killTree` on win32, which has no signal a process group can receive, and `killProcess` on every other host, which signals the detached group. The invocation then removes its request and releases its handlers.
+**Processes.** The runner spawns `process.execPath` with the installed `node_modules/vitest/vitest.mjs`, an argument array, and no shell. The child inherits the environment with every case-folded `capture` name removed and `CAPTURE_REQUESTS` set to the request directory, and a `capture` command, like discovery, sets exactly one `CAPTURE=1`. Each stage writes its own log and JSON report under `<requests>/runs/<id>/`, and the child's output is teed to the host's streams and the log. An interrupt aborts the stage's signal and ends each child's process tree: `killTree` on win32, which has no signal a process group can receive, and `killProcess` on every other host, which signals the detached group. The invocation then removes its request and releases its handlers.
 
 **Limits.** An external Ctrl+C on win32 reaches the runner only through a console-capable terminal, and Node exposes no console-mode API, so that reading is recorded by hand rather than proved here. The external process-group signal on a POSIX host is a case gated on the mechanism that makes it applicable, and it has not run on a POSIX host yet.
 
 ### Preflight and sheets
 
-The image checks and the contact sheets over the authenticated selection. `createCapturePreflight` binds a workspace root, the wrapper's absolute path, a selection, and the absolute directory of the journey artifacts. It loads the wrapper in process the way the runner does and reads each project's `variant`, its `variants` with their pixel geometry, and the portfolio roots it provides, so it names no portfolio, owner, variant, or path itself. `createCaptureSheets` takes the same reader options and a new output directory.
+The image checks and the contact sheets over the authenticated selection. `createCapturePreflight` binds a workspace root, the wrapper's absolute path, a selection, and the absolute directory of the journey artifacts. It discovers the wrapper through the consumer's Vitest the way the runner does, with a `requests` option for the request directory and a `deadline` option for the child, and reads each project's `variant`, its `variants` with their pixel geometry, and the portfolio roots it provides, so it names no portfolio, owner, variant, or path itself. `createCaptureSheets` takes the same reader options and a new output directory.
 
 ```ts
 import { createCapturePreflight, createCaptureSheets } from '@orkestrel/capture/server'
@@ -476,7 +512,7 @@ A module that cannot be loaded, exports no list of functions, or holds a reader 
 
 ### Registry refresh
 
-The command that bootstraps or replaces the accepted registry. The stage transaction refuses to run until a registry exists, so the refresh cannot stamp through the engine: it imports complete runs instead. `createCaptureRegistrar` takes the same options as the runner minus the command, and `execute` reads the wrapper through `loadCaptureProjects`, the loader the runner uses, takes the same invocation entity, request file, and Vitest child, and runs one stage per producing variant with the `all` selector, the `journey` command, and no capture variable.
+The command that bootstraps or replaces the accepted registry. The stage transaction refuses to run until a registry exists, so the refresh cannot stamp through the engine: it imports complete runs instead. `createCaptureRegistrar` takes the same options as the runner minus the command, and `execute` reads the wrapper through the same `CaptureDiscovery` the runner uses, forwarding `--mode` to it, takes the same invocation entity, request file, and Vitest child, and runs one stage per producing variant with the `all` selector, the `journey` command, and no capture variable.
 
 ```ts
 import { createCaptureRegistrar } from '@orkestrel/capture/server'
@@ -513,7 +549,7 @@ The `capture` executable is one entry that dispatches six subcommands, each a th
 - `capture sheets <selector> --output <directory>` calls `createCaptureSheets` with the preflight's flags and a required `--output`.
 - `capture registry` calls `createCaptureRegistrar` and reads `--variant` (repeats), `--mode`, and `--config`.
 
-`frames` runs the request command `capture`, because `capture capture` would stutter. A flag takes exactly one value, only `--variant` repeats, and an unknown, repeated, misplaced, or valueless flag is refused. The executable falls back to `CAPTURE_DEFAULTS` when the command line names none: the wrapper `configs/app/vite.journey.config.ts`, the request directory `tmp/capture`, and the journey artifact directory `tmp/journey`. The wrapper must pass the same request directory to `readCaptureRequest`.
+`frames` runs the request command `capture`, because `capture capture` would stutter. A flag takes exactly one value, only `--variant` repeats, and an unknown, repeated, misplaced, or valueless flag is refused. The executable falls back to `CAPTURE_DEFAULTS` when the command line names none: the wrapper `configs/app/vite.journey.config.ts`, the request directory `tmp/capture`, and the journey artifact directory `tmp/journey`. The request directory reaches the wrapper through `CAPTURE_REQUESTS`, so the wrapper repeats nothing.
 
 **Exit.** 0 when the work passed, 1 when a stage failed, the selection held no work, a reading found a stale or unsound frame, or the evidence refused, and 64 when the command line was refused. Every refusal prints on the error stream and teaches: it names the subject, the flag or value that was wrong, and the usage line, and the executable prints the whole usage text beside an unknown or missing command. The preflight takes no `--output`, which belongs to the sheets, and the sheets require one.
 
@@ -528,6 +564,7 @@ The `capture` executable is one entry that dispatches six subcommands, each a th
 - [`tests/src/server/CaptureIntegrity.test.ts`](../tests/src/server/CaptureIntegrity.test.ts)
 - [`tests/src/server/CaptureRunner.test.ts`](../tests/src/server/CaptureRunner.test.ts)
 - [`tests/src/server/CaptureInvocation.test.ts`](../tests/src/server/CaptureInvocation.test.ts)
+- [`tests/src/server/CaptureDiscovery.test.ts`](../tests/src/server/CaptureDiscovery.test.ts)
 - [`tests/src/server/CapturePreflight.test.ts`](../tests/src/server/CapturePreflight.test.ts)
 - [`tests/src/server/CaptureSheets.test.ts`](../tests/src/server/CaptureSheets.test.ts)
 - [`tests/src/server/CaptureRegistrar.test.ts`](../tests/src/server/CaptureRegistrar.test.ts)
@@ -536,6 +573,7 @@ The `capture` executable is one entry that dispatches six subcommands, each a th
 - [`tests/src/server/factories.test.ts`](../tests/src/server/factories.test.ts)
 - [`tests/src/server/index.test.ts`](../tests/src/server/index.test.ts)
 - [`tests/src/bin/main.test.ts`](../tests/src/bin/main.test.ts)
+- [`tests/src/bin/discovery.test.ts`](../tests/src/bin/discovery.test.ts)
 - [`tests/distribution.test.ts`](../tests/distribution.test.ts)
 - [`tests/setupServer.test.ts`](../tests/setupServer.test.ts)
 - [`tests/setup.test.ts`](../tests/setup.test.ts)

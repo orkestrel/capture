@@ -8,7 +8,11 @@ import { isCaptureRegistry } from '@src/core'
 import { CaptureRegistrar } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
-import { ProcessFixture } from '../../fixtures/capture/ProcessFixture.js'
+import {
+	readExitedPid,
+	startSleeper,
+	stopFixtureChild,
+} from '../../fixtures/capture/ProcessFixture.js'
 import {
 	COMPOSED_DIRECTORY,
 	COMPOSED_REQUESTS,
@@ -53,7 +57,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 		const fixture = new ComposedFixture()
 		try {
 			const run = await fixture.refresh()
-			expect(run.code, run.stderr).toBe(0)
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
 			const registry = readRegistry(fixture)
 			expect(registry.receipts.map((receipt) => receipt.variant)).toEqual([...VARIANTS])
 			for (const receipt of registry.receipts) {
@@ -83,7 +87,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 		const fixture = new ComposedFixture()
 		try {
 			const run = await fixture.refresh()
-			expect(run.code, run.stderr).toBe(0)
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
 			const directory = resolve(fixture.root, COMPOSED_DIRECTORY)
 			expect(readdirSync(directory).toSorted()).toEqual(['registry.json', 'runs'])
 			expect(existsSync(resolve(directory, 'pages'))).toBe(false)
@@ -97,7 +101,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 		const fixture = new ComposedFixture()
 		try {
 			const run = await fixture.refresh()
-			expect(run.code, run.stderr).toBe(0)
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
 			const read = await fixture.engine.read({ selector: 'pages:mail' })
 			expect(read.registry).toBe(readRegistry(fixture).digest)
 			expect(read.entries.length).toBeGreaterThan(0)
@@ -143,7 +147,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect((await fixture.refresh()).code).toBe(0)
 			const first = readRegistry(fixture)
 			const run = await fixture.refresh(['--variant', 'dark-390'])
-			expect(run.code, run.stderr).toBe(0)
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
 			const next = readRegistry(fixture)
 			expect(next.receipts.map((receipt) => receipt.variant).toSorted()).toEqual(
 				[...VARIANTS].toSorted(),
@@ -197,7 +201,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 
 	it('refuses while another runner holds a request file, and prunes the file of a dead one', async () => {
 		const fixture = new ComposedFixture()
-		const sleeper = await ProcessFixture.sleeper()
+		const sleeper = await startSleeper()
 		try {
 			const held = `${COMPOSED_REQUESTS}/journey-selection-${String(sleeper.pid)}.json`
 			fixture.write(held, 'held')
@@ -208,11 +212,11 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 			)
 			expect(existsSync(resolve(fixture.root, REGISTRY))).toBe(false)
 			expect(fixture.read(held).toString('utf8')).toBe('held')
-			const dead = `${COMPOSED_REQUESTS}/journey-selection-${String(await ProcessFixture.exited())}.json`
+			const dead = `${COMPOSED_REQUESTS}/journey-selection-${String(await readExitedPid())}.json`
 			fixture.write(dead, 'dead')
-			await ProcessFixture.stop(sleeper)
+			await stopFixtureChild(sleeper)
 			const accepted = await fixture.refresh()
-			expect(accepted.code, accepted.stderr).toBe(0)
+			expect(accepted.code === 0 ? 0 : accepted.stderr).toBe(0)
 			expect(existsSync(resolve(fixture.root, dead))).toBe(false)
 			expect(existsSync(resolve(fixture.root, held))).toBe(false)
 		} finally {
@@ -227,7 +231,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 			const before = process.listenerCount('SIGINT')
 			const run = await fixture.refresh([], {
 				environment: { CAPTURE_PRODUCER_MODE: 'hang' },
-				interrupt: true,
+				interrupt: 'emit',
 			})
 			expect(run.code).toBe(1)
 			expect(run.stderr).toContain('Runner interrupted')
@@ -243,7 +247,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 		const fixture = new ComposedFixture()
 		try {
 			const run = await fixture.refresh(['--mode', 'vue'])
-			expect(run.code, run.stderr).toBe(0)
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
 			const registry = readRegistry(fixture)
 			const id = requireValue(
 				readReceipt(registry, 'light-1280').report.file.split('/').at(3),

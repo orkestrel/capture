@@ -255,9 +255,11 @@ export const CAPTURE_SUBCOMMANDS: readonly string[] = Object.freeze([
  *
  * @remarks
  * `config` is the journey wrapper a scaffold-born browser application carries, `requests` is the
- * directory the wrapper reads the runner's request file from, and `journeys` is the directory of
- * journey artifacts the readers read. The wrapper must pass the same `requests` directory to
- * `readCaptureRequest`. `--config` replaces the wrapper and `--journeys` the artifacts.
+ * one default directory the runner publishes its request file to, and `journeys` is the directory
+ * of journey artifacts the readers read. The runner hands the directory it uses to every child in
+ * `CAPTURE_REQUESTS`, and `readCaptureRequest` and `answerCaptureDiscovery` read it from there when
+ * the wrapper names none, so a wrapper never repeats this value. `--config` replaces the wrapper
+ * and `--journeys` the artifacts.
  *
  * @example
  * ```ts
@@ -268,6 +270,41 @@ export const CAPTURE_DEFAULTS = Object.freeze({
 	config: 'configs/app/vite.journey.config.ts',
 	requests: 'tmp/capture',
 	journeys: 'tmp/journey',
+} as const)
+
+/**
+ * Names the environment variable that carries the absolute request directory to a Vitest child.
+ *
+ * @remarks
+ * The runner sets it on every child it spawns, the discovery child included. A wrapper that names no
+ * request directory reads it, so the runner and the wrapper agree without a repeated constant.
+ *
+ * @example
+ * ```ts
+ * process.env[CAPTURE_REQUESTS_FLAG] // '/repo/tmp/capture' inside a runner's child
+ * ```
+ */
+export const CAPTURE_REQUESTS_FLAG = 'CAPTURE_REQUESTS'
+
+/**
+ * Holds the discovery exchange's fixed names and bound.
+ *
+ * @remarks
+ * `phase` is the value that marks a request as a discovery request, `description` is the file the
+ * wrapper writes inside the invocation directory, `arguments` are the Vitest arguments that list the
+ * configuration's test files without collecting a test, `deadline` is the longest, in milliseconds,
+ * the discovery child may run.
+ *
+ * @example
+ * ```ts
+ * CAPTURE_DISCOVERY.phase // 'discover'
+ * ```
+ */
+export const CAPTURE_DISCOVERY = Object.freeze({
+	phase: 'discover',
+	description: 'description.json',
+	arguments: Object.freeze(['list', '--filesOnly']),
+	deadline: 60_000,
 } as const)
 
 /**

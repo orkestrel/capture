@@ -413,15 +413,40 @@ describe('capture guard totality', () => {
 		}
 	})
 
-	it('keeps the remaining guards total over the same corpus', () => {
+	it('keeps the remaining guards total over the same corpus, answering a boolean and never throwing', () => {
+		const remaining = [
+			isCapturePath,
+			isCapturePattern,
+			isCaptureSegment,
+			isCaptureSelector,
+			isCaptureHash,
+			isCaptureHashes,
+			isCaptureStoredManifest,
+		]
 		for (const value of hostile) {
+			for (const guard of remaining) expect(typeof guard(value)).toBe('boolean')
+		}
+	})
+
+	it('refuses every hostile value that is not itself a valid name', () => {
+		// The word `manifest` in the corpus is a valid path, pattern, segment, and selector, so the
+		// refusals read the corpus without it, and a positive control below reads it alone.
+		for (const value of hostile.filter((entry) => entry !== 'manifest')) {
 			expect(isCapturePath(value)).toBe(false)
 			expect(isCapturePattern(value)).toBe(false)
 			expect(isCaptureSegment(value)).toBe(false)
 			expect(isCaptureSelector(value)).toBe(false)
 			expect(isCaptureHash(value)).toBe(false)
-			expect(() => isCaptureHashes(value)).not.toThrow()
+			// An empty record is a valid hash map, so this guard is held to totality above, not to refusal.
 			expect(isCaptureStoredManifest(value)).toBe(false)
 		}
+	})
+
+	it('accepts the corpus word that is a valid name as a name and still refuses it as evidence', () => {
+		for (const guard of [isCapturePath, isCapturePattern, isCaptureSegment, isCaptureSelector])
+			expect(guard('manifest')).toBe(true)
+		expect(isCaptureHash('manifest')).toBe(false)
+		expect(isCaptureHashes('manifest')).toBe(false)
+		expect(isCaptureStoredManifest('manifest')).toBe(false)
 	})
 })

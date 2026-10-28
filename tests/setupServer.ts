@@ -1,12 +1,5 @@
-import type {
-	CaptureDeclaration,
-	CaptureDestination,
-	CaptureRequest,
-	CaptureRun,
-	CaptureStatus,
-} from '@src/core'
+import type { CaptureDeclaration, CaptureDestination, CaptureRequest, CaptureRun } from '@src/core'
 import type { CaptureReadOptions, CaptureRequestOptions } from '@src/server'
-import type { RecordingIntegrity } from './fixtures/capture/RecordingIntegrity.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { basename, dirname, resolve } from 'node:path'
@@ -18,6 +11,7 @@ import {
 	isArray,
 	isError,
 	isFiniteNumber,
+	isFunction,
 	isRecord,
 	isString,
 } from '@orkestrel/contract'
@@ -148,7 +142,7 @@ export const PORTFOLIOS = Object.freeze([
 /** Names the physical frame of the mail screen state for the light phone variant. */
 export const MAIL_IMAGE = 'tmp/captures/states/pages/mail-screen--light-390.png'
 
-/** Holds a valid one-pixel PNG every fixture frame reuses. */
+/** Holds the one valid image, a single pixel, that every fixture frame reuses. */
 export const PNG = Buffer.from(
 	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jNxoAAAAASUVORK5CYII=',
 	'base64',
@@ -654,43 +648,13 @@ export function readFixtureManifest(root: string): string | undefined {
 /** Names the request directory, relative to the workspace, that the non-Veneer consumer declares. */
 export const RUNNER_REQUESTS = 'var/requests'
 
-/** Lists the variants the non-Veneer consumer declares, in an order unlike any browser matrix. */
-export const RUNNER_VARIANTS = Object.freeze(['wide', 'compact', 'phone'] as const)
-
-/** Names the variant the non-Veneer consumer stages alone before the rest, which is not the first. */
-export const RUNNER_FIRST = 'compact'
-
 /** Holds the closing case's full name, which carries regular-expression punctuation. */
 export const RUNNER_CLOSING = 'closes [all] (states) + writes a.b*'
-
-/** Holds an exact case's full name, which carries spaces, quotes, and regular-expression punctuation. */
-export const RUNNER_CASE = 'retains \'mail\' [reader] (inbox) + "quotes" a.b*'
-
-/** Names the primary portfolio directory, relative to the workspace, that the consumer declares. */
-export const RUNNER_DIRECTORY = 'out/frames'
-
-/** Lists the bounded input patterns the non-Veneer consumer declares. */
-export const RUNNER_INPUTS = Object.freeze([
-	'lib/**',
-	'specs/**',
-	'fixture with spaces.config.ts',
-] as const)
-
-/** Lists the portfolio roots the non-Veneer consumer reads through its primary registry. */
-export const RUNNER_PORTFOLIOS = Object.freeze([
-	{ portfolio: 'frames', directory: 'out/frames', scoped: true },
-	{ portfolio: 'extras', directory: 'out/extras', scoped: false },
-] as const)
-
-/** Lists the standalone portfolio roots the non-Veneer consumer keeps beside their own registry. */
-export const RUNNER_STANDALONE = Object.freeze([
-	{ portfolio: 'gallery', directory: 'out/gallery', scoped: false },
-] as const)
 
 /** Lists the commands that start a Vitest process, in the order the runner proofs cover them. */
 export const RUNNER_COMMANDS = Object.freeze(['journey', 'capture'] as const)
 
-/** Describes one command-line refusal the runner makes before it spawns any child. */
+/** Describes one command-line refusal the runner makes before it spawns an execution child. */
 export interface RunnerRefusal {
 	readonly title: string
 	readonly args: readonly string[]
@@ -701,95 +665,50 @@ export interface RunnerRefusal {
 export const RUNNER_REFUSALS: readonly RunnerRefusal[] = Object.freeze([
 	{ title: 'bare invocation', args: [], message: 'Selectors:' },
 	{ title: 'unknown scope', args: ['missing'], message: 'Unknown scope: missing' },
-	{ title: 'unknown owner', args: ['app:missing'], message: 'Unknown owner: missing' },
-	{ title: 'unknown deep owner', args: ['tools:search:deep'], message: 'Unknown owner: deep' },
+	{ title: 'unknown owner', args: ['pages:missing'], message: 'Unknown owner: missing' },
+	{ title: 'unknown deep owner', args: ['pages:mail:deep'], message: 'Unknown owner: deep' },
 	{
 		title: 'unknown variant',
-		args: ['app:mail', '--variant', 'missing'],
+		args: ['pages:mail', '--variant', 'missing'],
 		message: 'Unknown variant: missing',
 	},
 	{
 		title: 'repeated variant',
-		args: ['app:mail', '--variant', 'wide', '--variant', 'wide'],
+		args: ['pages:mail', '--variant', 'light-390', '--variant', 'light-390'],
 		message: 'Repeated variant',
 	},
 	{
 		title: 'invalid variant identity',
-		args: ['app:mail', '--variant', 'wide 1'],
+		args: ['pages:mail', '--variant', 'light 390'],
 		message: 'Invalid variant identity',
 	},
 	{
 		title: 'unsupported flag',
-		args: ['app:mail', '--mode', 'vue'],
+		args: ['pages:mail', '--mode', 'vue'],
 		message: 'Unknown option: --mode',
 	},
 	{
 		title: 'missing option value',
-		args: ['app:mail', '--variant'],
+		args: ['pages:mail', '--variant'],
 		message: 'Missing value: --variant',
 	},
 	{
 		title: 'repeated option',
-		args: ['app:mail', '--case', 'a', '--case', 'b'],
+		args: ['pages:mail', '--case', 'a', '--case', 'b'],
 		message: 'Repeated option: --case',
 	},
 	{
 		title: 'second selector',
-		args: ['app:mail', 'tools'],
+		args: ['pages:mail', 'examples'],
 		message: 'Expected exactly one selector',
 	},
-	{ title: 'blank case', args: ['app:mail', '--case', ' '], message: 'Empty case name' },
+	{ title: 'blank case', args: ['pages:mail', '--case', ' '], message: 'Empty case name' },
 	{
 		title: 'portfolio flag',
-		args: ['app:mail', '--portfolio', 'gallery'],
+		args: ['pages:mail', '--portfolio', 'vue'],
 		message: 'Portfolio selection is available only to stale',
 	},
 ])
-
-/** Scripts the boundary stub's lookup outcome, which is a declaring case or a refusal. */
-export type RecordingLookup = { readonly case: string } | { readonly fault: string }
-
-/** Scripts the boundary stub the runner proofs install in place of the integrity engine. */
-export interface RecordingScript {
-	readonly passed?: Readonly<Record<string, number>>
-	readonly lookup?: RecordingLookup
-	readonly statuses?: readonly CaptureStatus[]
-	readonly checkFault?: string
-}
-
-/** Lists the faults the Vitest stand-in can inject: a failed child, a malformed report, or a wait for an interrupt. */
-export const RUNNER_MODES = Object.freeze(['fail', 'invalid', 'interrupt'] as const)
-
-/** Names one fault of the Vitest stand-in. */
-export type RunnerMode = (typeof RUNNER_MODES)[number]
-
-/** Configures one runner execution over the scratch workspace. */
-export interface RunnerExecution {
-	readonly environment?: Readonly<Record<string, string>>
-	readonly script?: RecordingScript
-	readonly mode?: RunnerMode
-	readonly ownership?: boolean
-	readonly interrupt?: 'emit' | 'signal'
-}
-
-/** Carries everything one runner execution left behind for its assertions. */
-export interface RunnerRun {
-	readonly code: number
-	readonly stdout: string
-	readonly stderr: string
-	readonly receipt: unknown
-	readonly tree: unknown
-	readonly engines: readonly RecordingIntegrity[]
-	readonly request: boolean
-	readonly temporary: boolean
-	readonly live: string | undefined
-	readonly pending: string | undefined
-	readonly stale: boolean
-	readonly abandoned: boolean
-	readonly dead: number
-	readonly log: string | undefined
-	readonly listeners: { readonly before: number; readonly after: number }
-}
 
 /**
  * Reports whether this host can deliver a signal that a process group receives.
@@ -1260,45 +1179,6 @@ export const ARGUMENT_REFUSALS: readonly ArgumentRefusal[] = Object.freeze([
 	},
 ])
 
-/** Carries what the Vitest stand-in recorded about the process boundary it was spawned across. */
-export interface RunnerReceipt {
-	readonly request: Readonly<Record<string, unknown>>
-	readonly report: string
-	readonly files: readonly string[]
-	readonly args: readonly string[]
-	readonly parent: number
-	readonly capture: readonly unknown[]
-}
-
-/**
- * Reads the stand-in's receipt from one execution and refuses a missing or malformed one.
- *
- * @param run - The execution the stand-in ran in
- * @returns The typed receipt
- * @throws Thrown when the stand-in recorded nothing, which means the runner spawned no child.
- */
-export function readRunnerReceipt(run: RunnerRun): RunnerReceipt {
-	const receipt = run.receipt
-	if (
-		!isRecord(receipt) ||
-		!isRecord(receipt.request) ||
-		typeof receipt.report !== 'string' ||
-		!arrayOf(isString)(receipt.files) ||
-		!arrayOf(isString)(receipt.args) ||
-		typeof receipt.parent !== 'number' ||
-		!isArray(receipt.capture)
-	)
-		throw new Error('Missing process receipt')
-	return {
-		request: receipt.request,
-		report: receipt.report,
-		files: receipt.files,
-		args: receipt.args,
-		parent: receipt.parent,
-		capture: receipt.capture,
-	}
-}
-
 /**
  * Runs a callback with environment variables set, then restores each one to its earlier value.
  *
@@ -1520,10 +1400,14 @@ export interface ComposedRun {
 	readonly stderr: string
 }
 
-/** Selects the environment of a composed execution and whether to interrupt it once its child is up. */
+/**
+ * Selects the environment of a composed execution, how to interrupt it once its child is up, and the
+ * discovery deadline in milliseconds.
+ */
 export interface ComposedExecution {
 	readonly environment?: Readonly<Record<string, string>>
-	readonly interrupt?: boolean
+	readonly interrupt?: 'emit' | 'signal'
+	readonly deadline?: number
 }
 
 /**
@@ -1535,9 +1419,10 @@ export interface ComposedExecution {
  * agree on every declaration.
  *
  * @param root - The absolute workspace path, which the primary directory resolves against
+ * @param first - The variant every project stages alone before the rest. Default: `COMPOSED_FIRST`
  * @returns The wrapper module's source text
  */
-export function createComposedWrapper(root: string): string {
+export function createComposedWrapper(root: string, first: string = COMPOSED_FIRST): string {
 	const projects = VARIANTS.map((variant) => ({
 		test: {
 			name: { label: `journey:${variant}`, color: 'green' },
@@ -1549,7 +1434,7 @@ export function createComposedWrapper(root: string): string {
 				variant,
 				variants: VARIANTS.map((name) => ({ name, width: 128, height: 128 })),
 				closing: READER_CLOSING,
-				first: COMPOSED_FIRST,
+				first,
 				portfolios: PORTFOLIOS,
 				standalone: [READER_STANDALONE],
 			},
@@ -1561,12 +1446,14 @@ export function createComposedWrapper(root: string): string {
 /**
  * Builds the Vitest entry stand-in a composed workspace spawns: it loads the producer in this package.
  *
- * @param requests - The workspace-relative request directory the producer reads its parent's request from
+ * @remarks
+ * The stand-in names no request directory. The producer reads the one the runner hands every child in
+ * `CAPTURE_REQUESTS`, so each composed proof also proves that propagation.
+ *
  * @returns The stand-in module's source text
  */
-export function createStandIn(requests: string): string {
+export function createStandIn(): string {
 	return [
-		`process.env.CAPTURE_PRODUCER_REQUESTS = ${JSON.stringify(requests)}`,
 		`process.env.CAPTURE_PRODUCER_DIRECTORY = ${JSON.stringify(COMPOSED_DIRECTORY)}`,
 		`await import(${JSON.stringify(pathToFileURL(COMPOSED_PRODUCER).href)})`,
 		'',
@@ -1741,3 +1628,116 @@ export const BRAND_EXPECTED = Object.freeze({
 	proxy: false,
 	branded: false,
 })
+
+/** Lists the faults a discovery child can inject, one per refusal the runner owns. */
+export const FIXTURE_DISCOVERY_FAULTS = Object.freeze([
+	'silent',
+	'failed',
+	'hang',
+	'replay',
+	'other-invocation',
+	'other-config',
+	'other-parent',
+	'other-child',
+	'malformed',
+	'empty',
+] as const)
+
+/** Selects one deliberately invalid discovery answer: none, a failed exit, a hang, or a mismatched echo. */
+export type FixtureDiscoveryFault = (typeof FIXTURE_DISCOVERY_FAULTS)[number]
+
+/** Pairs each discovery fault with the refusal text the runner must raise for it. */
+export const FIXTURE_DISCOVERY_MESSAGES: Readonly<Record<FixtureDiscoveryFault, string>> =
+	Object.freeze({
+		silent: 'answered no discovery request',
+		failed: 'did not exit successfully (7)',
+		hang: 'did not finish within',
+		replay: 'answers another challenge',
+		'other-invocation': 'answers another invocation',
+		'other-config': 'names another wrapper',
+		'other-parent': 'written for another parent process',
+		'other-child': 'not written by the discovery child',
+		malformed: 'The host description is malformed',
+		empty: 'The wrapper declares no projects',
+	})
+
+/** Carries the fields of a discovery request the stand-in echoes in its answer. */
+export interface FixtureDiscovery {
+	readonly id: string
+	readonly nonce: string
+	readonly config: string
+}
+
+/**
+ * Checks the discovery request a stand-in reads from its parent, without importing the source.
+ *
+ * @param value - The decoded request file
+ * @returns True if the file is a discovery request carrying the fields the answer echoes; false otherwise
+ */
+export function isFixtureDiscovery(value: unknown): value is FixtureDiscovery {
+	return holds(
+		() =>
+			isRecord(value) &&
+			value.phase === 'discover' &&
+			isString(value.id) &&
+			isString(value.nonce) &&
+			isString(value.config),
+	)
+}
+
+/** Configures one discovery answer the stand-in writes. */
+export interface FixtureDescription {
+	readonly request: FixtureDiscovery
+	readonly config: string
+	readonly requests: string
+	readonly fault?: FixtureDiscoveryFault
+}
+
+/**
+ * Writes the description a wrapper writes for a discovery request, from the wrapper's own projects.
+ *
+ * @remarks
+ * It imports the wrapper as plain data, resolves its projects the way Vitest does, and writes them
+ * unjudged, so every refusal a proof reads comes from the runner. It implements only the answering
+ * protocol; the package's `answerCaptureDiscovery` is proved in process and through a real Vitest.
+ *
+ * @param input - The request, the wrapper path, the request directory, and an optional fault
+ */
+export async function writeFixtureDescription(input: FixtureDescription): Promise<void> {
+	const imported: unknown = await import(pathToFileURL(input.config).href)
+	const exported: unknown = isRecord(imported) ? imported.default : undefined
+	const test: unknown = isRecord(exported) ? exported.test : undefined
+	const declared: unknown = isRecord(test) ? test.projects : undefined
+	const projects =
+		input.fault === 'empty' || !isArray(declared)
+			? []
+			: await Promise.all(
+					declared.map(async (entry): Promise<unknown> => {
+						return isFunction(entry) ? await entry({ command: 'serve', mode: 'test' }) : await entry
+					}),
+				)
+	const { fault, request } = input
+	if (fault === 'hang') {
+		writeFileSync('ready.json', JSON.stringify({ pid: process.pid }))
+		setInterval(() => undefined, 1_000)
+		await new Promise(() => undefined)
+	}
+	if (fault === 'silent') return
+	const file = resolve(input.requests, 'runs', request.id, 'description.json')
+	mkdirSync(dirname(file), { recursive: true })
+	writeFileSync(
+		file,
+		fault === 'malformed'
+			? '{'
+			: JSON.stringify({
+					version: 1,
+					id: fault === 'other-invocation' ? 'foreign' : request.id,
+					nonce: fault === 'replay' ? 'replayed' : request.nonce,
+					config: fault === 'other-config' ? 'other.config.ts' : request.config,
+					parent: fault === 'other-parent' ? process.ppid + 1 : process.ppid,
+					pid: fault === 'other-child' ? process.pid + 1 : process.pid,
+					projects,
+				}),
+	)
+	if (fault === 'failed') process.exitCode = 7
+}

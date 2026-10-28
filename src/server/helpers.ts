@@ -1,9 +1,12 @@
-import type { TestProjectConfiguration } from 'vitest/config'
 import type { CaptureDigest, CaptureRegistry, CaptureRequest, CaptureViewport } from '@src/core'
 import type {
 	CaptureArgumentsOptions,
 	CaptureCommand,
+	CaptureDescriptionExpectation,
+	CaptureDiscoveryOptions,
 	CaptureHashHandler,
+	CaptureHostDescription,
+	CaptureHostEntry,
 	CaptureImageReading,
 	CaptureIntegrityOptions,
 	CapturePicture,
@@ -34,12 +37,12 @@ import {
 } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
-import { loadConfigFromFile } from 'vite'
 import {
 	arrayOf,
 	attempt,
 	isArray,
 	isError,
+	isFunction,
 	isRecord,
 	isString,
 	parseJSON,
@@ -68,12 +71,14 @@ import {
 	validateCaptureReceipt,
 } from '@src/core'
 import {
-	CAPTURE_FLAG,
-	CAPTURE_FLAG_VALUE,
+	CAPTURE_DEFAULTS,
+	CAPTURE_DISCOVERY,
 	CAPTURE_OPTION_FLAGS,
 	CAPTURE_OWNER_PREFIX,
 	CAPTURE_READER_FLAGS,
 	CAPTURE_REGISTRY_FLAGS,
+	CAPTURE_REQUESTS_FLAG,
+	CAPTURE_RUNS_DIRECTORY,
 	CAPTURE_STAGES,
 	CAPTURE_TAG_OPERATORS,
 } from './constants.js'
@@ -952,7 +957,7 @@ export function readCaptureProject(test: unknown): CaptureProject {
 			{ code: 'HOST' },
 		)
 	const entries: unknown = isRecord(test) ? test.tags : undefined
-	const tags = (isArray(entries) ? entries : []).map((tag): unknown =>
+	const tags: unknown = (isArray(entries) ? entries : []).map((tag): unknown =>
 		isRecord(tag) ? tag.name : undefined,
 	)
 	if (
@@ -1173,12 +1178,22 @@ export function buildCaptureRequestRefusal(file: string, cause?: unknown): Captu
  * ```
  */
 export function readCaptureRequest(options: CaptureRequestOptions): CaptureRequest | undefined {
-	const file = resolve(options.directory, `${CAPTURE_REQUEST_PREFIX}-${String(options.ppid)}.json`)
+	const file = resolve(
+		resolveCaptureRequests(options.directory),
+		`${CAPTURE_REQUEST_PREFIX}-${String(options.ppid)}.json`,
+	)
 	if (!existsSync(file)) return undefined
 	const read = attempt(() => readFileSync(file, 'utf8'))
 	if (!read.success) throw buildCaptureRequestRefusal(file, read.error)
 	const parsed = parseJSON(read.value)
 	if (!isRecord(parsed)) throw buildCaptureRequestRefusal(file)
+	if (parsed.phase !== undefined)
+		throw buildCaptureRequestRefusal(
+			file,
+			new CaptureError('Journey selection request belongs to the discovery phase', {
+				code: 'HOST',
+			}),
+		)
 	if (parsed.pid !== options.ppid)
 		throw buildCaptureRequestRefusal(
 			file,
@@ -1309,6 +1324,7 @@ export function readCaptureReaderArguments(
 				...(portfolio === undefined ? {} : { portfolio }),
 			},
 			...(checks === undefined ? {} : { checks: resolve(root, checks) }),
+			...(defaults.requests === undefined ? {} : { requests: defaults.requests }),
 		},
 		...(output === undefined ? {} : { output: resolve(root, output) }),
 	}
@@ -1452,7 +1468,7 @@ export function collectCaptureFraming(
  */
 export function collectCaptureIdentical(
 	images: readonly CaptureImageReading[],
-): readonly (readonly string[])[] {
+): ReadonlyArray<readonly string[]> {
 	return [...new Set(images.map((image) => image.digest))]
 		.map((digest) =>
 			images.filter((image) => image.digest === digest).map((image) => image.entry.file),
@@ -1504,82 +1520,234 @@ export function readCaptureRunning(pid: number): boolean {
 }
 
 /**
- * Resolves one entry of a wrapper's project list and reads its host declarations.
+ * Resolves one entry of a wrapper's project list to the project it declares.
  *
- * @remarks A factory entry is called with the serve command and the test mode, as Vitest calls it.
+ * @remarks
+ * A factory entry is called with the serve command and the test mode, as Vitest calls it, and a
+ * promise is awaited. The result is the project as plain data, not yet judged: the runner reads
+ * and validates it, so one reader owns every refusal.
  *
  * @param input - The entry as the wrapper declared it: an inline project, a promise of one, or a factory
- * @returns The validated project
- * @throws Thrown as a `HOST` capture error when the entry is a path, or when its declarations are malformed.
+ * @returns The resolved project, whatever it holds
  *
  * @example
  * ```ts
- * const project = await readCaptureWrapperProject(wrapper.test.projects[0])
- * project.variant // 'light-390'
+ * const project = await resolveCaptureWrapperProject(wrapper.test.projects[0])
  * ```
  */
-export async function readCaptureWrapperProject(
-	input: TestProjectConfiguration,
-): Promise<CaptureProject> {
-	const project =
-		typeof input === 'function' ? await input({ command: 'serve', mode: 'test' }) : await input
-	if (typeof project === 'string')
-		throw new CaptureError('The journey wrapper must declare inline projects', { code: 'HOST' })
-	return readCaptureProject(project.test)
+export async function resolveCaptureWrapperProject(input: unknown): Promise<unknown> {
+	return isFunction(input) ? await input({ command: 'serve', mode: 'test' }) : await input
 }
 
 /**
- * Loads the wrapper in this process and reads every project's host declarations.
+ * Reads one wrapper project, as the description file holds it, into its host declarations and viewport.
  *
  * @remarks
- * The wrapper loads through Vite's `loadConfigFromFile` with the capture variable set for the
- * inspection, so the wrapper never runs its destructive no-capture directory initialization, and the
- * inherited value is restored afterwards. A project the wrapper declares as a factory is called with
- * the serve command and the test mode.
+ * The viewport is read when the project declares geometry for its producing variant and is absent
+ * otherwise, because a runner command needs none and only a reader refuses its absence.
  *
- * @param root - The absolute workspace path
- * @param config - The absolute or workspace-relative wrapper path, which must stay inside the workspace
- * @returns The validated projects in declaration order
- * @throws Thrown as a `USAGE` capture error for a wrapper outside the workspace, and as a `HOST`
- * capture error when the wrapper cannot load, declares no projects, or declares a project by path.
+ * @param value - The resolved project as plain data
+ * @returns The validated project and, when it declares one, its producing viewport
+ * @throws Thrown as a `HOST` capture error when the project is a path or a non-record, or when its
+ * declarations are malformed.
  *
  * @example
  * ```ts
- * const projects = await loadCaptureProjects(process.cwd(), 'configs/app/vite.journey.config.ts')
- * projects.map((project) => project.variant)
+ * const { project } = readCaptureEntry({ test: { name: 'journey:light-390', provide } })
+ * project.variant // 'light-390'
  * ```
  */
-export async function loadCaptureProjects(
-	root: string,
-	config: string,
-): Promise<readonly CaptureProject[]> {
-	if (!isCapturePath(resolveCaptureRelative(root, config)))
-		throw new CaptureError('Config must be a contained repository path', { code: 'USAGE' })
-	const inherited = Object.entries(process.env).filter(
-		([name]) => name.toLowerCase() === CAPTURE_FLAG.toLowerCase(),
-	)
-	for (const [name] of inherited) delete process.env[name]
-	// Inspection must not execute the wrapper's destructive no-capture directory initialization.
-	process.env[CAPTURE_FLAG] = CAPTURE_FLAG_VALUE
-	try {
-		const loaded = await loadConfigFromFile(
-			{ command: 'serve', mode: 'test' },
-			config,
-			root,
-			'silent',
-			undefined,
-			'runner',
-		)
-		if (loaded === null)
-			throw new CaptureError('Unable to load the journey wrapper', { code: 'HOST' })
-		const projects = loaded.config.test?.projects
-		if (projects === undefined)
-			throw new CaptureError('The wrapper declares no projects', { code: 'HOST' })
-		return await Promise.all(projects.map(readCaptureWrapperProject))
-	} finally {
-		delete process.env[CAPTURE_FLAG]
-		for (const [name, value] of inherited) process.env[name] = value
+export function readCaptureEntry(value: unknown): CaptureHostEntry {
+	if (!isRecord(value))
+		throw new CaptureError('The journey wrapper must declare inline projects', { code: 'HOST' })
+	const project = readCaptureProject(value.test)
+	const viewport = attempt(() => readCaptureViewport(value.test))
+	return { project, ...(viewport.success ? { viewport: viewport.value } : {}) }
+}
+
+/**
+ * Resolves the directory that holds the runner's request files for the process that reads them.
+ *
+ * @remarks
+ * A directory the wrapper names wins. Otherwise the directory the runner handed this child in
+ * `CAPTURE_REQUESTS` applies, and a process the runner did not start reads `CAPTURE_DEFAULTS.requests`
+ * beneath its working directory. The one default therefore lives here and in the executable, and a
+ * consumer never has to repeat it.
+ *
+ * @param directory - The directory the wrapper declares, when it declares one
+ * @returns The absolute directory
+ *
+ * @example
+ * ```ts
+ * resolveCaptureRequests('/repo/tmp/units') // '/repo/tmp/units'
+ * ```
+ */
+export function resolveCaptureRequests(directory?: string): string {
+	return resolve(directory ?? process.env[CAPTURE_REQUESTS_FLAG] ?? CAPTURE_DEFAULTS.requests)
+}
+
+/**
+ * Builds the empty Node configuration a wrapper returns once it has answered a discovery request.
+ *
+ * @remarks
+ * It carries no project, no setup file, and no include pattern, so Vitest collects no test, starts
+ * no browser, and initializes no output for a discovery child.
+ *
+ * @returns A fresh configuration object
+ *
+ * @example
+ * ```ts
+ * export default (await answerCaptureDiscovery(options)) ? buildCaptureDiscoveryConfig() : config
+ * ```
+ */
+export function buildCaptureDiscoveryConfig(): {
+	readonly test: {
+		readonly include: string[]
+		readonly passWithNoTests: boolean
+		readonly watch: boolean
 	}
+} {
+	return { test: { include: [], passWithNoTests: true, watch: false } }
+}
+
+/**
+ * Accepts the description a wrapper wrote only when it answers this exchange and no other.
+ *
+ * @remarks
+ * Every echo must match: the invocation, the challenge, the wrapper path, the runner as the
+ * wrapper's parent, and the child the runner spawned as the writer. Each project then passes the same
+ * reader the wrapper's own declarations pass through, and the list may not be empty.
+ *
+ * @param value - The parsed description file
+ * @param expected - What the request and the spawn establish
+ * @returns The validated description
+ * @throws Thrown as a `HOST` capture error naming the first echo that differs, a malformed
+ * document, an empty project list, or a malformed project.
+ *
+ * @example
+ * ```ts
+ * const description = readCaptureDescription(parseJSON(text), expected)
+ * ```
+ */
+export function readCaptureDescription(
+	value: unknown,
+	expected: CaptureDescriptionExpectation,
+): CaptureHostDescription {
+	if (!isRecord(value) || value.version !== CAPTURE_VERSION || !isArray(value.projects))
+		throw new CaptureError('The host description is malformed', { code: 'HOST' })
+	if (value.id !== expected.id)
+		throw new CaptureError('The host description answers another invocation', { code: 'HOST' })
+	if (value.nonce !== expected.nonce)
+		throw new CaptureError('The host description answers another challenge (a replay)', {
+			code: 'HOST',
+		})
+	if (value.config !== expected.config)
+		throw new CaptureError('The host description names another wrapper', { code: 'HOST' })
+	if (value.parent !== expected.parent)
+		throw new CaptureError('The host description was written for another parent process', {
+			code: 'HOST',
+		})
+	if (expected.pid === undefined || value.pid !== expected.pid)
+		throw new CaptureError('The host description was not written by the discovery child', {
+			code: 'HOST',
+		})
+	if (value.projects.length === 0)
+		throw new CaptureError('The wrapper declares no projects', { code: 'HOST' })
+	return {
+		version: CAPTURE_VERSION,
+		id: expected.id,
+		nonce: expected.nonce,
+		config: expected.config,
+		parent: expected.parent,
+		pid: expected.pid,
+		projects: value.projects.map(readCaptureEntry),
+	}
+}
+
+/**
+ * Answers the runner's discovery request from the wrapper, before the wrapper does any other work.
+ *
+ * @remarks
+ * The wrapper calls it once, ahead of anything that sets up a browser, initializes an output
+ * directory, or collects a test, and returns `buildCaptureDiscoveryConfig()` when it answered. It
+ * reads only the request file its parent process wrote and answers `false` when there is none, or
+ * when the file is no discovery request, so an execution child falls through to `readCaptureRequest`.
+ * A discovery request is accepted only from its own parent with the exact arguments it recorded, the
+ * wrapper path it names, and an identity and challenge that are portable segments. The wrapper
+ * describes every project from its own declarations and writes one description, atomically, to the
+ * invocation directory; a second answer from another process is refused as a replay, while the same
+ * process may answer again if Vitest loads its configuration twice.
+ *
+ * @param options - The parent id, the process arguments, the request directory, the wrapper path, and the wrapper's `test.projects`
+ * @returns True once the description is written; false when the request is no discovery request
+ * @throws Thrown as a `HOST` capture error for a discovery request that fails any check or a
+ * replayed answer. It does not judge the projects: the runner reads and refuses a malformed one.
+ *
+ * @example
+ * ```ts
+ * const answered = await answerCaptureDiscovery({
+ * 	ppid: process.ppid,
+ * 	argv: process.argv.slice(1),
+ * 	config: 'configs/vite.journey.config.ts',
+ * 	projects,
+ * })
+ * ```
+ */
+export async function answerCaptureDiscovery(options: CaptureDiscoveryOptions): Promise<boolean> {
+	const directory = resolveCaptureRequests(options.directory)
+	const file = resolve(directory, `${CAPTURE_REQUEST_PREFIX}-${String(options.ppid)}.json`)
+	if (!existsSync(file)) return false
+	const read = attempt(() => readFileSync(file, 'utf8'))
+	if (!read.success) return false
+	const parsed = parseJSON(read.value)
+	if (!isRecord(parsed) || parsed.phase !== CAPTURE_DISCOVERY.phase) return false
+	if (parsed.pid !== options.ppid)
+		throw buildCaptureRequestRefusal(
+			file,
+			new CaptureError('Discovery request does not belong to the parent process', {
+				code: 'HOST',
+			}),
+		)
+	const args = arrayOf(isString)(parsed.args) ? parsed.args : undefined
+	if (
+		args === undefined ||
+		args.length !== options.argv.length ||
+		!args.every((argument, index) => argument === options.argv[index])
+	)
+		throw new CaptureError(
+			`Discovery request arguments differ from the process arguments: ${file}`,
+			{ code: 'HOST', context: { file } },
+		)
+	if (parsed.version !== CAPTURE_VERSION)
+		throw new CaptureError('Discovery request has invalid version', { code: 'HOST' })
+	if (!isCaptureSegment(parsed.id) || !isCaptureSegment(parsed.nonce))
+		throw new CaptureError('Discovery request has invalid identity', { code: 'HOST' })
+	if (parsed.config !== options.config)
+		throw new CaptureError('Discovery request has invalid config', { code: 'HOST' })
+	const answer = resolve(
+		directory,
+		CAPTURE_RUNS_DIRECTORY,
+		parsed.id,
+		CAPTURE_DISCOVERY.description,
+	)
+	const prior = existsSync(answer) ? parseJSON(readFileSync(answer, 'utf8')) : undefined
+	if (prior !== undefined && !(isRecord(prior) && prior.pid === process.pid))
+		throw new CaptureError(`Discovery was already answered for this request: ${file}`, {
+			code: 'HOST',
+			context: { file },
+		})
+	// The projects travel as plain data; the runner reads and judges them, so one reader owns every refusal.
+	const projects = await Promise.all(options.projects.map(resolveCaptureWrapperProject))
+	writeCaptureDocument(answer, {
+		version: CAPTURE_VERSION,
+		id: parsed.id,
+		nonce: parsed.nonce,
+		config: options.config,
+		parent: options.ppid,
+		pid: process.pid,
+		projects,
+	})
+	return true
 }
 
 /**
