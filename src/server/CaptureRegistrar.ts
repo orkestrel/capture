@@ -57,7 +57,7 @@ import {
  * requires, so it cannot stamp through the integrity engine. It reads the wrapper through the same
  * discovery the runner uses, takes the same invocation entity, request file, and Vitest child, and runs
  * each producing variant as a stage of its own with the `all` selector and no capture variable. It
- * reads each stage's reporter and closing record, takes the project's input population before and
+ * reads each stage's reporter and final record, takes the project's input population before and
  * after, and builds the receipts through `buildCaptureRegistry`. The registry is written to a
  * candidate beside its target, read back through the integrity engine, and only then renamed into
  * place, so a registry the engine would refuse never replaces a good one. With `--variant`, the
@@ -212,16 +212,16 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 			.filter((tag) => tag.startsWith(CAPTURE_OWNER_PREFIX))
 			.map((tag) => tag.slice(CAPTURE_OWNER_PREFIX.length))
 		const stage = `${CAPTURE_REGISTRY_STAGE}-${variant}`
-		const report = resolve(invocation.directory, `${stage}.json`)
+		const reportFile = resolve(invocation.directory, `${stage}.json`)
 		const log = resolve(invocation.directory, `${stage}.log`)
 		const record = `${resolveCaptureRelative(root, primary.directory)}/${CAPTURE_RUNS_DIRECTORY}/${invocation.id}/${stage}/${variant}.json`
 		const args = buildCaptureArguments({
 			entry: resolve(root, CAPTURE_VITEST_ENTRY),
 			config: parsed.config,
-			report,
+			report: reportFile,
 			projects: [project.name],
 			filter: buildCaptureFilter('journey', 'all', selectors),
-			closing: primary.closing,
+			final: primary.final,
 			...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
 		})
 		const request: CaptureRequest = {
@@ -237,8 +237,8 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		}
 		const before = readCaptureInputs(root, project.inputs)
 		const started = Date.now()
-		rmSync(report, { force: true })
-		this.#stdout(`registry ${stage}: ${variant}; all; report=${report}; record=${record}\n`)
+		rmSync(reportFile, { force: true })
+		this.#stdout(`registry ${stage}: ${variant}; all; report=${reportFile}; record=${record}\n`)
 		const outcome = await this.#run(invocation, request, log)
 		if (invocation.interrupted)
 			throw new CaptureError('Runner interrupted', { code: 'STAGE', context: { variant } })
@@ -247,18 +247,21 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 				`The registry journey for ${variant} did not exit successfully (${String(outcome.code ?? outcome.signal)})`,
 				{ code: 'STAGE', context: { variant, code: outcome.code, signal: outcome.signal } },
 			)
-		if (!existsSync(report))
-			throw new CaptureError(`The registry journey for ${variant} wrote no reporter at ${report}`, {
-				code: 'EVIDENCE',
-				context: { variant },
-			})
-		const text = readFileSync(report, 'utf8')
-		const reading = readCaptureReport(parseJSON(text))
-		if (reading.start < started || reading.end > Date.now())
+		if (!existsSync(reportFile))
+			throw new CaptureError(
+				`The registry journey for ${variant} wrote no reporter at ${reportFile}`,
+				{
+					code: 'EVIDENCE',
+					context: { variant },
+				},
+			)
+		const text = readFileSync(reportFile, 'utf8')
+		const report = readCaptureReport(parseJSON(text))
+		if (report.start < started || report.end > Date.now())
 			throw new CaptureError('Reporter does not belong to this refresh', { code: 'EVIDENCE' })
 		if (!existsSync(resolve(root, record)))
 			throw new CaptureError(
-				`The registry journey for ${variant} wrote no closing record at ${record}`,
+				`The registry journey for ${variant} wrote no final record at ${record}`,
 				{
 					code: 'EVIDENCE',
 					context: { variant },
@@ -271,14 +274,14 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 			run.variant !== variant ||
 			describeCaptureRequest(run.request) !== describeCaptureRequest(request)
 		)
-			throw new CaptureError(`Invalid or mismatched closing record: ${record}`, {
+			throw new CaptureError(`Invalid or mismatched final record: ${record}`, {
 				code: 'EVIDENCE',
 			})
-		if (Date.parse(run.time) < started || Date.parse(run.time) > reading.end)
-			throw new CaptureError('Closing record time does not belong to this refresh', {
+		if (Date.parse(run.time) < started || Date.parse(run.time) > report.end)
+			throw new CaptureError('Final record time does not belong to this refresh', {
 				code: 'EVIDENCE',
 			})
-		validateCaptureRun(run, reading, project.name)
+		validateCaptureRun(run, report, project.name)
 		if (!run.complete)
 			throw new CaptureError(
 				`The registry journey for ${variant} was not a complete run; a refresh imports complete runs only`,
@@ -295,7 +298,7 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 				variant,
 				time: run.time,
 				report: {
-					file: resolveCaptureRelative(root, report),
+					file: resolveCaptureRelative(root, reportFile),
 					digest: computeCaptureHash(text),
 				},
 				inputs: before,

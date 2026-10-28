@@ -33,7 +33,7 @@ const ENGINE_VALUES = [
 	'buildCaptureIntegrityOptions',
 	'buildCaptureRegistry',
 	'collectCaptureErrors',
-	'collectCaptureFraming',
+	'scanCaptureFrames',
 	'collectCaptureIdentical',
 	'composeCapturePictures',
 	'computeCaptureHash',

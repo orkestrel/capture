@@ -373,7 +373,7 @@ export function readCaptureReport(value: unknown): CaptureReport {
 /**
  * Validates declaration, reporter, observation, completeness, and output-projection agreement.
  *
- * @param run - The closing record
+ * @param run - The final record
  * @param report - The validated external reporter
  * @param project - The actual producing project name
  * @throws Thrown as an `EVIDENCE` capture error when a record differs from the actual selected results or declarations.
@@ -552,8 +552,8 @@ export function resolveCaptureStatus(statuses: readonly CaptureStatus[]): Captur
  */
 export function readCaptureDirty(output: string): readonly string[] {
 	// A rename or copy record is followed by its original path as a bare record, so whether a record
-	// is an original depends on the record before it, and the reading carries that in its accumulator.
-	const reading = output
+	// is an original depends on the record before it, and the result carries that in its accumulator.
+	const result = output
 		.split('\0')
 		.filter((record) => record !== '')
 		.reduce<{ readonly paths: readonly string[]; readonly pending: boolean }>(
@@ -566,9 +566,9 @@ export function readCaptureDirty(output: string): readonly string[] {
 						},
 			{ paths: [], pending: false },
 		)
-	if (reading.pending)
+	if (result.pending)
 		throw new CaptureError('Incomplete Git rename provenance', { code: 'EVIDENCE' })
-	return [...new Set(reading.paths)].toSorted()
+	return [...new Set(result.paths)].toSorted()
 }
 
 /**

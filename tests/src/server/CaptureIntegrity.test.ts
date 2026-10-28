@@ -669,7 +669,7 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 		}
 	})
 
-	it('requires the empty closing record for an inapplicable selected project and publishes no empty transaction', async () => {
+	it('requires the empty final record for an inapplicable selected project and publishes no empty transaction', async () => {
 		const fixture = await IntegrityFixture.current()
 		try {
 			const before = readFixtureManifest(fixture.root)
@@ -989,7 +989,7 @@ describe('CaptureIntegrity pass-scoped file readings', { timeout: FIXTURE_TIMEOU
 				shared.map((file) => {
 					const digest = computeCaptureHash(fixture.read(file))
 					return [log.slice(0, boundary), log.slice(boundary + 1)].map(
-						(readings) => readings.filter((entry) => entry === digest).length,
+						(hashes) => hashes.filter((entry) => entry === digest).length,
 					)
 				}),
 			).toEqual(shared.map(() => [1, 2]))

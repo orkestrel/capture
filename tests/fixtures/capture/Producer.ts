@@ -14,7 +14,7 @@ import {
 // A plain Node process stands in for the installed Vitest entry of a composed workspace. It reads the
 // request the runner wrote for its parent from the directory the runner handed it, and it names no
 // directory of its own. A discovery request gets the description the wrapper's projects make; a stage
-// request gets the reporter, the closing records, and the frames the request selects from the
+// request gets the reporter, the final records, and the frames the request selects from the
 // fixture's inert declarations. It validates nothing the engine owns, so every refusal a proof reads
 // comes from the real runner and the real engine. The environment names the one fault a case needs:
 // a protocol fault the fixture writer injects, a hang that waits to be ended, or a discovery fault.

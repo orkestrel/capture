@@ -19,7 +19,7 @@ import type {
 	CaptureHashHandler,
 	CaptureHostDescription,
 	CaptureHostEntry,
-	CaptureImageReading,
+	CaptureImageResult,
 	CaptureIntegrityOptions,
 	CaptureParsedArguments,
 	CapturePicture,
@@ -74,6 +74,7 @@ import {
 	isCapturePattern,
 	isCaptureReceipt,
 	isCaptureSegment,
+	isCaptureSelector,
 	matchesCaptureMembers,
 	matchesCaptureSelector,
 	readCaptureReport,
@@ -936,7 +937,7 @@ export function resolveCaptureVariants(
  * @remarks
  * Each value is its own array element, so no shell quoting applies and a case name keeps its
  * spaces and quotes. An exact case adds `-t` with the anchored pattern for that case and the
- * closing case, so the closing case still writes the run record.
+ * final case, so the final case still writes the run record.
  *
  * @param options - The entry, wrapper, report, projects, tag filter, and optional exact case and mode
  * @returns The arguments after the Node executable
@@ -949,7 +950,7 @@ export function resolveCaptureVariants(
  * 	report: '/repo/tmp/units/runs/a/journey-selected.json',
  * 	projects: ['journey:light-390'],
  * 	filter: 'owner:pages:mail',
- * 	closing: 'closes the run',
+ * 	final: 'closes the run',
  * })
  * args.includes('--bail=1') // true
  * ```
@@ -975,7 +976,7 @@ export function buildCaptureArguments(options: CaptureArgumentsOptions): readonl
 			? []
 			: [
 					'-t',
-					`^(?:${[options.case, options.closing].map((name) => escapeCapturePattern(name)).join('|')})$`,
+					`^(?:${[options.case, options.final].map((name) => escapeCapturePattern(name)).join('|')})$`,
 				]),
 	]
 }
@@ -1148,7 +1149,9 @@ export function readCapturePortfolios(
  * The label is the project's `name` or its `label` member. Tags must not contain whitespace or a
  * tag-filter operator, and a variant must be a portable identity. The project's own `variant` must
  * be one of the declared `variants`, and so must the `first` stage variant. Portfolio roots and
- * the closing case are required, and standalone roots default to none.
+ * the final case are required, and standalone roots default to none. `uniform` is an optional
+ * list of unique valid owner selectors for the preflight's frame scan. Default: every scope.
+ * An empty list judges none; the declaration never narrows the other readings.
  *
  * @param test - The project's `test` configuration, or any value the wrapper supplied in its place
  * @returns The validated project declaration
@@ -1165,7 +1168,7 @@ export function readCapturePortfolios(
  * 		directory: '/repo/tmp/captures/states',
  * 		record: 'tmp/captures/states/runs/a/light-390.json',
  * 		inputs: ['src/**'],
- * 		closing: 'closes the run',
+ * 		final: 'closes the run',
  * 		first: 'light-390',
  * 		portfolios: [{ portfolio: 'states', directory: 'tmp/captures/states', scoped: true }],
  * 	},
@@ -1222,9 +1225,15 @@ export function readCaptureProject(test: unknown): CaptureProject {
 		throw new CaptureError('The wrapper provides no first-stage variant among its variants', {
 			code: 'HOST',
 		})
-	const closing = provided.closing
-	if (!isString(closing) || closing.trim() === '')
-		throw new CaptureError('The wrapper provides no closing case', { code: 'HOST' })
+	const final = provided.final
+	if (!isString(final) || final.trim() === '')
+		throw new CaptureError('The wrapper provides no final case', { code: 'HOST' })
+	const uniform = provided.uniform
+	if (uniform !== undefined && !arrayOf(isCaptureSelector)(uniform))
+		throw new CaptureError('The wrapper uniform scopes must be a list of valid owner selectors', {
+			code: 'HOST',
+		})
+	if (uniform !== undefined) requireCaptureUnique(uniform, 'uniform scopes')
 	const portfolios = readCapturePortfolios(provided.portfolios, 'portfolios')
 	if (portfolios.length === 0)
 		throw new CaptureError('The wrapper provides no portfolio roots', { code: 'HOST' })
@@ -1245,8 +1254,9 @@ export function readCaptureProject(test: unknown): CaptureProject {
 		directory: provided.directory,
 		record: provided.record,
 		inputs: provided.inputs,
-		closing,
+		final,
 		first,
+		...(uniform === undefined ? {} : { uniform }),
 		portfolios,
 		standalone,
 	}
@@ -1284,8 +1294,9 @@ export function describeCapturePortfolios(
  *
  * @remarks
  * Project labels are unique and so is each project's own variant, case-folded. Every project must
- * declare the same primary directory, inputs, variants, first-stage variant, closing case, and
- * portfolio roots, because the runner builds one engine for the whole set.
+ * declare the same primary directory, inputs, variants, first-stage variant, final case, and
+ * portfolio roots, because the runner builds one engine for the whole set. Uniform declarations
+ * must also agree as populations, with absence distinct from an empty list.
  *
  * @param projects - The wrapper's projects
  * @returns The first project, whose declarations every other project matches
@@ -1314,8 +1325,11 @@ export function requireCaptureProjects(projects: readonly CaptureProject[]): Cap
 		projects.some(
 			(project) =>
 				project.directory !== first.directory ||
-				project.closing !== first.closing ||
+				project.final !== first.final ||
 				project.first !== first.first ||
+				(project.uniform === undefined || first.uniform === undefined
+					? project.uniform !== first.uniform
+					: !matchesCaptureMembers(project.uniform, first.uniform)) ||
 				!matchesCaptureMembers(project.inputs, first.inputs) ||
 				!matchesCaptureMembers(project.variants, first.variants) ||
 				!matchesCaptureMembers(
@@ -1638,11 +1652,11 @@ export function buildCaptureIntegrityOptions(
  *
  * @example
  * ```ts
- * collectCaptureFraming(images, producers) // ['Mixed framing: states/pages:mail@390: page, viewport']
+ * scanCaptureFrames(images, producers) // ['Mixed framing: states/pages:mail@390: page, viewport']
  * ```
  */
-export function collectCaptureFraming(
-	images: readonly CaptureImageReading[],
+export function scanCaptureFrames(
+	images: readonly CaptureImageResult[],
 	producers: readonly CaptureProducer[],
 ): readonly string[] {
 	const families = [
@@ -1689,7 +1703,7 @@ export function collectCaptureFraming(
  * ```
  */
 export function collectCaptureIdentical(
-	images: readonly CaptureImageReading[],
+	images: readonly CaptureImageResult[],
 ): ReadonlyArray<readonly string[]> {
 	return [...new Set(images.map((image) => image.digest))]
 		.map((digest) =>

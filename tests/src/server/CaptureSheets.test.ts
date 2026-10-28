@@ -55,7 +55,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 		}
 	})
 
-	it('writes mixed framing observations and source dimensions into the sheet documents', async () => {
+	it('writes mixed observations and source dimensions into the sheet documents', async () => {
 		const fixture = new ReaderFixture()
 		try {
 			fixture.seed()
@@ -70,18 +70,18 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 				'--variant',
 				'light-390',
 				'--output',
-				'tmp/framing-sheets',
+				'tmp/mixed-sheets',
 			])
 			expect(result.status).toBe(0)
-			const json = fixture.read('tmp/framing-sheets/index.json').toString('utf8')
-			const markdown = fixture.read('tmp/framing-sheets/index.md').toString('utf8')
-			expect(json).toContain('"framing": [')
+			const json = fixture.read('tmp/mixed-sheets/index.json').toString('utf8')
+			const markdown = fixture.read('tmp/mixed-sheets/index.md').toString('utf8')
+			expect(json).toContain('"mixed": [')
 			expect(json).toContain(observation)
 			expect(json).toContain(screen)
 			expect(json).toContain(reader)
 			expect(markdown).toContain('# Contact sheets')
 			expect(markdown).toContain('Iteration evidence only.')
-			expect(markdown).toContain('## Framing observations')
+			expect(markdown).toContain('## Mixed observations')
 			expect(markdown).toContain(`- ${observation}`)
 			expect(markdown).toContain('## sheet-001.png')
 			expect(markdown).toContain('![sheet-001.png](sheet-001.png)')
@@ -90,9 +90,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 			expect(markdown).toContain('source 128 x 256')
 			expect(markdown).toContain('source 128 x 128')
 			expect(markdown).toContain('producer journey:light-390')
-			expect(decodeCapturePicture(fixture.read('tmp/framing-sheets/sheet-001.png')).height).toBe(
-				256,
-			)
+			expect(decodeCapturePicture(fixture.read('tmp/mixed-sheets/sheet-001.png')).height).toBe(256)
 		} finally {
 			fixture.destroy()
 		}

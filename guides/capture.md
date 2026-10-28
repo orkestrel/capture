@@ -2,9 +2,9 @@
 
 > An evidence protocol, integrity engine, and runner that stamp browser journey frames with their source provenance and classify each frame's freshness.
 
-A browser application that proves its screens through journeys also emits frames: one image per state and output variant. This package is the evidence behind those frames. Its core declares the protocol a journey writes and a reader checks: the request a runner hands to Vitest, the closing record a variant writes, the receipt and registry that pin a complete run, the stamp and manifest that bind each image to the sources and the commit that produced it, and the freshness classes a reader reports. Its guards validate each document total over hostile input, its helpers hold the pure rules that compare them, and its failures carry a condition the executable maps to an exit code. Its server face declares the engine, runner, preflight, and contact-sheet contracts the later modules implement.
+A browser application that proves its screens through journeys also emits frames: one image per state and output variant. This package is the evidence behind those frames. Its core declares the protocol a journey writes and a reader checks: the request a runner hands to Vitest, the final record a variant writes, the receipt and registry that pin a complete run, the stamp and manifest that bind each image to the sources and the commit that produced it, and the freshness classes a reader reports. Its guards validate each document total over hostile input, its helpers hold the pure rules that compare them, and its failures carry a condition the executable maps to an exit code. Its server face declares the engine, runner, preflight, and contact-sheet contracts the later modules implement.
 
-The package names no product group, title, variant, or path. A host supplies every one of them as data: its portfolios, its owners, its variants, its closing case, its first-stage variant, and its input patterns.
+The package names no product group, title, variant, or path. A host supplies every one of them as data: its portfolios, its owners, its variants, its final case, its first-stage variant, its input patterns, and its optional uniform scopes.
 
 ```ts
 import {
@@ -40,7 +40,7 @@ Protocol shapes from [`types.ts`](../src/core/types.ts).
 | `CaptureDestination`       | interface | Identifies one required output pair and its declaring case.                                   |
 | `CaptureDeclaration`       | interface | Preserves a collected case's full behavioral declaration.                                     |
 | `CaptureEntry`             | interface | Records an emitted destination and its producing case duration.                               |
-| `CaptureArtifact`          | interface | Names the journey artifact a closing case wrote and the SHA-256 of its bytes.                 |
+| `CaptureArtifact`          | interface | Names the journey artifact a final case wrote and the SHA-256 of its bytes.                   |
 | `CaptureRun`               | interface | Records collected declarations, successful observations, and emitted output separately.       |
 | `CaptureReceipt`           | interface | Binds a complete registry reading to its report and input hashes.                             |
 | `CaptureRegistry`          | interface | Collects validated registry receipts and their required output pairs.                         |
@@ -102,7 +102,7 @@ Total guards from [`validators.ts`](../src/core/validators.ts). Each returns `fa
 | `isCaptureDestination`    | function | Checks whether a destination supplies canonical identity and source attribution fields.          |
 | `isCaptureEntry`          | function | Checks whether an emitted entry includes a finite nonnegative case duration.                     |
 | `isCaptureArtifact`       | function | Checks whether a record names its journey artifact by portable path and SHA-256 digest.          |
-| `isCaptureRun`            | function | Checks whether a closing record preserves declarations, observations, and output separately.     |
+| `isCaptureRun`            | function | Checks whether a final record preserves declarations, observations, and output separately.       |
 | `isCaptureDigest`         | function | Checks whether a shared-source digest retains both patterns and expanded file hashes.            |
 | `isCaptureReceipt`        | function | Checks whether a complete-run receipt binds the report, inputs, and declaration registry.        |
 | `isCaptureRegistry`       | function | Checks whether a registry document retains its receipts and required output pairs.               |
@@ -150,7 +150,7 @@ Engine, runner, preflight, and contact-sheet contracts from [`types.ts`](../src/
 | `CapturePortfolioRoot`          | interface | Supplies a host-authorized physical portfolio root without repeating its states or variants.                              |
 | `CaptureHashHandler`            | type      | Digests the exact bytes of one file reading and returns the lowercase hexadecimal digest.                                 |
 | `CaptureIntegrityOptions`       | interface | Configures the engine's workspace and separate evidence documents.                                                        |
-| `CaptureStageProject`           | interface | Supplies one selected project's expected closing record and bounded input population.                                     |
+| `CaptureStageProject`           | interface | Supplies one selected project's expected final record and bounded input population.                                       |
 | `CaptureParsedArguments`        | type      | Carries the typed values and tokens of a strictly parsed capture command line.                                            |
 | `CaptureExecutionResult`        | interface | Carries the supervised child outcome without treating a signal as a successful exit.                                      |
 | `CaptureExecutionHandler`       | type      | Executes the runner's child after the engine captures its input snapshot.                                                 |
@@ -168,12 +168,12 @@ Engine, runner, preflight, and contact-sheet contracts from [`types.ts`](../src/
 | `CaptureLookupOptions`          | interface | Requests a state-to-case resolution before the runner starts any selected project.                                        |
 | `CaptureLookupResult`           | interface | Resolves one declaring case and its actual output pairs with their passing evidence.                                      |
 | `CaptureRunEvidence`            | interface | Binds a decoded run record to the physical file whose digest authenticated it.                                            |
-| `CaptureDirectoryReading`       | interface | Carries one physical-directory ancestry while enumerating logical portfolio paths.                                        |
+| `CaptureDirectoryResult`        | interface | Carries one physical-directory ancestry while enumerating logical portfolio paths.                                        |
 | `CaptureEvidence`               | interface | Carries accepted registry anchors and separately persisted passing run evidence.                                          |
 | `CaptureCollectionEvidence`     | interface | Carries the authenticated external record beside its collection receipt.                                                  |
 | `CaptureReceiptInput`           | interface | Supplies a verifier's actual process outcome and exact reporter bytes for registry import.                                |
 | `CaptureIntegrityInterface`     | interface | Defines the shared stage transaction, freshness reading, and state resolution engine.                                     |
-| `CaptureProject`                | interface | Preserves the wrapper's host declarations for the runner.                                                                 |
+| `CaptureProject`                | interface | Preserves the wrapper's host declarations, including optional uniform scopes, for consumers.                              |
 | `CaptureRunnerOptions`          | interface | Configures one runner invocation: its command, its workspace, and the command line it reads.                              |
 | `CaptureRunnerArguments`        | interface | Carries parsed runner arguments while leaving omitted selectors available to the usage diagnostic.                        |
 | `CaptureRunnerInterface`        | interface | Drives selected owners through one journey stage or staged frame captures.                                                |
@@ -202,15 +202,15 @@ Engine, runner, preflight, and contact-sheet contracts from [`types.ts`](../src/
 | `CaptureReaderOptions`          | interface | Configures a read-only capture consumer using the wrapper's host declarations.                                            |
 | `CaptureProducer`               | interface | Declares the viewport one wrapper project produces beside the project's own name.                                         |
 | `CaptureReaderDefaults`         | interface | Supplies the wrapper path, the journey artifact directory, and the request directory a reader command line falls back to. |
-| `CaptureReaderSelection`        | interface | Returns a reader's authenticated selection and the same engine for pixel classification.                                  |
-| `CaptureArtifactReading`        | interface | Carries a judged run record and the verified text of the journey artifact it names.                                       |
+| `CaptureReaderSelection`        | interface | Returns a reader's authenticated selection, uniform scopes, and engine for pixel classification.                          |
+| `CaptureArtifactResult`         | interface | Carries a judged run record and the verified text of the journey artifact it names.                                       |
 | `CaptureJudgedRecord`           | interface | Names the run record a judged frame's stamp points at and the case that stamped it.                                       |
 | `CaptureJudgedFrame`            | interface | Pairs a judged frame with its verified artifact, when one was read, and its coverage issues.                              |
-| `CaptureImageReading`           | interface | Records one selected image's real bytes, geometry, and canonical destination.                                             |
+| `CaptureImageResult`            | interface | Records one selected image's real bytes, geometry, and canonical destination.                                             |
 | `CaptureCheckFrame`             | interface | Carries one judged frame to a host check: its destination, its decoded pixels, and its artifact.                          |
 | `CaptureCheckHandler`           | type      | Reads one judged frame against a host rule and returns the issues it finds, none when it passes.                          |
 | `CapturePreflightResult`        | interface | Reports selected image checks without upgrading their engine freshness classifications.                                   |
-| `CapturePreflightInterface`     | interface | Reads the selected population's frames and reports their freshness, framing, and coverage.                                |
+| `CapturePreflightInterface`     | interface | Reads the selected population's frames and reports their freshness, mixed observations, and coverage.                     |
 | `CaptureSheetOptions`           | interface | Carries a contact-sheet output request separately from the population selection.                                          |
 | `CaptureSheetCell`              | interface | Holds one contact-sheet cell: a frame's destination, its shrunk picture, and what the sheet reports about it.             |
 | `CaptureSheetGroup`             | interface | Holds the cells of one portfolio, owner, and state side by side as one composite picture.                                 |
@@ -295,7 +295,7 @@ Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry
 | `readCaptureReaderArguments`   | function | Reads a reader's command line into its selection, its flags, and the resolved paths.                      |
 | `readCaptureViewport`          | function | Reads the viewport a wrapper project's producing variant declares.                                        |
 | `buildCaptureIntegrityOptions` | function | Derives the integrity engine's options from a wrapper project's host declarations.                        |
-| `collectCaptureFraming`        | function | Reports a portfolio, owner, and viewport whose frames mix cropped, viewport-sized, and page-sized images. |
+| `scanCaptureFrames`            | function | Reports a portfolio, owner, and viewport whose frames mix cropped, viewport-sized, and page-sized images. |
 | `collectCaptureIdentical`      | function | Groups the selected images whose bytes are identical.                                                     |
 | `collectCaptureErrors`         | function | Finds the journey artifact lines that report an uncaught, unhandled, or logged error.                     |
 | `readCaptureRunning`           | function | Checks whether a process with this id is running, counting one the caller may not signal.                 |
@@ -322,9 +322,9 @@ The integrity engine from [`CaptureIntegrity.ts`](../src/server/CaptureIntegrity
 | `CaptureDiscovery`       | class    | Reads a consumer's wrapper by running the consumer's installed Vitest in discovery mode.                     |
 | `createCaptureDiscovery` | function | Creates the discovery that reads a consumer's wrapper through the consumer's own Vitest.                     |
 | `createCaptureRunner`    | function | Creates the runner that drives owner-selected journeys for one command line.                                 |
-| `CapturePreflight`       | class    | Reads the selected population's frames and reports their freshness, framing, and coverage.                   |
+| `CapturePreflight`       | class    | Reads the selected population's frames and reports their freshness, mixed observations, and coverage.        |
 | `CaptureSheets`          | class    | Composes exactly the authenticated sparse state and output pairs for iteration review.                       |
-| `createCapturePreflight` | function | Creates the preflight that judges the selected frames' freshness, framing, and coverage.                     |
+| `createCapturePreflight` | function | Creates the preflight that judges the selected frames' freshness, mixed observations, and coverage.          |
 | `createCaptureSheets`    | function | Creates the contact-sheet writer for the selected frames.                                                    |
 | `CaptureRegistrar`       | class    | Refreshes the accepted registry from one complete capture-free journey per producing variant.                |
 | `createCaptureRegistrar` | function | Creates the registry refresh that runs each producing variant's complete journey and publishes the registry. |
@@ -351,11 +351,11 @@ The integrity engine from [`CaptureIntegrity.ts`](../src/server/CaptureIntegrity
 
 #### `CapturePreflightInterface`
 
-| Name      | Summary                                                                             |
-| --------- | ----------------------------------------------------------------------------------- |
-| `read`    | Reads the authenticated selection and the host's declared viewports.                |
-| `check`   | Judges every selected frame and returns the framing, freshness, images, and issues. |
-| `execute` | Executes the check and prints its report.                                           |
+| Name      | Summary                                                                                        |
+| --------- | ---------------------------------------------------------------------------------------------- |
+| `read`    | Reads the authenticated selection, uniform scopes, and the host's declared viewports.          |
+| `check`   | Judges every selected frame and returns the mixed observations, freshness, images, and issues. |
+| `execute` | Executes the check and prints its report.                                                      |
 
 #### `CaptureRunnerInterface`
 
@@ -418,7 +418,7 @@ const result = await integrity.check({ selector: 'pages:mail' })
 result.entries.map((entry) => entry.status) // one classification per selected frame
 ```
 
-`stamp` is the only method that writes. It snapshots the bounded inputs, runs the runner's child once, and validates every selected closing record against the reporter before it replaces the manifest in one atomic rename; a failure before that rename leaves the prior manifest bytes untouched, and a journey publishes lookups and full-collection receipts in the separate journal instead. `check` classifies each selected frame as `duplicate`, `orphan`, `missing`, `unstamped`, `stale-shared`, `stale-own`, or `current`, and keeps every finding that justified the class. `read` and `lookup` start no process: they resolve a selection or a state from evidence, and a refusal names the explicit refresh command to run.
+`stamp` is the only method that writes. It snapshots the bounded inputs, runs the runner's child once, and validates every selected final record against the reporter before it replaces the manifest in one atomic rename; a failure before that rename leaves the prior manifest bytes untouched, and a journey publishes lookups and full-collection receipts in the separate journal instead. `check` classifies each selected frame as `duplicate`, `orphan`, `missing`, `unstamped`, `stale-shared`, `stale-own`, or `current`, and keeps every finding that justified the class. `read` and `lookup` start no process: they resolve a selection or a state from evidence, and a refusal names the explicit refresh command to run.
 
 Every refusal is a `CaptureError`. A selector, variant, case, state, or portfolio the host does not declare is `SELECTION`; a wrapper or option fault is `HOST`; a stage that did not complete or whose inputs moved is `STAGE`; a record, report, registry, or manifest that fails its protocol is `EVIDENCE`; and a path that leaves the integrity root or an authorized portfolio root is `CONTAINMENT`.
 
@@ -428,7 +428,18 @@ The engine reads each file once per pass through a memo it discards when the pas
 
 ### Runner
 
-The request protocol, the stage order, and the process supervision. `createCaptureRunner` binds one command (`journey`, `capture`, or `stale`), a workspace root, the wrapper's default path, the request directory, and the command line after the entry name. The runner never loads the wrapper itself, so the package imports neither Vite nor Vitest: it discovers the wrapper through the consumer's own Vitest, as the Discovery paragraph below describes. It reads every name it uses from the wrapper's provided values: `variant` and `variants`, `first`, `closing`, `portfolios`, `standalone`, `directory`, `record`, and `inputs`, and the project tags that carry `owner:` paths. It validates uniqueness, tag syntax, references, and containment before it spawns anything.
+The request protocol, the stage order, and the process supervision. `createCaptureRunner` binds one command (`journey`, `capture`, or `stale`), a workspace root, the wrapper's default path, the request directory, and the command line after the entry name. The runner never loads the wrapper itself, so the package imports neither Vite nor Vitest: it discovers the wrapper through the consumer's own Vitest, as the Discovery paragraph below describes. It reads every name it uses from the wrapper's provided values: `variant` and `variants`, `first`, `final`, `uniform`, `portfolios`, `standalone`, `directory`, `record`, and `inputs`, and the project tags that carry `owner:` paths. It validates uniqueness, tag syntax, references, and containment before it spawns anything.
+
+**Host data.** Each project's `test.provide` can declare `uniform`, a list of unique valid owner selectors whose frames the preflight judges for mixed observations. Omission judges every scope; `uniform: []` judges none. Selectors match owners at colon boundaries, so `pages` includes `pages:mail`, and `pages:mail` includes its sections. Every project must agree on the declaration as a population, regardless of order, and omission differs from an empty list. A malformed list or selector refuses as `HOST`, duplicate entries refuse as `EVIDENCE`, and disagreeing projects refuse as `HOST`. Discovery preserves the declaration in each project's host description, and the preflight carries it into its reader selection. To judge page and example frames, put the following line beside `final`, `first`, and `portfolios` in every project's `test.provide` object.
+
+```ts
+const provide = {
+	// The wrapper's other host declarations are omitted.
+	uniform: ['pages', 'examples'],
+}
+```
+
+Bind the runner to its command, workspace, wrapper, request directory, and arguments.
 
 ```ts
 import { createCaptureRunner } from '@orkestrel/capture/server'
@@ -480,7 +491,7 @@ Use only owner and case names the wrapper declares. Follow a refusal's exact nex
 
 ### Runner selection and process protocol
 
-**Selection.** A selector is `all` or an owner path the wrapper's tags declare; each segment is checked, and the refusal names the first unknown one, labelled `scope` at the first depth and `owner` below it. A journey filters on `owner:<selector>`. A capture also intersects the capture tag, which is the selector's scope and part, and `all` unions every declared scope. `--case` selects one case by its exact full name, and the runner passes the anchored pattern for that case and the closing case with every regular-expression metacharacter quoted. `--state` asks the engine for the declaring case and refuses, before any process starts, when the engine's evidence is missing, stale, or ambiguous.
+**Selection.** A selector is `all` or an owner path the wrapper's tags declare; each segment is checked, and the refusal names the first unknown one, labelled `scope` at the first depth and `owner` below it. A journey filters on `owner:<selector>`. A capture also intersects the capture tag, which is the selector's scope and part, and `all` unions every declared scope. `--case` selects one case by its exact full name, and the runner passes the anchored pattern for that case and the final case with every regular-expression metacharacter quoted. `--state` asks the engine for the declaring case and refuses, before any process starts, when the engine's evidence is missing, stale, or ambiguous.
 
 **Discovery.** Before it plans anything, the runner publishes an atomic request whose phase is `discover` and spawns the consumer's installed Vitest entry directly (`process.execPath` with `node_modules/vitest/vitest.mjs`) as `list --filesOnly --config <wrapper> --configLoader runner`, with the capture variable set so a wrapper's destructive no-capture initialization never runs. The wrapper calls `answerCaptureDiscovery` before it does any other work, writes its description atomically beside the invocation's logs, and returns `buildCaptureDiscoveryConfig()`, an empty Node configuration, so Vitest sets up no browser, initializes no output, and collects no test. The runner accepts the description only after the child exited zero and every echo in it matches the exchange: the invocation, a fresh challenge, the wrapper, the runner as the wrapper's parent, and the spawned child as its writer. A wrapper that never answers, answers another exchange, writes an unreadable or empty description, exits nonzero, or outlives the deadline (`CAPTURE_DISCOVERY.deadline`, replaceable through the `deadline` option) is refused as a `HOST` condition, and a request from another parent, with other arguments, version, identity, or wrapper, is refused by the wrapper. A syntax error in the command line refuses before any child; an unknown selector or variant refuses after discovery and before any execution child.
 
@@ -538,9 +549,9 @@ const exit = await createCapturePreflight(reader).execute() // 0 when every fram
 await createCaptureSheets({ reader, output: `${process.cwd()}/tmp/sheets` }).execute()
 ```
 
-**Preflight.** `execute` prints one `READER` line of JSON and returns 0 when every selected frame is current and no issue was found, 1 for any defect, and 64 for a refused selection, wrapper, or checks module; it reports a refusal on the error writer and prints no report. The report carries the selection, the freshness the engine classified, the framing observations, every issue, the groups of byte-identical images, the size of each image, and `acceptance: false`: a passing preflight is iteration evidence and never assembled-portfolio acceptance. The preflight upgrades no freshness classification, and it widens no selection.
+**Preflight.** `execute` prints one `READER` line of JSON and returns 0 when every selected frame is current and no issue was found, 1 for any defect, and 64 for a refused selection, wrapper, or checks module; it reports a refusal on the error writer and prints no report. The report carries the selection, the freshness the engine classified, the mixed observations, every issue, the groups of byte-identical images, the size of each image, and `acceptance: false`: a passing preflight is iteration evidence and never assembled-portfolio acceptance. The preflight upgrades no freshness classification, and it widens no selection.
 
-**Images.** Each selected destination is read from disk, refused below 4,000 bytes, and decoded. A frame whose image cannot be read stays in the report as an issue and, in the sheets, as a red mark indexed `missing`. The framing reading groups the decoded frames by portfolio, owner, and declared viewport width, and names a group whose frames mix cropped, viewport-sized, and page-sized images. It reads only a frame at its own producing variant, and it never decides which framing was intended.
+**Images.** Each selected destination is read from disk, refused below 4,000 bytes, and decoded. A frame whose image cannot be read stays in the report as an issue and, in the sheets, as a red mark indexed `missing`. The frame scan groups the decoded frames by portfolio, owner, and declared viewport width, and names a group whose frames mix cropped, viewport-sized, and page-sized images. It reads only a frame at its own producing variant, and it never decides which framing was intended. When the wrapper declares `uniform`, only images whose owner matches a declared selector enter those groups; an empty list produces no mixed observations. Without the declaration, every scope enters. Frames outside the declared scopes retain their freshness, coverage, image issues, host checks, and sheet cells.
 
 **Artifacts.** The reader judges each frame by the run record its own stamp names, never by a variant's latest file. It reads that record, requires the journey artifact the record names to sit inside the journeys directory and to match the record's digest, and then requires the record to cover the frame, the artifact to bind the record with a `record=` line, and the artifact to show the stamping case with a `case-ran=` line. It also reports every artifact line that logs an uncaught, unhandled, or error entry. A frame with no stamp is an issue, never a guess. A standalone portfolio root the wrapper declares has no stamping route, so a selection that names one reads that root alone and reports its frames as unstamped.
 
@@ -559,7 +570,7 @@ export const CAPTURE_CHECKS = [
 
 A module that cannot be loaded, exports no list of functions, or holds a reader that returns something other than a list of strings refuses the run as a `HOST` condition before a report prints.
 
-**Sheets.** `execute` reads the selection through the preflight, so it judges the same population and keeps its refusals. It requires an output directory that does not exist, lies inside the workspace, has an existing parent, and lies outside every selected capture directory, and it refuses otherwise with exit 64 before writing anything. It shrinks each frame by a whole factor toward 320 pixels wide, clips it at 400 pixels tall, places a state's variants side by side, pairs two states per row, and stacks four rows per sheet. It writes `sheet-001.png` and onward, an `index.json` of every cell with its source and displayed size, its freshness, and the framing observations, and an `index.md` that links each frame. It prints the index as one `SHEETS` line and returns the same exit status the preflight would.
+**Sheets.** `execute` reads the selection through the preflight, so it judges the same population and keeps its refusals. It requires an output directory that does not exist, lies inside the workspace, has an existing parent, and lies outside every selected capture directory, and it refuses otherwise with exit 64 before writing anything. It shrinks each frame by a whole factor toward 320 pixels wide, clips it at 400 pixels tall, places a state's variants side by side, pairs two states per row, and stacks four rows per sheet. It writes `sheet-001.png` and onward, an `index.json` of every cell with its source and displayed size, its freshness, and the mixed observations, and an `index.md` that links each frame. It prints the index as one `SHEETS` line and returns the same exit status the preflight would.
 
 ### Registry refresh
 
@@ -579,7 +590,7 @@ const exit = await registrar.execute() // 0 when the registry was published
 
 **Flags.** `--variant` repeats and names the producing variants to refresh; without it every variant the wrapper declares is refreshed. `--config` replaces the wrapper. `--mode` is forwarded to the wrapper's Vitest process as `--mode <name>` and recorded in the request, so a wrapper that selects another registry by mode is refreshed by naming it. The command takes no selector, and every flag takes one value.
 
-**Stages.** The stage for a variant is named `registry-<variant>`, so each variant's records sit under `<directory>/runs/<id>/registry-<variant>/`. The command takes the project's declared input population and its content hashes before the child starts and again after, and refuses when they differ. It then reads the reporter and the closing record, requires the record to carry the stage's own request, to fall between the start of the refresh and the end of the reporter, to agree with every collected declaration, and to be complete, and builds one receipt from them: the variant, the record's time, the reporter's path and digest, the input hashes, and the record's declarations and registry.
+**Stages.** The stage for a variant is named `registry-<variant>`, so each variant's records sit under `<directory>/runs/<id>/registry-<variant>/`. The command takes the project's declared input population and its content hashes before the child starts and again after, and refuses when they differ. It then reads the reporter and the final record, requires the record to carry the stage's own request, to fall between the start of the refresh and the end of the reporter, to agree with every collected declaration, and to be complete, and builds one receipt from them: the variant, the record's time, the reporter's path and digest, the input hashes, and the record's declarations and registry.
 
 **Publication.** `buildCaptureRegistry` imports the receipts only after each exit is zero and each reporter digest still equals its receipt. The registry is written to a candidate beside `registry.json`, read back through the integrity engine pointed at the candidate, and only then renamed over the target, so a registry the engine would refuse never replaces a good one and the old bytes survive a failed or interrupted refresh. The command prints one `REGISTRY` line of JSON: the file, the digest, the variants in the registry, the variants this run refreshed, and the entry count.
 

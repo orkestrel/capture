@@ -162,9 +162,9 @@ export class ComposedFixture extends IntegrityFixture {
 	readReady(): readonly number[] {
 		const ready = resolve(this.root, 'ready.json')
 		if (!existsSync(ready)) return []
-		const reading: unknown = parseJSON(readFileSync(ready, 'utf8'))
-		if (!isRecord(reading)) return []
-		return [reading.pid, reading.descendant].filter((pid): pid is number => typeof pid === 'number')
+		const result: unknown = parseJSON(readFileSync(ready, 'utf8'))
+		if (!isRecord(result)) return []
+		return [result.pid, result.descendant].filter((pid): pid is number => typeof pid === 'number')
 	}
 
 	async #watch(start: () => Promise<number>, options: ComposedExecution): Promise<number> {

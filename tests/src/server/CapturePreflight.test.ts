@@ -8,6 +8,7 @@ import { ReaderFixture } from '../../fixtures/capture/ReaderFixture.js'
 import {
 	BOARD,
 	FIXTURE_TIMEOUT,
+	UNIFORM_DECLARATIONS,
 	MAIL,
 	MIXED_PICTURES,
 	READER_COMMANDS,
@@ -320,7 +321,59 @@ describe(
 	},
 )
 
-describe('CapturePreflight framing observations', { timeout: FIXTURE_TIMEOUT }, () => {
+describe('CapturePreflight mixed observations', { timeout: FIXTURE_TIMEOUT }, () => {
+	it.each(UNIFORM_DECLARATIONS)(
+		'judges uniform scopes with $title while retaining freshness, coverage, and host checks for every scope',
+		async ({ uniform, observations }) => {
+			const fixture = new ReaderFixture()
+			try {
+				const variants = ['light-390', 'dark-390']
+				fixture.write(READER_CONFIG, createReaderWrapper(fixture.root, variants, uniform))
+				fixture.seed({ variants })
+				await fixture.capture({
+					variants: ['light-390'],
+					picture: {
+						'mail-screen': { width: 128, height: 256 },
+						'board-screen': { width: 128, height: 256 },
+					},
+				})
+				await fixture.capture({ variants: ['dark-390'], picture: true })
+				const result = await fixture.run('preflight', [
+					'all',
+					'--variant',
+					'light-390',
+					'--variant',
+					'dark-390',
+					'--checks',
+					CHECKS,
+				])
+				expect({ status: result.status, stderr: result.stderr }).toEqual({
+					status: 1,
+					stderr: '',
+				})
+				const board = 'tmp/captures/states/examples/board-screen--light-390.png'
+				const mail = 'tmp/captures/states/pages/mail-screen--light-390.png'
+				expect(parseJSON(result.stdout.slice('READER '.length))).toMatchObject({
+					mixed: observations,
+					freshness: {
+						entries: expect.arrayContaining([
+							expect.objectContaining({ file: board, status: 'current' }),
+							expect.objectContaining({ file: mail, status: 'current' }),
+						]),
+					},
+					sizes: expect.arrayContaining([
+						expect.objectContaining({ file: board, width: 128, height: 256 }),
+						expect.objectContaining({ file: mail, width: 128, height: 256 }),
+					]),
+					issues: [`${TALL_FINDING}: ${mail}`, `${TALL_FINDING}: ${board}`],
+					acceptance: false,
+				})
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+
 	it.each(READER_COMMANDS)(
 		'reports mixed page-sized and viewport-sized images through %s without making the mixture fatal',
 		async (command) => {
@@ -341,10 +394,10 @@ describe('CapturePreflight framing observations', { timeout: FIXTURE_TIMEOUT }, 
 					MAIL,
 					'--variant',
 					'light-390',
-					...sheetsFor(command, 'framing-sheets'),
+					...sheetsFor(command, 'mixed-sheets'),
 				])
 				expect(describeRun(result)).toEqual({ code: 0, failure: undefined })
-				expect(result.stdout).toContain(`"framing":[${JSON.stringify(observation)}]`)
+				expect(result.stdout).toContain(`"mixed":[${JSON.stringify(observation)}]`)
 				expect(result.stdout).toContain('"issues":[]')
 				expect(result.stdout).toContain('"acceptance":false')
 				expect(result.stdout).toContain(screen)
@@ -374,7 +427,7 @@ describe('CapturePreflight framing observations', { timeout: FIXTURE_TIMEOUT }, 
 			await fixture.capture({ selector: 'pages:mail', picture })
 			const before = await fixture.run('preflight', args)
 			expect(describeRun(before)).toEqual({ code: 0, failure: undefined })
-			expect(before.stdout).toContain('"framing":[]')
+			expect(before.stdout).toContain('"mixed":[]')
 			expect(decodeCapturePicture(fixture.read(file)).height).toBe(256)
 
 			// A fresh real capture keeps image provenance current while its dimensions change.
@@ -385,7 +438,7 @@ describe('CapturePreflight framing observations', { timeout: FIXTURE_TIMEOUT }, 
 			const changed = await fixture.run('preflight', args)
 			expect(describeRun(changed)).toEqual({ code: 0, failure: undefined })
 			expect(changed.stdout).toContain(
-				'"framing":["Mixed framing: states/pages:mail@128: page, viewport"]',
+				'"mixed":["Mixed framing: states/pages:mail@128: page, viewport"]',
 			)
 			expect(changed.stdout).toContain('"issues":[]')
 			expect(changed.stdout).toContain('"acceptance":false')
@@ -401,7 +454,7 @@ describe('CapturePreflight framing observations', { timeout: FIXTURE_TIMEOUT }, 
 			await fixture.capture({ selector: 'pages:mail', picture })
 			const restored = await fixture.run('preflight', args)
 			expect(describeRun(restored)).toEqual({ code: 0, failure: undefined })
-			expect(restored.stdout).toContain('"framing":[]')
+			expect(restored.stdout).toContain('"mixed":[]')
 			expect(restored.stdout).toContain('"issues":[]')
 			expect(decodeCapturePicture(fixture.read(file)).height).toBe(256)
 			expect(fixture.read(fixture.options.registry)).toEqual(anchor)
@@ -424,7 +477,7 @@ describe('CapturePreflight framing observations', { timeout: FIXTURE_TIMEOUT }, 
 			const result = await fixture.run('preflight', ['all', '--variant', 'light-390'])
 			expect(describeRun(result)).toEqual({ code: 0, failure: undefined })
 			expect(result.stdout).toContain(
-				'"framing":["Mixed framing: states/pages:mail@128: page, viewport"]',
+				'"mixed":["Mixed framing: states/pages:mail@128: page, viewport"]',
 			)
 			expect(result.stdout).not.toContain('Mixed framing: states/examples:board')
 			expect(result.stdout).not.toContain('Mixed framing: files-focused')
@@ -535,6 +588,27 @@ describe('CapturePreflight host checks', { timeout: FIXTURE_TIMEOUT }, () => {
 })
 
 describe('CapturePreflight wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('refuses projects that disagree on uniform scopes before printing a report', async () => {
+		const fixture = new ReaderFixture()
+		try {
+			fixture.write(
+				READER_CONFIG,
+				createReaderWrapper(fixture.root, VARIANTS, ['pages']).replace(
+					'"uniform":["pages"]',
+					'"uniform":["examples"]',
+				),
+			)
+			const result = await fixture.run('preflight', ['all'])
+			expect(result).toEqual({
+				status: 64,
+				stdout: '',
+				stderr: expect.stringContaining('Host project integrity declarations disagree'),
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
 	it('refuses a wrapper path outside the repository', async () => {
 		const fixture = new ReaderFixture()
 		try {
@@ -559,7 +633,7 @@ describe('CapturePreflight wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () =
 		{
 			title: 'projects that disagree on a host declaration',
 			text: (root: string) =>
-				createReaderWrapper(root).replace('fixture journeys close the run', 'another closing case'),
+				createReaderWrapper(root).replace('fixture journeys close the run', 'another final case'),
 			message: 'Host project integrity declarations disagree',
 		},
 		{

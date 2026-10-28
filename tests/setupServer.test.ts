@@ -37,6 +37,7 @@ import {
 	FIXTURE_FAULT_MESSAGES,
 	FIXTURE_GEOMETRY,
 	FIXTURE_TIMEOUT,
+	UNIFORM_DECLARATIONS,
 	INVALID_PICTURE_WIDTHS,
 	MAIL,
 	MIXED_PICTURES,
@@ -46,7 +47,7 @@ import {
 	READER_CONFIG,
 	READER_STANDALONE,
 	REGISTRY_REFUSALS,
-	RUNNER_CLOSING,
+	RUNNER_FINAL,
 	RUNNER_COMMANDS,
 	RUNNER_REFUSALS,
 	RUNNER_REQUESTS,
@@ -227,7 +228,7 @@ describe('isFixtureRequest', () => {
 })
 
 describe('writeFixtureOutputs', { timeout: FIXTURE_TIMEOUT }, () => {
-	it('writes a passing reporter, a complete closing record, and the frames of every eligible state', () => {
+	it('writes a passing reporter, a complete final record, and the frames of every eligible state', () => {
 		const fixture = new IntegrityFixture()
 		try {
 			expect(writeTransport(fixture)).toEqual({ code: 0, signal: null })
@@ -242,7 +243,7 @@ describe('writeFixtureOutputs', { timeout: FIXTURE_TIMEOUT }, () => {
 				BEHAVIOR,
 			])
 			const run = parseJSON(fixture.read('tmp/out/light-390.json').toString('utf8'))
-			if (!isCaptureRun(run)) throw new Error('Missing closing record')
+			if (!isCaptureRun(run)) throw new Error('Missing final record')
 			expect(run.complete).toBe(true)
 			expect(run.entries).toHaveLength(5)
 			for (const entry of run.entries) expect(fixture.read(entry.file)).toEqual(PNG)
@@ -411,9 +412,7 @@ describe('wire fixtures', () => {
 			first: 'wide',
 		})
 		expect(
-			readThrown(() =>
-				readCaptureProject(createProjectFixture({ provide: { closing: undefined } })),
-			),
+			readThrown(() => readCaptureProject(createProjectFixture({ provide: { final: undefined } }))),
 		).toMatchObject({
 			code: 'HOST',
 		})
@@ -430,9 +429,9 @@ describe('the runner fixtures', () => {
 		expect(RUNNER_COMMANDS).toEqual(['journey', 'capture'])
 	})
 
-	it('declares a request directory and a closing case that carry what a hidden default could hide', () => {
+	it('declares a request directory and a final case that carry what a hidden default could hide', () => {
 		expect(RUNNER_REQUESTS).toBe('var/requests')
-		expect(RUNNER_CLOSING).toMatch(/[[\]().*+]/u)
+		expect(RUNNER_FINAL).toMatch(/[[\]().*+]/u)
 	})
 
 	it('reads a group signal as deliverable only off Windows', () => {
@@ -628,6 +627,16 @@ describe('createReaderWrapper', () => {
 		return parseJSON(text.slice(marker.length))
 	}
 
+	it.each(UNIFORM_DECLARATIONS)('preserves $title in every project', ({ uniform }) => {
+		const projects = readProjects(createReaderWrapper('/workspace', ['light-390'], uniform))
+		if (!isRecord(projects) || !isRecord(projects.test) || !isArray(projects.test.projects))
+			throw new Error('Missing projects')
+		for (const project of projects.test.projects)
+			expect(readCaptureProject(isRecord(project) ? project.test : undefined).uniform).toEqual(
+				uniform,
+			)
+	})
+
 	it('declares one project per producing variant with the host data every project shares', () => {
 		const projects = readProjects(createReaderWrapper('/workspace'))
 		if (!isRecord(projects) || !isRecord(projects.test) || !isArray(projects.test.projects))
@@ -756,7 +765,7 @@ describe('the producer child of a composed workspace', { timeout: FIXTURE_TIMEOU
 		})
 	}
 
-	it('writes the reporter and the closing record of the stage its parent requested, capture-free for a journey', () => {
+	it('writes the reporter and the final record of the stage its parent requested, capture-free for a journey', () => {
 		const scratch = createScratch({ prefix: 'producer-' })
 		try {
 			const { report, args } = prepare(scratch, 'journey')

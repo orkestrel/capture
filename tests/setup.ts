@@ -144,7 +144,7 @@ export function createRequestFixture(overrides: Partial<CaptureRequest> = {}): C
 }
 
 /**
- * Creates a closing run record fixture that agrees with `createVitestFixture` and no request.
+ * Creates a final run record fixture that agrees with `createVitestFixture` and no request.
  *
  * @param overrides - Fields that replace the defaults
  * @returns A valid run record with one passed case and one emitted frame

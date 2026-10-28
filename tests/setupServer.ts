@@ -192,7 +192,7 @@ export const FIXTURE_FAULT_MESSAGES: Readonly<Record<FixtureFault, string>> = Ob
 	'test-during':
 		'Attributed inputs or membership changed during execution: tmp/captures/states/pages/mail-screen--light-390.png',
 	outside: 'Collected registry declarations changed; run the explicit complete-registry refresh',
-	path: 'Invalid or mismatched closing record: tmp/captures/states/runs/',
+	path: 'Invalid or mismatched final record: tmp/captures/states/runs/',
 	signal: 'Capture stage child did not exit successfully',
 	complete: 'Run completeness differs from eligible results',
 	reference: 'Reference completeness differs from declaring section results',
@@ -422,7 +422,7 @@ export function fixtureDestinations(
 }
 
 /**
- * Writes a real external reporter, closing records, and PNG bytes from inert fixture data.
+ * Writes a real external reporter, final records, and PNG bytes from inert fixture data.
  *
  * @param input - The requested external outputs and optional negative control
  * @remarks It implements only the producer protocol; the engine owns validation and publication.
@@ -508,11 +508,11 @@ export function writeFixtureOutputs(input: FixtureWrite): void {
 		if (record === undefined) throw new Error('Missing fixture record path')
 		const complete = full.filter((entry) => entry.eligible).length === passed.length
 		// A capture runs only the cases that place states, so its header reads complete once every such case ran.
-		const covering =
+		const covered =
 			request?.command === 'capture'
 				? full.filter((entry) => entry.eligible && entry.states.length > 0).length === passed.length
 				: complete
-		// The artifact mirrors the closing case's coverage header and record binding, in one file per
+		// The artifact mirrors the final case's coverage header and record binding, in one file per
 		// invocation beside the per-variant copy a later run replaces.
 		const invocation =
 			request === undefined ? basename(dirname(record)) : `${request.id}/${request.stage}`
@@ -520,7 +520,7 @@ export function writeFixtureOutputs(input: FixtureWrite): void {
 		const copy = `tmp/journey/${variant}${complete ? '' : '-scoped'}.txt`
 		const journal = [
 			`# ${variant}`,
-			`coverage=${covering ? 'complete' : request?.case === undefined ? 'scoped' : 'case-scoped'}`,
+			`coverage=${covered ? 'complete' : request?.case === undefined ? 'scoped' : 'case-scoped'}`,
 			`record=${input.journal === 'foreign' ? `${record}.foreign` : record}`,
 			...(input.journal === 'foreign' ? [] : passed.map((entry) => `case-ran=${entry.case}`)),
 			'',
@@ -658,8 +658,8 @@ export function readFixtureManifest(root: string): string | undefined {
 /** Names the request directory, relative to the workspace, that the non-Veneer consumer declares. */
 export const RUNNER_REQUESTS = 'var/requests'
 
-/** Holds the closing case's full name, which carries regular-expression punctuation. */
-export const RUNNER_CLOSING = 'closes [all] (states) + writes a.b*'
+/** Holds the final case's full name, which carries regular-expression punctuation. */
+export const RUNNER_FINAL = 'closes [all] (states) + writes a.b*'
 
 /** Lists the commands that start a Vitest process, in the order the runner proofs cover them. */
 export const RUNNER_COMMANDS = Object.freeze(['journey', 'capture'] as const)
@@ -894,7 +894,7 @@ export function createProjectFixture(
 			directory: '/workspace/out/frames',
 			record: 'out/frames/runs/direct-1/wide.json',
 			inputs: ['lib/**'],
-			closing: RUNNER_CLOSING,
+			final: RUNNER_FINAL,
 			first: 'compact',
 			portfolios: [{ portfolio: 'frames', directory: 'out/frames', scoped: true }],
 			...overrides.provide,
@@ -1015,16 +1015,58 @@ export const PROJECT_REFUSALS: readonly ProjectRefusal[] = Object.freeze([
 		code: 'HOST',
 	},
 	{
-		title: 'no closing case',
-		overrides: { provide: { closing: undefined } },
-		message: 'no closing case',
+		title: 'no final case',
+		overrides: { provide: { final: undefined } },
+		message: 'no final case',
 		code: 'HOST',
 	},
 	{
-		title: 'a blank closing case',
-		overrides: { provide: { closing: ' ' } },
-		message: 'no closing case',
+		title: 'a blank final case',
+		overrides: { provide: { final: ' ' } },
+		message: 'no final case',
 		code: 'HOST',
+	},
+	{
+		title: 'a uniform declaration that is not a list',
+		overrides: { provide: { uniform: 'pages' } },
+		message: 'uniform scopes must be a list of valid owner selectors',
+		code: 'HOST',
+	},
+	{
+		title: 'a null uniform declaration',
+		overrides: { provide: { uniform: null } },
+		message: 'uniform scopes must be a list of valid owner selectors',
+		code: 'HOST',
+	},
+	{
+		title: 'a non-string uniform scope',
+		overrides: { provide: { uniform: [42] } },
+		message: 'uniform scopes must be a list of valid owner selectors',
+		code: 'HOST',
+	},
+	{
+		title: 'an empty uniform selector',
+		overrides: { provide: { uniform: [''] } },
+		message: 'uniform scopes must be a list of valid owner selectors',
+		code: 'HOST',
+	},
+	{
+		title: 'a malformed uniform selector',
+		overrides: { provide: { uniform: ['pages::mail'] } },
+		message: 'uniform scopes must be a list of valid owner selectors',
+		code: 'HOST',
+	},
+	{
+		title: 'a uniform scope with whitespace',
+		overrides: { provide: { uniform: ['pages mail'] } },
+		message: 'uniform scopes must be a list of valid owner selectors',
+		code: 'HOST',
+	},
+	{
+		title: 'a repeated uniform scope',
+		overrides: { provide: { uniform: ['pages', 'pages'] } },
+		message: 'Duplicate uniform scopes',
+		code: 'EVIDENCE',
 	},
 	{
 		title: 'no portfolio list',
@@ -1230,11 +1272,42 @@ export const READER_COMMANDS = Object.freeze(['preflight', 'contact-sheets'] as 
 /** Names one reader the reader proofs drive. */
 export type ReaderCommand = (typeof READER_COMMANDS)[number]
 
-/** Supplies distinct image dimensions for framing observations and contact-sheet artifacts. */
+/** Supplies distinct image dimensions for mixed observations and contact-sheet artifacts. */
 export const MIXED_PICTURES: Readonly<Record<string, FixtureGeometry>> = Object.freeze({
 	'mail-screen': Object.freeze({ width: 128, height: 256 }),
 	'mail-reader': Object.freeze({ width: 128, height: 128 }),
 })
+
+/** Describes one uniform declaration beside the observations it admits. */
+export interface UniformDeclaration {
+	readonly title: string
+	readonly uniform: readonly string[] | undefined
+	readonly observations: readonly string[]
+}
+
+/** Supplies uniform declarations beside the observations each admits over mixed owner families. */
+export const UNIFORM_DECLARATIONS: readonly UniformDeclaration[] = Object.freeze([
+	{
+		title: 'an absent declaration',
+		uniform: undefined,
+		observations: [
+			'Mixed framing: states/pages:mail@128: page, viewport',
+			'Mixed framing: states/examples:board@128: page, viewport',
+		],
+	},
+	{
+		title: 'one declared scope',
+		uniform: ['pages'],
+		observations: ['Mixed framing: states/pages:mail@128: page, viewport'],
+	},
+	{
+		title: 'a declared owner prefix',
+		uniform: ['pages:mail'],
+		observations: ['Mixed framing: states/pages:mail@128: page, viewport'],
+	},
+	{ title: 'a prefix without a colon boundary', uniform: ['page'], observations: [] },
+	{ title: 'an empty declaration', uniform: [], observations: [] },
+])
 
 /** Supplies invalid pixel widths beside valid image restoration controls. */
 export const INVALID_PICTURE_WIDTHS = Object.freeze([0, 2049, 1.5] as const)
@@ -1252,8 +1325,8 @@ export const READER_STANDALONE = Object.freeze({
 	scoped: false,
 } as const)
 
-/** Names the closing case of the reader fixture's wrapper, which the producer never runs. */
-export const READER_CLOSING = 'fixture journeys close the run'
+/** Names the final case of the reader fixture's wrapper, which the producer never runs. */
+export const READER_FINAL = 'fixture journeys close the run'
 
 /**
  * Checks bounded test pixel dimensions while preserving the boolean image choices.
@@ -1360,9 +1433,14 @@ export function encodeFixturePicture(
  *
  * @param root - The absolute workspace path, which the primary directory resolves against
  * @param producers - The producing variants that get a project. Default: every fixture variant.
+ * @param uniform - The optional owner selectors the preflight judges for mixed observations; an empty list judges none
  * @returns The wrapper module's source text
  */
-export function createReaderWrapper(root: string, producers: readonly string[] = VARIANTS): string {
+export function createReaderWrapper(
+	root: string,
+	producers: readonly string[] = VARIANTS,
+	uniform?: readonly string[],
+): string {
 	const projects = producers.map((variant) => ({
 		test: {
 			name: { label: `journey:${variant}`, color: 'green' },
@@ -1372,8 +1450,9 @@ export function createReaderWrapper(root: string, producers: readonly string[] =
 				inputs: INPUTS,
 				variant,
 				variants: VARIANTS.map((name) => ({ name, width: 128, height: 128 })),
-				closing: READER_CLOSING,
+				final: READER_FINAL,
 				first: VARIANTS[0],
+				...(uniform === undefined ? {} : { uniform }),
 				portfolios: PORTFOLIOS,
 				standalone: [READER_STANDALONE],
 			},
@@ -1443,7 +1522,7 @@ export function createComposedWrapper(root: string, first: string = COMPOSED_FIR
 				inputs: INPUTS,
 				variant,
 				variants: VARIANTS.map((name) => ({ name, width: 128, height: 128 })),
-				closing: READER_CLOSING,
+				final: READER_FINAL,
 				first,
 				portfolios: PORTFOLIOS,
 				standalone: [READER_STANDALONE],
@@ -1477,7 +1556,7 @@ export const REGISTRY_REFUSALS = Object.freeze([
 		reason: 'The registry journey for light-1280 did not exit successfully (7)',
 	},
 	{ fault: 'complete', reason: 'Run completeness differs from eligible results' },
-	{ fault: 'invalid-record', reason: 'Invalid or mismatched closing record' },
+	{ fault: 'invalid-record', reason: 'Invalid or mismatched final record' },
 	{ fault: 'declarations', reason: 'Run declarations differ from full reporter declarations' },
 ] as const)
 

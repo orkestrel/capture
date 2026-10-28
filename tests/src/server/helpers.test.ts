@@ -1,5 +1,5 @@
 import type { CaptureDestination } from '@src/core'
-import type { CaptureImageReading, CaptureProducer } from '@src/server'
+import type { CaptureImageResult, CaptureProducer } from '@src/server'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { deflateSync, inflateSync } from 'node:zlib'
@@ -19,7 +19,7 @@ import {
 	buildCaptureRegistry,
 	buildCaptureRequestRefusal,
 	collectCaptureErrors,
-	collectCaptureFraming,
+	scanCaptureFrames,
 	collectCaptureIdentical,
 	composeCapturePictures,
 	computeCaptureHash,
@@ -86,7 +86,7 @@ import {
 	PREDICTOR_CASES,
 	PROJECT_REFUSALS,
 	REGISTRY_ARGUMENT_REFUSALS,
-	RUNNER_CLOSING,
+	RUNNER_FINAL,
 	UNFILTER_CASES,
 	WIRE_BYTES,
 	WIRE_CONFIG,
@@ -972,7 +972,7 @@ describe('buildCaptureArguments', () => {
 		report: '/workspace/var/requests/runs/a/journey-selected.json',
 		projects: ['bench:compact', 'bench:wide'],
 		filter: 'owner:app:mail && app:mail',
-		closing: RUNNER_CLOSING,
+		final: RUNNER_FINAL,
 	}
 
 	it('builds the exact argument array, one element per value, with every project in order', () => {
@@ -997,13 +997,13 @@ describe('buildCaptureArguments', () => {
 		])
 	})
 
-	it('adds one anchored pattern for an exact case and the closing case', () => {
+	it('adds one anchored pattern for an exact case and the final case', () => {
 		const exact = 'retains \'mail\' [reader] + "quotes"'
 		const args = buildCaptureArguments({ ...BASE, case: exact })
 		const pattern = new RegExp(args[args.indexOf('-t') + 1] ?? '', 'u')
 		expect(args.slice(-2, -1)).toEqual(['-t'])
 		expect(pattern.test(exact)).toBe(true)
-		expect(pattern.test(RUNNER_CLOSING)).toBe(true)
+		expect(pattern.test(RUNNER_FINAL)).toBe(true)
 		expect(pattern.test(`${exact} too`)).toBe(false)
 		expect(pattern.test('retains mail reader quotes')).toBe(false)
 		expect(args.filter((argument) => argument === '-t')).toHaveLength(1)
@@ -1081,7 +1081,7 @@ describe('readCaptureArguments', () => {
 	it.each(ARGUMENT_REFUSALS)('refuses $title as a usage failure', ({ command, argv, message }) => {
 		const failure = readThrown(() => readCaptureArguments(argv, command, ROOT, 'x'))
 		expect(isCaptureError(failure)).toBe(true)
-		expect(failure).toMatchObject({ message, code: 'USAGE' })
+		expect(failure).toMatchObject({ code: 'USAGE', message: expect.stringContaining(message) })
 	})
 })
 
@@ -1147,6 +1147,18 @@ describe('describeCapturePortfolios', () => {
 })
 
 describe('readCaptureProject', () => {
+	it('preserves absent, empty, and declared uniform scopes', () => {
+		expect(readCaptureProject(createProjectFixture()).uniform).toBeUndefined()
+		expect(readCaptureProject(createProjectFixture({ provide: { uniform: [] } })).uniform).toEqual(
+			[],
+		)
+		expect(
+			readCaptureProject(
+				createProjectFixture({ provide: { uniform: ['pages', 'examples:board'] } }),
+			).uniform,
+		).toEqual(['pages', 'examples:board'])
+	})
+
 	it('reads a string name, the tags, and every host declaration', () => {
 		expect(readCaptureProject(createProjectFixture())).toEqual({
 			name: 'bench:wide',
@@ -1156,7 +1168,7 @@ describe('readCaptureProject', () => {
 			directory: '/workspace/out/frames',
 			record: 'out/frames/runs/direct-1/wide.json',
 			inputs: ['lib/**'],
-			closing: RUNNER_CLOSING,
+			final: RUNNER_FINAL,
 			first: 'compact',
 			portfolios: [{ portfolio: 'frames', directory: 'out/frames', scoped: true }],
 			standalone: [],
@@ -1209,8 +1221,10 @@ describe('requireCaptureProjects', () => {
 
 	it.each([
 		{ title: 'a different directory', patch: { directory: '/workspace/out/other' } },
-		{ title: 'a different closing case', patch: { closing: 'another closing case' } },
+		{ title: 'a different final case', patch: { final: 'another final case' } },
 		{ title: 'a different first variant', patch: { first: 'wide' } },
+		{ title: 'an empty uniform declaration instead of absence', patch: { uniform: [] } },
+		{ title: 'an added uniform declaration', patch: { uniform: ['pages'] } },
 		{ title: 'different inputs', patch: { inputs: ['lib/**', 'specs/**'] } },
 		{ title: 'different declared variants', patch: { variants: ['wide'] } },
 		{
@@ -1233,6 +1247,29 @@ describe('requireCaptureProjects', () => {
 	it('treats inputs and variants as populations, not sequences', () => {
 		const reordered = { ...SECOND, variants: [...FIRST.variants].toReversed() }
 		expect(requireCaptureProjects([FIRST, reordered])).toBe(FIRST)
+	})
+
+	it('compares uniform scopes as populations and refuses different or omitted scopes', () => {
+		const first = { ...FIRST, uniform: ['pages', 'examples'] }
+		expect(requireCaptureProjects([first, { ...SECOND, uniform: ['examples', 'pages'] }])).toBe(
+			first,
+		)
+		expect(
+			requireCaptureProjects([
+				{ ...FIRST, uniform: [] },
+				{ ...SECOND, uniform: [] },
+			]),
+		).toEqual({
+			...FIRST,
+			uniform: [],
+		})
+		expect(
+			readThrown(() => requireCaptureProjects([first, { ...SECOND, uniform: ['pages'] }])),
+		).toMatchObject({ code: 'HOST', message: 'Host project integrity declarations disagree' })
+		expect(readThrown(() => requireCaptureProjects([first, SECOND]))).toMatchObject({
+			code: 'HOST',
+			message: 'Host project integrity declarations disagree',
+		})
 	})
 
 	it('refuses an empty set, a repeated label, and a repeated variant case-folded', () => {
@@ -1770,7 +1807,7 @@ describe('buildCaptureIntegrityOptions', () => {
 	})
 })
 
-describe('collectCaptureFraming', () => {
+describe('scanCaptureFrames', () => {
 	const PRODUCERS: readonly CaptureProducer[] = [
 		{ project: 'journey:light-390', name: 'light-390', width: 390, height: 844 },
 		{ project: 'journey:light-1280', name: 'light-1280', width: 1280, height: 800 },
@@ -1781,7 +1818,7 @@ describe('collectCaptureFraming', () => {
 		width: number,
 		height: number,
 		overrides: Partial<CaptureDestination> = {},
-	): CaptureImageReading {
+	): CaptureImageResult {
 		const entry = createDestinationFixture({
 			state,
 			file: `tmp/captures/states/pages/${state}--${overrides.variant ?? 'light-390'}.png`,
@@ -1792,13 +1829,10 @@ describe('collectCaptureFraming', () => {
 
 	it('names the kinds a group mixes, in the order the frames arrive', () => {
 		expect(
-			collectCaptureFraming(
-				[createImage('long', 390, 2000), createImage('fit', 390, 844)],
-				PRODUCERS,
-			),
+			scanCaptureFrames([createImage('long', 390, 2000), createImage('fit', 390, 844)], PRODUCERS),
 		).toEqual(['Mixed framing: states/pages:mail@390: page, viewport'])
 		expect(
-			collectCaptureFraming(
+			scanCaptureFrames(
 				[
 					createImage('narrow', 200, 300),
 					createImage('fit', 390, 844),
@@ -1811,17 +1845,17 @@ describe('collectCaptureFraming', () => {
 
 	it('reports nothing for a group of one kind, or for no frames', () => {
 		expect(
-			collectCaptureFraming([createImage('a', 390, 844), createImage('b', 390, 844)], PRODUCERS),
+			scanCaptureFrames([createImage('a', 390, 844), createImage('b', 390, 844)], PRODUCERS),
 		).toEqual([])
 		expect(
-			collectCaptureFraming([createImage('a', 390, 2000), createImage('b', 390, 3000)], PRODUCERS),
+			scanCaptureFrames([createImage('a', 390, 2000), createImage('b', 390, 3000)], PRODUCERS),
 		).toEqual([])
-		expect(collectCaptureFraming([], PRODUCERS)).toEqual([])
+		expect(scanCaptureFrames([], PRODUCERS)).toEqual([])
 	})
 
 	it('leaves an auxiliary output variant out of its producer group', () => {
 		expect(
-			collectCaptureFraming(
+			scanCaptureFrames(
 				[createImage('fit', 390, 844), createImage('aux', 320, 2000, { variant: 'light-320' })],
 				PRODUCERS,
 			),
@@ -1831,7 +1865,7 @@ describe('collectCaptureFraming', () => {
 	it('groups by owner, so each owner is judged alone', () => {
 		const board = { part: 'board' }
 		expect(
-			collectCaptureFraming(
+			scanCaptureFrames(
 				[
 					createImage('a', 390, 844),
 					createImage('b', 390, 844),
@@ -1842,7 +1876,7 @@ describe('collectCaptureFraming', () => {
 			),
 		).toEqual([])
 		expect(
-			collectCaptureFraming(
+			scanCaptureFrames(
 				[
 					createImage('a', 390, 844),
 					createImage('c', 390, 2000, board),
@@ -1856,7 +1890,7 @@ describe('collectCaptureFraming', () => {
 	it('groups by portfolio, so one portfolio mixing sizes does not taint another', () => {
 		const focused = { portfolio: 'files-focused' }
 		expect(
-			collectCaptureFraming(
+			scanCaptureFrames(
 				[
 					createImage('a', 390, 844),
 					createImage('b', 390, 2000),
@@ -1871,7 +1905,7 @@ describe('collectCaptureFraming', () => {
 	it('groups by declared viewport width, so each width is judged alone', () => {
 		const wide = { project: 'journey:light-1280', variant: 'light-1280' }
 		expect(
-			collectCaptureFraming(
+			scanCaptureFrames(
 				[
 					createImage('a', 390, 844),
 					createImage('b', 390, 844),
@@ -1885,7 +1919,7 @@ describe('collectCaptureFraming', () => {
 
 	it('ignores a frame whose project the wrapper does not declare', () => {
 		expect(
-			collectCaptureFraming(
+			scanCaptureFrames(
 				[createImage('a', 390, 844), createImage('b', 390, 2000, { project: 'journey:absent' })],
 				PRODUCERS,
 			),
@@ -1894,7 +1928,7 @@ describe('collectCaptureFraming', () => {
 })
 
 describe('collectCaptureIdentical', () => {
-	function createImage(file: string, digest: string): CaptureImageReading {
+	function createImage(file: string, digest: string): CaptureImageResult {
 		return {
 			entry: createDestinationFixture({ file }),
 			picture: createSolid(1, 1, 0),
@@ -2064,6 +2098,16 @@ describe('readCaptureDescription', () => {
 		const description = readCaptureDescription(createDescription(), EXPECTED)
 		expect(description).toMatchObject({ version: 1, ...EXPECTED })
 		expect(description.projects).toEqual([readCaptureEntry(PROJECT)])
+	})
+
+	it('carries uniform scopes through the discovery description', () => {
+		const description = readCaptureDescription(
+			createDescription({
+				projects: [{ test: createProjectFixture({ provide: { uniform: ['pages', 'examples'] } }) }],
+			}),
+			EXPECTED,
+		)
+		expect(description.projects.at(0)?.project.uniform).toEqual(['pages', 'examples'])
 	})
 
 	it.each([

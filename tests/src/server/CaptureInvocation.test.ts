@@ -154,6 +154,26 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		},
 	)
 
+	it('refuses a writer failure on the flushed final sequence', async () => {
+		const fixture = new InvocationFixture()
+		const invocation = fixture.next({
+			stdout: (text: string) => {
+				if (text !== '' && !text.startsWith('pid=')) throw new Error('writer refused')
+			},
+		})
+		try {
+			invocation.prepare()
+			await expect(
+				invocation.spawn([OUTPUT, 'partial'], resolve(invocation.directory, 'tail.log'), false),
+			).rejects.toMatchObject({
+				code: 'STAGE',
+				message: 'Capture child output could not be recorded',
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
 	it('refuses a log append failure and destroys the child', async () => {
 		const fixture = new InvocationFixture()
 		const invocation = fixture.next({
@@ -187,7 +207,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		try {
 			invocation.prepare()
 			invocation.attach()
-			const closing = invocation.spawn(
+			const execution = invocation.spawn(
 				[OUTPUT, 'tree'],
 				resolve(invocation.directory, 'tree.log'),
 				false,
@@ -198,7 +218,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			const descendant: unknown = parseJSON(scratch.read('descendant.json') ?? '')
 			expect(isNumber(descendant)).toBe(true)
 			process.emit('SIGINT')
-			const outcome = await closing
+			const outcome = await execution
 			await waitForCondition(
 				'the whole tree has exited',
 				() =>
@@ -426,7 +446,11 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 				(before[0] ?? 0) + 1,
 				(before[1] ?? 0) + 1,
 			])
-			const closing = invocation.spawn([SLEEPER], resolve(invocation.directory, 'sleep.log'), false)
+			const execution = invocation.spawn(
+				[SLEEPER],
+				resolve(invocation.directory, 'sleep.log'),
+				false,
+			)
 			await waitForCondition('the sleeper reports ready', () =>
 				stdout.join('').includes('descendant ready'),
 			)
@@ -437,7 +461,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			// A second interrupt reaches the same handler and changes nothing.
 			process.emit('SIGINT')
 			await invocation.release()
-			const outcome = await closing
+			const outcome = await execution
 			await waitForCondition('the sleeper has exited', () => !isRunning(pid))
 			expect(outcome.code !== 0 || outcome.signal !== null).toBe(true)
 			expect(invocation.interrupted).toBe(true)

@@ -71,7 +71,7 @@ export function createCaptureRunner(options: CaptureRunnerOptions): CaptureRunne
 }
 
 /**
- * Creates the preflight that judges the selected frames' freshness, framing, and coverage.
+ * Creates the preflight that judges the selected frames' freshness, mixed observations, and coverage.
  *
  * @param options - The workspace, the wrapper, the selection, the journey artifact directory, and optional checks module and output seams
  * @returns A new preflight whose `execute` prints its report and returns the exit status

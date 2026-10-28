@@ -1,8 +1,8 @@
 import type { CaptureDestination, CaptureStoredManifest } from '@src/core'
 import type {
-	CaptureArtifactReading,
+	CaptureArtifactResult,
 	CaptureCheckFrame,
-	CaptureImageReading,
+	CaptureImageResult,
 	CaptureJudgedFrame,
 	CaptureJudgedRecord,
 	CaptureProducer,
@@ -32,7 +32,9 @@ import {
 	isCapturePath,
 	isCaptureRun,
 	isCaptureStoredManifest,
+	matchesCaptureSelector,
 	resolveCaptureKey,
+	resolveCaptureOwner,
 } from '@src/core'
 import {
 	CAPTURE_DEFAULTS,
@@ -47,7 +49,7 @@ import { CaptureInvocation } from './CaptureInvocation.js'
 import {
 	buildCaptureIntegrityOptions,
 	collectCaptureErrors,
-	collectCaptureFraming,
+	scanCaptureFrames,
 	collectCaptureIdentical,
 	computeCaptureHash,
 	decodeCapturePicture,
@@ -56,7 +58,7 @@ import {
 } from './helpers.js'
 
 /**
- * Reads the selected population's frames and reports their freshness, framing, and coverage.
+ * Reads the selected population's frames and reports their freshness, mixed observations, and coverage.
  *
  * @remarks
  * A successful preflight is iteration evidence and never assembled-portfolio acceptance. The reader
@@ -68,6 +70,8 @@ import {
  * host module named by the `checks` option. The reader loads that module through the runtime's own
  * module loader by its file URL, reads its `CAPTURE_CHECKS` export, a list of readers from a frame to
  * its findings, and appends every finding to the report.
+ * The wrapper's optional `uniform` owner selectors restrict only mixed observations;
+ * absence judges every scope, and an empty list judges none.
  *
  * @example
  * ```ts
@@ -97,9 +101,9 @@ export class CapturePreflight implements CapturePreflightInterface {
 	}
 
 	/**
-	 * Reads the authenticated selection and the host's declared viewports.
+	 * Reads the authenticated selection, uniform scopes, and the host's declared viewports.
 	 *
-	 * @returns The engine, the selected destinations, the viewports, and the primary run directory
+	 * @returns The engine, the selected destinations, the viewports, the uniform scopes, and the primary run directory
 	 * @throws Thrown when the wrapper, the registry, or the selection is invalid.
 	 *
 	 * @example
@@ -138,13 +142,14 @@ export class CapturePreflight implements CapturePreflightInterface {
 			population,
 			variants: loaded.map((entry) => entry.producer),
 			directory: options.directory,
+			...(primary.uniform === undefined ? {} : { uniform: primary.uniform }),
 		}
 	}
 
 	/**
-	 * Judges every selected frame and returns the framing, freshness, images, and issues.
+	 * Judges every selected frame and returns the mixed observations, freshness, images, and issues.
 	 *
-	 * @returns The preflight reading without upgrading any freshness classification
+	 * @returns The preflight result without upgrading any freshness classification
 	 * @throws Thrown when the selection or an artifact cannot be read.
 	 *
 	 * @example
@@ -158,18 +163,25 @@ export class CapturePreflight implements CapturePreflightInterface {
 			...this.#options.selection,
 			variants: [...new Set(source.population.entries.map((entry) => entry.variant))],
 		})
-		const readings = source.population.entries.map((entry) => this.#image(entry))
-		const images = readings.flatMap((reading) =>
-			reading.image === undefined ? [] : [reading.image],
-		)
+		const results = source.population.entries.map((entry) => this.#image(entry))
+		const images = results.flatMap((result) => (result.image === undefined ? [] : [result.image]))
 		return {
 			selection: source.population,
 			variants: source.variants,
 			directory: source.directory,
 			freshness,
 			images,
-			framing: collectCaptureFraming(images, source.variants),
-			issues: readings.flatMap((reading) => reading.issues),
+			mixed: scanCaptureFrames(
+				images.filter(
+					({ entry }) =>
+						source.uniform === undefined ||
+						source.uniform.some((scope) =>
+							matchesCaptureSelector(resolveCaptureOwner(entry), scope),
+						),
+				),
+				source.variants,
+			),
+			issues: results.flatMap((result) => result.issues),
 		}
 	}
 
@@ -191,7 +203,7 @@ export class CapturePreflight implements CapturePreflightInterface {
 				`${CAPTURE_REPORT_LINES.preflight} ${JSON.stringify({
 					selection: result.selection,
 					freshness: result.freshness,
-					framing: result.framing,
+					mixed: result.mixed,
 					issues,
 					identical: collectCaptureIdentical(result.images),
 					sizes: result.images.map(({ entry, picture, size }) => ({
@@ -274,14 +286,14 @@ export class CapturePreflight implements CapturePreflightInterface {
 
 	// Decodes one selected image, reporting the reason an unreadable or tiny one cannot be judged.
 	#image(entry: CaptureDestination): {
-		readonly image: CaptureImageReading | undefined
+		readonly image: CaptureImageResult | undefined
 		readonly issues: readonly string[]
 	} {
 		const read = attempt(() => {
 			const bytes = readFileSync(resolve(this.#options.root, entry.file))
 			if (bytes.length < CAPTURE_MINIMUM_IMAGE)
 				throw new CaptureError(`Image under 4 KB: ${entry.file}`, { code: 'EVIDENCE' })
-			const image: CaptureImageReading = {
+			const image: CaptureImageResult = {
 				entry,
 				picture: decodeCapturePicture(bytes),
 				digest: computeCaptureHash(bytes),
@@ -313,14 +325,14 @@ export class CapturePreflight implements CapturePreflightInterface {
 		const judged = located.map(({ entry, location }): CaptureJudgedFrame => {
 			if (!location.success)
 				return { entry, artifact: undefined, issues: [describeCaptureError(location.error)] }
-			const reading = records.get(location.value.record)
-			if (reading === undefined)
+			const outcome = records.get(location.value.record)
+			if (outcome === undefined)
 				throw new CaptureError(`Judged run record was not read: ${location.value.record}`, {
 					code: 'EVIDENCE',
 				})
-			if (!reading.success)
-				return { entry, artifact: undefined, issues: [describeCaptureError(reading.error)] }
-			const artifact = reading.value
+			if (!outcome.success)
+				return { entry, artifact: undefined, issues: [describeCaptureError(outcome.error)] }
+			const artifact = outcome.value
 			const lines = artifact.text.split('\n')
 			const covered =
 				artifact.run.passed.includes(location.value.case) &&
@@ -388,19 +400,19 @@ export class CapturePreflight implements CapturePreflightInterface {
 			throw new CaptureError(`Judged frame has no stamped run record: ${entry.file}`, {
 				code: 'EVIDENCE',
 			})
-		const producing = producers.find((producer) => producer.project === entry.project)?.name
-		if (producing === undefined)
+		const producer = producers.find((candidate) => candidate.project === entry.project)?.name
+		if (producer === undefined)
 			throw new CaptureError(`No journey artifact mapping for project: ${entry.project}`, {
 				code: 'HOST',
 			})
-		const record = `${directory}/${CAPTURE_RUNS_DIRECTORY}/${stamp.identity.id}/${stamp.identity.stage}/${producing}.json`
+		const record = `${directory}/${CAPTURE_RUNS_DIRECTORY}/${stamp.identity.id}/${stamp.identity.stage}/${producer}.json`
 		if (!isCapturePath(record))
 			throw new CaptureError(`Invalid judged run record path: ${record}`, { code: 'EVIDENCE' })
 		return { record, case: stamp.case }
 	}
 
 	// Reads a judged record and the artifact it names, refusing changed or unbound artifact bytes.
-	#artifact(record: string): CaptureArtifactReading {
+	#artifact(record: string): CaptureArtifactResult {
 		const { root, journeys } = this.#options
 		const run = parseJSON(readFileSync(resolve(root, record), 'utf8'))
 		if (!isCaptureRun(run))

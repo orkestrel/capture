@@ -15,7 +15,7 @@ import type {
 	CaptureCheckOptions,
 	CaptureCheckResult,
 	CaptureCollectionEvidence,
-	CaptureDirectoryReading,
+	CaptureDirectoryResult,
 	CaptureEvidence,
 	CaptureFileSnapshot,
 	CaptureHashHandler,
@@ -259,10 +259,10 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				context: { code: outcome.code, signal: outcome.signal },
 			})
 		// The record pass reads each file once; the final check below rereads disk with its own memo.
-		const readings = new Map<string, CaptureFileSnapshot | undefined>()
+		const snapshots = new Map<string, CaptureFileSnapshot | undefined>()
 		const digests = new Map<string, CaptureDigest>()
 		const stable = new Map<string, true>()
-		const reporter = this.#fresh(options.report, before, readings)
+		const reporter = this.#fresh(options.report, before, snapshots)
 		const report = readCaptureReport(this.#json(options.report))
 		if (report.start < before.time || report.end > Date.now())
 			throw new CaptureError('Reporter does not belong to this execution', { code: 'EVIDENCE' })
@@ -271,7 +271,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				code: 'EVIDENCE',
 			})
 		const records = options.projects.map((project) => {
-			const file = this.#fresh(project.record, before, readings)
+			const file = this.#fresh(project.record, before, snapshots)
 			const run = this.#json(project.record)
 			if (
 				!isCaptureRun(run) ||
@@ -279,19 +279,19 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				run.variant !== project.variant ||
 				describeCaptureRequest(run.request) !== describeCaptureRequest(request)
 			)
-				throw new CaptureError(`Invalid or mismatched closing record: ${project.record}`, {
+				throw new CaptureError(`Invalid or mismatched final record: ${project.record}`, {
 					code: 'EVIDENCE',
 				})
 			if (Date.parse(run.time) < before.time || Date.parse(run.time) > report.end)
-				throw new CaptureError('Closing record time does not belong to this execution', {
+				throw new CaptureError('Final record time does not belong to this execution', {
 					code: 'EVIDENCE',
 				})
 			validateCaptureRun(run, report, project.name)
 			if (run.artifact === undefined)
-				throw new CaptureError(`Closing record names no journey artifact: ${project.record}`, {
+				throw new CaptureError(`Final record names no journey artifact: ${project.record}`, {
 					code: 'EVIDENCE',
 				})
-			const artifact = this.#fresh(run.artifact.file, before, readings)
+			const artifact = this.#fresh(run.artifact.file, before, snapshots)
 			if (artifact.image.digest !== run.artifact.digest)
 				throw new CaptureError(`Journey artifact differs from its record: ${run.artifact.file}`, {
 					code: 'EVIDENCE',
@@ -300,14 +300,14 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			const snapshot = before.projects.find((entry) => entry.project === project.name)
 			if (snapshot === undefined)
 				throw new CaptureError('Missing pre-execution project snapshot', { code: 'EVIDENCE' })
-			this.#attest(run, evidence, snapshot.inputs.files, readings)
+			this.#attest(run, evidence, snapshot.inputs.files, snapshots)
 			for (const destination of run.registry)
-				this.#stable(destination, snapshot.inputs, readings, digests, stable)
+				this.#stable(destination, snapshot.inputs, snapshots, digests, stable)
 			return { file, run, artifact }
 		})
 		const entries = records.flatMap(({ run }) => run.entries)
 		this.#uniqueRegistry(entries)
-		const images = entries.map((entry) => this.#fresh(entry.file, before, readings, true))
+		const images = entries.map((entry) => this.#fresh(entry.file, before, snapshots, true))
 		const identities = new Map<string, string>()
 		const physical = Map.groupBy(this.#images(), (file) => this.#physicalIdentity(file, identities))
 		if (
@@ -318,7 +318,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			throw new CaptureError('Duplicate physical capture output', { code: 'EVIDENCE' })
 		const provenance = request.command === 'capture' ? this.#provenance() : undefined
 		const stamps: readonly CaptureStamp[] = entries.map((entry) => {
-			const image = images.find((reading) => reading.file === entry.file)
+			const image = images.find((snapshot) => snapshot.file === entry.file)
 			if (image === undefined || provenance === undefined)
 				throw new CaptureError('Missing capture provenance', { code: 'EVIDENCE' })
 			return {
@@ -331,9 +331,9 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				},
 				time: new Date().toISOString(),
 				...provenance,
-				own: this.#digest(entry.sources.own, readings, digests).files,
-				shared: this.#digest(entry.sources.shared, readings, digests),
-				tests: this.#digest(entry.sources.tests, readings, digests).files,
+				own: this.#digest(entry.sources.own, snapshots, digests).files,
+				shared: this.#digest(entry.sources.shared, snapshots, digests),
+				tests: this.#digest(entry.sources.tests, snapshots, digests).files,
 				image: image.image,
 				registry: evidence.registry.digest,
 			}
@@ -342,7 +342,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			const project = options.projects.find((entry) => entry.variant === run.variant)
 			if (project === undefined)
 				throw new CaptureError('Missing selected project', { code: 'EVIDENCE' })
-			const inputs = this.#digest(project.inputs, readings, digests).files
+			const inputs = this.#digest(project.inputs, snapshots, digests).files
 			return run.declarations
 				.filter((entry) => run.passed.includes(entry.case))
 				.map((entry) => ({
@@ -371,7 +371,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		})
 		const collections = this.#mergeCollections(evidence.collections, collected)
 		const merged = this.#mergeLookups(evidence.lookups, lookups)
-		const rereadings = new Map<string, CaptureFileSnapshot | undefined>()
+		const finalSnapshots = new Map<string, CaptureFileSnapshot | undefined>()
 		const redigests = new Map<string, CaptureDigest>()
 		const restable = new Map<string, true>()
 		for (const record of records) {
@@ -383,9 +383,9 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			if (project === undefined)
 				throw new CaptureError('Missing final input snapshot', { code: 'EVIDENCE' })
 			for (const destination of record.run.registry)
-				this.#stable(destination, project.inputs, rereadings, redigests, restable)
+				this.#stable(destination, project.inputs, finalSnapshots, redigests, restable)
 			if (
-				this.#digest(project.inputs.patterns, rereadings, redigests).digest !==
+				this.#digest(project.inputs.patterns, finalSnapshots, redigests).digest !==
 				project.inputs.digest
 			)
 				throw new CaptureError('Bounded host inputs or membership changed during execution', {
@@ -394,20 +394,20 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		}
 		for (const path of [this.#options.manifest, this.#options.registry, this.#options.lookups]) {
 			if (
-				this.#file(path, rereadings)?.image.digest !==
+				this.#file(path, finalSnapshots)?.image.digest !==
 				before.files.find((file) => file.file === path)?.image.digest
 			)
 				throw new CaptureError(`Evidence changed during the stage: ${path}`, { code: 'STAGE' })
 		}
 		if (
-			this.#file(options.report, rereadings)?.image.digest !== reporter.image.digest ||
+			this.#file(options.report, finalSnapshots)?.image.digest !== reporter.image.digest ||
 			records.some(
 				(record) =>
-					this.#file(record.file.file, rereadings)?.image.digest !== record.file.image.digest ||
-					this.#file(record.artifact.file, rereadings)?.image.digest !==
+					this.#file(record.file.file, finalSnapshots)?.image.digest !== record.file.image.digest ||
+					this.#file(record.artifact.file, finalSnapshots)?.image.digest !==
 						record.artifact.image.digest,
 			) ||
-			images.some((image) => !this.#sameFile(image, this.#file(image.file, rereadings)))
+			images.some((image) => !this.#sameFile(image, this.#file(image.file, finalSnapshots)))
 		)
 			throw new CaptureError('Stage output changed before commit', { code: 'STAGE' })
 		options.signal?.throwIfAborted()
@@ -465,17 +465,17 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	 */
 	async read(options: CaptureReadOptions): Promise<CaptureReadResult> {
 		try {
-			const readings = new Map<string, CaptureFileSnapshot | undefined>()
+			const snapshots = new Map<string, CaptureFileSnapshot | undefined>()
 			const digests = new Map<string, CaptureDigest>()
-			const evidence = this.#evidence(readings)
-			const collections = this.#collections(evidence, readings)
+			const evidence = this.#evidence(snapshots)
+			const collections = this.#collections(evidence, snapshots)
 			const populated = this.#population(evidence, collections)
 			const destinations = this.#destinations(populated)
 			this.#uniqueRegistry(destinations)
 			const variants = this.#variants(destinations, options)
 			const entries = this.#select(populated, destinations, { ...options, variants }, false)
-			const inputs = this.#digest(this.#options.inputs, readings, digests)
-			for (const variant of new Set(entries.map((entry) => this.#producing(entry, populated)))) {
+			const inputs = this.#digest(this.#options.inputs, snapshots, digests)
+			for (const variant of new Set(entries.map((entry) => this.#producer(entry, populated)))) {
 				const anchor = evidence.registry.receipts.find((receipt) => receipt.variant === variant)
 				if (anchor !== undefined && collectCaptureChanges(anchor.inputs, inputs.files).length === 0)
 					continue
@@ -490,7 +490,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 						{ code: 'EVIDENCE', context: { variant } },
 					)
 			}
-			// The closing check rereads disk; the read's memo would hide a change made since it measured.
+			// The final check rereads disk; the read's memo would hide a change made since it measured.
 			if (this.#digest(this.#options.inputs, new Map(), new Map()).digest !== inputs.digest)
 				throw new CaptureError('Declaration inputs changed during the read', { code: 'EVIDENCE' })
 			return { registry: evidence.registry.digest, entries }
@@ -519,10 +519,10 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	 */
 	async check(selection: CaptureStaleOptions): Promise<CaptureCheckResult> {
 		const started = performance.now()
-		const readings = new Map<string, CaptureFileSnapshot | undefined>()
+		const snapshots = new Map<string, CaptureFileSnapshot | undefined>()
 		const digests = new Map<string, CaptureDigest>()
-		const previous = this.#evidence(readings)
-		const evidence = this.#population(previous, this.#collections(previous, readings))
+		const previous = this.#evidence(snapshots)
+		const evidence = this.#population(previous, this.#collections(previous, snapshots))
 		// Destinations alone cannot show a producing variant whose full collection never arrived.
 		const attested = new Set([
 			...evidence.registry.receipts.map((receipt) => receipt.variant),
@@ -550,9 +550,9 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		const entries: CaptureFreshness[] = required.map((entry) => {
 			const key = resolveCaptureKey(entry)
 			const stamp = evidence.manifest?.entries[key]
-			const image = this.#file(entry.file, readings)
-			const own = this.#digest(entry.sources.own, readings, digests)
-			const shared = this.#digest(entry.sources.shared, readings, digests)
+			const image = this.#file(entry.file, snapshots)
+			const own = this.#digest(entry.sources.own, snapshots, digests)
+			const shared = this.#digest(entry.sources.shared, snapshots, digests)
 			const findings: Array<{ readonly status: CaptureStatus; readonly reason: string }> = []
 			if (duplicates.includes(key))
 				findings.push({ status: 'duplicate', reason: 'Repeated registry identity' })
@@ -637,7 +637,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			if (stamp === undefined) return []
 			const files = collectCaptureChanges(
 				stamp.tests,
-				this.#digest(entry.sources.tests, readings, digests).files,
+				this.#digest(entry.sources.tests, snapshots, digests).files,
 			)
 			return files.length === 0 ? [] : [{ files, cases: [entry.case] }]
 		})
@@ -664,9 +664,9 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	 */
 	async lookup(options: CaptureLookupOptions): Promise<CaptureLookupResult> {
 		try {
-			const readings = new Map<string, CaptureFileSnapshot | undefined>()
+			const snapshots = new Map<string, CaptureFileSnapshot | undefined>()
 			const digests = new Map<string, CaptureDigest>()
-			const evidence = this.#evidence(readings)
+			const evidence = this.#evidence(snapshots)
 			const entries = this.#select(evidence, this.#destinations(evidence), options, true)
 			this.#uniqueRegistry(entries)
 			const cases = [...new Set(entries.map((entry) => entry.case))]
@@ -699,7 +699,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 					!matchesCaptureSelector(lookup.owner, options.selector) ||
 					collectCaptureChanges(
 						lookup.inputs,
-						this.#digest(this.#options.inputs, readings, digests).files,
+						this.#digest(this.#options.inputs, snapshots, digests).files,
 					).length > 0
 				)
 					throw new CaptureError(
@@ -751,7 +751,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 
 	#mergeCollections(
 		previous: readonly CaptureCollectionReceipt[],
-		incoming: readonly CaptureCollectionReceipt[],
+		receipts: readonly CaptureCollectionReceipt[],
 	): readonly CaptureCollectionReceipt[] {
 		requireCaptureUnique(
 			previous.map((entry) => entry.run.file),
@@ -759,12 +759,12 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			true,
 		)
 		requireCaptureUnique(
-			incoming.map((entry) => entry.run.file),
+			receipts.map((entry) => entry.run.file),
 			'incoming collection records',
 			true,
 		)
-		const replaced = new Set(incoming.map((entry) => entry.run.file))
-		const merged = [...previous.filter((entry) => !replaced.has(entry.run.file)), ...incoming]
+		const replaced = new Set(receipts.map((entry) => entry.run.file))
+		const merged = [...previous.filter((entry) => !replaced.has(entry.run.file)), ...receipts]
 		// Keep one lineage origin and the latest collection per producing variant.
 		return merged.filter(
 			(entry, index) =>
@@ -775,11 +775,11 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 
 	#collections(
 		evidence: CaptureEvidence,
-		readings: Map<string, CaptureFileSnapshot | undefined>,
+		snapshots: Map<string, CaptureFileSnapshot | undefined>,
 	): readonly CaptureCollectionEvidence[] {
 		const collections = evidence.collections.map((receipt) => {
-			const file = this.#file(receipt.run.file, readings)
-			const report = this.#file(receipt.report.file, readings)
+			const file = this.#file(receipt.run.file, snapshots)
+			const report = this.#file(receipt.report.file, snapshots)
 			if (
 				file === undefined ||
 				report === undefined ||
@@ -915,13 +915,13 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	// Reads each path once per pass; the pass owns the memo and discards it when it ends.
 	#file(
 		file: string,
-		readings: Map<string, CaptureFileSnapshot | undefined>,
+		snapshots: Map<string, CaptureFileSnapshot | undefined>,
 		paths?: Map<string, string>,
 	): CaptureFileSnapshot | undefined {
-		if (readings.has(file)) return readings.get(file)
-		const reading = this.#readFile(file, paths)
-		readings.set(file, reading)
-		return reading
+		if (snapshots.has(file)) return snapshots.get(file)
+		const snapshot = this.#readFile(file, paths)
+		snapshots.set(file, snapshot)
+		return snapshot
 	}
 
 	#readFile(file: string, paths?: Map<string, string>): CaptureFileSnapshot | undefined {
@@ -950,13 +950,13 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 
 	#hashes(
 		files: readonly string[],
-		readings: Map<string, CaptureFileSnapshot | undefined>,
+		snapshots: Map<string, CaptureFileSnapshot | undefined>,
 	): Readonly<Record<string, string>> {
 		requireCaptureUnique(files, 'input paths', true)
 		return Object.fromEntries(
 			files.flatMap((file) => {
-				const reading = this.#file(file, readings)
-				return reading === undefined ? [] : [[file, reading.image.digest]]
+				const snapshot = this.#file(file, snapshots)
+				return snapshot === undefined ? [] : [[file, snapshot.image.digest]]
 			}),
 		)
 	}
@@ -964,7 +964,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	// Expands each pattern list once per pass; the digest sorts its patterns, so sorted lists share a key.
 	#digest(
 		patterns: readonly string[],
-		readings: Map<string, CaptureFileSnapshot | undefined>,
+		snapshots: Map<string, CaptureFileSnapshot | undefined>,
 		digests: Map<string, CaptureDigest>,
 	): CaptureDigest {
 		if (!patterns.every(isCapturePattern))
@@ -973,14 +973,14 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		const key = JSON.stringify(patterns.toSorted())
 		const known = digests.get(key)
 		if (known !== undefined) return known
-		const digest = this.#computeDigest(patterns, readings)
+		const digest = this.#computeDigest(patterns, snapshots)
 		digests.set(key, digest)
 		return digest
 	}
 
 	#computeDigest(
 		patterns: readonly string[],
-		readings: Map<string, CaptureFileSnapshot | undefined>,
+		snapshots: Map<string, CaptureFileSnapshot | undefined>,
 	): CaptureDigest {
 		if (patterns.length === 0) return buildCaptureDigest([], {})
 		const files = [
@@ -994,21 +994,21 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		]
 			.filter((file) => statSync(this.#path(file)).isFile())
 			.toSorted()
-		return buildCaptureDigest(patterns, this.#hashes(files, readings))
+		return buildCaptureDigest(patterns, this.#hashes(files, snapshots))
 	}
 
 	#images(): readonly string[] {
-		const pending: CaptureDirectoryReading[] = this.#options.portfolios.map((entry) => ({
+		const pending: CaptureDirectoryResult[] = this.#options.portfolios.map((entry) => ({
 			directory: entry.directory,
 			ancestors: [],
 		}))
 		const files: string[] = []
-		for (const reading of pending) {
-			const directory = reading.directory
+		for (const result of pending) {
+			const directory = result.directory
 			const path = this.#path(directory)
 			if (!existsSync(path)) continue
 			const physical = realpathSync(path)
-			if (reading.ancestors.includes(physical))
+			if (result.ancestors.includes(physical))
 				throw new CaptureError('Cyclic portfolio directory alias', { code: 'CONTAINMENT' })
 			const entries = readdirSync(path)
 			requireCaptureUnique(entries, 'physical path spellings', true)
@@ -1016,7 +1016,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				const file = `${directory}/${name}`
 				const target = this.#path(file)
 				if (statSync(target).isDirectory())
-					pending.push({ directory: file, ancestors: [...reading.ancestors, physical] })
+					pending.push({ directory: file, ancestors: [...result.ancestors, physical] })
 				else if (name.toLowerCase().endsWith('.png')) files.push(file)
 			}
 		}
@@ -1034,18 +1034,18 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				this.#options.lookups,
 			]),
 		]
-		const readings = new Map<string, CaptureFileSnapshot | undefined>()
+		const snapshots = new Map<string, CaptureFileSnapshot | undefined>()
 		const digests = new Map<string, CaptureDigest>()
 		return {
 			time: Date.now(),
 			projects: options.projects.map((project) => {
 				if (project.inputs.length === 0)
 					throw new CaptureError('Missing bounded host input population', { code: 'HOST' })
-				return { project: project.name, inputs: this.#digest(project.inputs, readings, digests) }
+				return { project: project.name, inputs: this.#digest(project.inputs, snapshots, digests) }
 			}),
 			files: files.flatMap((file) => {
-				const reading = this.#file(file, readings)
-				return reading === undefined ? [] : [reading]
+				const snapshot = this.#file(file, snapshots)
+				return snapshot === undefined ? [] : [snapshot]
 			}),
 		}
 	}
@@ -1063,10 +1063,10 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	#fresh(
 		file: string,
 		before: CaptureSnapshot,
-		readings: Map<string, CaptureFileSnapshot | undefined>,
+		snapshots: Map<string, CaptureFileSnapshot | undefined>,
 		image = false,
 	): CaptureFileSnapshot {
-		const current = this.#file(file, readings)
+		const current = this.#file(file, snapshots)
 		const previous = before.files.find((entry) => entry.file === file)
 		if (
 			current === undefined ||
@@ -1083,7 +1083,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	#stable(
 		entry: CaptureDestination,
 		before: CaptureDigest,
-		readings: Map<string, CaptureFileSnapshot | undefined>,
+		snapshots: Map<string, CaptureFileSnapshot | undefined>,
 		digests: Map<string, CaptureDigest>,
 		stable: Map<string, true>,
 	): void {
@@ -1095,7 +1095,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		])
 		if (stable.has(key)) return
 		for (const patterns of [entry.sources.own, entry.sources.shared, entry.sources.tests]) {
-			const current = this.#digest(patterns, readings, digests)
+			const current = this.#digest(patterns, snapshots, digests)
 			if (Object.keys(current.files).some((file) => before.files[file] === undefined))
 				throw new CaptureError(
 					`Attribution outside the predeclared host population: ${entry.file}`,
@@ -1147,7 +1147,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	}
 
 	#registry(
-		readings: Map<string, CaptureFileSnapshot | undefined>,
+		snapshots: Map<string, CaptureFileSnapshot | undefined>,
 		paths: Map<string, string>,
 	): CaptureRegistry {
 		if (!existsSync(this.#path(this.#options.registry, paths)))
@@ -1170,7 +1170,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			true,
 		)
 		for (const receipt of registry.receipts) {
-			const report = this.#file(receipt.report.file, readings, paths)
+			const report = this.#file(receipt.report.file, snapshots, paths)
 			if (!receipt.complete || report?.image.digest !== receipt.report.digest)
 				throw new CaptureError('Registry receipt is incomplete or its report changed', {
 					code: 'EVIDENCE',
@@ -1190,9 +1190,9 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		return registry
 	}
 
-	#evidence(readings: Map<string, CaptureFileSnapshot | undefined>): CaptureEvidence {
+	#evidence(snapshots: Map<string, CaptureFileSnapshot | undefined>): CaptureEvidence {
 		const paths = new Map<string, string>()
-		const registry = this.#registry(readings, paths)
+		const registry = this.#registry(snapshots, paths)
 		const manifest = existsSync(this.#path(this.#options.manifest, paths))
 			? this.#json(this.#options.manifest, paths)
 			: undefined
@@ -1225,7 +1225,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			: undefined
 		if (separate !== undefined && !isCaptureLookupJournal(separate))
 			throw new CaptureError('Invalid separate lookup schema', { code: 'EVIDENCE' })
-		const manifestDigest = this.#file(this.#options.manifest, readings, paths)?.image.digest
+		const manifestDigest = this.#file(this.#options.manifest, snapshots, paths)?.image.digest
 		const current =
 			separate !== undefined && separate.manifest === manifestDigest
 				? readCaptureLookups(separate)
@@ -1236,10 +1236,10 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		const populations = new Map<Readonly<Record<string, string>>, true>()
 		const references = Map.groupBy(lookups, (entry) => entry.run.file)
 		const runs = [...references].map(([file, referenced]) => {
-			const reading = this.#file(file, readings, paths)
+			const snapshot = this.#file(file, snapshots, paths)
 			if (
-				reading === undefined ||
-				referenced.some((entry) => entry.run.digest !== reading.image.digest)
+				snapshot === undefined ||
+				referenced.some((entry) => entry.run.digest !== snapshot.image.digest)
 			)
 				throw new CaptureError(`Lookup run record is missing or changed: ${file}`, {
 					code: 'EVIDENCE',
@@ -1295,7 +1295,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				}
 			}
 			for (const destination of run.registry) this.#destination(destination, paths)
-			return { file: reading, run }
+			return { file: snapshot, run }
 		})
 		const collections = this.#mergeCollections(
 			(manifest?.collections ?? []).filter((entry) => entry.registry === registry.digest),
@@ -1308,24 +1308,24 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 
 	#mergeLookups(
 		previous: readonly CaptureLookup[],
-		incoming: readonly CaptureLookup[],
+		lookups: readonly CaptureLookup[],
 	): readonly CaptureLookup[] {
 		requireCaptureUnique(previous.map(resolveLookupKey), 'inherited lookup identities')
-		requireCaptureUnique(incoming.map(resolveLookupKey), 'incoming lookup identities')
-		const replaced = new Set(incoming.map(resolveLookupKey))
-		return [...previous.filter((entry) => !replaced.has(resolveLookupKey(entry))), ...incoming]
+		requireCaptureUnique(lookups.map(resolveLookupKey), 'incoming lookup identities')
+		const replaced = new Set(lookups.map(resolveLookupKey))
+		return [...previous.filter((entry) => !replaced.has(resolveLookupKey(entry))), ...lookups]
 	}
 
 	#attest(
 		run: CaptureRun,
 		evidence: CaptureEvidence,
 		inputs: Readonly<Record<string, string>>,
-		readings: Map<string, CaptureFileSnapshot | undefined>,
+		snapshots: Map<string, CaptureFileSnapshot | undefined>,
 	): void {
 		const receipt = evidence.registry.receipts.find((entry) => entry.variant === run.variant)
 		const previous =
 			evidence.runs.find((entry) => entry.run.variant === run.variant)?.run ??
-			this.#collections(evidence, readings).find((entry) => entry.run.variant === run.variant)?.run
+			this.#collections(evidence, snapshots).find((entry) => entry.run.variant === run.variant)?.run
 		const declarations = receipt?.declarations ?? previous?.declarations
 		const registry = receipt?.registry ?? previous?.registry
 		if (declarations !== undefined && registry !== undefined) {
@@ -1384,7 +1384,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		evidence: CaptureEvidence,
 		entries: readonly CaptureDestination[],
 		options: CaptureCheckOptions | CaptureLookupOptions,
-		producing: boolean,
+		attributed: boolean,
 	): readonly CaptureDestination[] {
 		if (
 			!isCaptureSelector(options.selector) ||
@@ -1411,7 +1411,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			throw new CaptureError('Invalid capture selection', { code: 'SELECTION' })
 		const selected = scoped.filter(
 			(entry) =>
-				options.variants.includes(producing ? this.#producing(entry, evidence) : entry.variant) &&
+				options.variants.includes(attributed ? this.#producer(entry, evidence) : entry.variant) &&
 				(options.state === undefined || entry.state === options.state) &&
 				(options.case === undefined || entry.case === options.case),
 		)
@@ -1419,15 +1419,15 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			throw new CaptureError('Empty selection or state outside selector/case', {
 				code: 'SELECTION',
 			})
-		const variants = producing
-			? entries.map((entry) => this.#producing(entry, evidence))
+		const variants = attributed
+			? entries.map((entry) => this.#producer(entry, evidence))
 			: entries.map((entry) => entry.variant)
 		if (options.variants.some((variant) => !variants.includes(variant)))
 			throw new CaptureError('Unknown or unattested selected variant', { code: 'SELECTION' })
 		return selected
 	}
 
-	#producing(destination: CaptureDestination, evidence: CaptureEvidence): string {
+	#producer(destination: CaptureDestination, evidence: CaptureEvidence): string {
 		const sources = [...evidence.registry.receipts, ...evidence.runs.map((entry) => entry.run)]
 		const variants = [
 			...new Set(

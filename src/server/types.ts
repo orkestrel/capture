@@ -91,14 +91,14 @@ export interface CaptureIntegrityOptions {
 }
 
 /**
- * Supplies one selected project's expected closing record and bounded input population.
+ * Supplies one selected project's expected final record and bounded input population.
  *
  * @remarks
  * `name` is the actual Vitest project name and `variant` is its producing variant, which can
  * differ from a destination's output variant. `record` is the repository-relative path bound to
  * the active request, never a raw direct-run substitute. `inputs` comes from that project's
  * wrapper provide and bounds attribution even on a first capture. Every requested variant
- * requires a project and a closing record, including projects whose selected owner population is
+ * requires a project and a final record, including projects whose selected owner population is
  * inapplicable.
  *
  * @example
@@ -464,10 +464,10 @@ export interface CaptureRunEvidence {
  *
  * @example
  * ```ts
- * const reading: CaptureDirectoryReading = { directory: 'tmp/captures/states/pages', ancestors: [] }
+ * const result: CaptureDirectoryResult = { directory: 'tmp/captures/states/pages', ancestors: [] }
  * ```
  */
-export interface CaptureDirectoryReading {
+export interface CaptureDirectoryResult {
 	readonly directory: string
 	readonly ancestors: readonly string[]
 }
@@ -600,19 +600,22 @@ export interface CaptureIntegrityInterface {
 }
 
 /**
- * Preserves the wrapper's host declarations for the runner.
+ * Preserves the wrapper's host declarations, including optional uniform scopes, for consumers.
  *
  * @remarks
  * `name` is the Vitest project label the runner passes to `--project`, `variant` is the one
  * producing variant that project runs, and `variants` lists every variant the wrapper declares.
  * `directory` is the absolute primary portfolio root and `record` the run record template.
- * `inputs` bounds attribution. `closing` is the full name of the case that closes a variant's
+ * `inputs` bounds attribution. `final` is the full name of the case that closes a variant's
  * run, `first` is the variant a frame capture stages alone before the rest, and `portfolios`
  * authorizes every physical root a selector may reach through the primary registry. `standalone`
  * lists the roots that keep their own registry, manifest, and lookups beside their directory and
  * have no stamping route; a selector or `--portfolio` that names one reads through that root
  * alone. The runner validates uniqueness, tag syntax, references, and containment of every one
- * of them.
+ * of them. `uniform` optionally lists unique valid owner selectors whose frames the preflight
+ * judges for mixed observations. Default: every scope. An empty list judges none. Every project must
+ * agree on the declaration, including its absence; order does not matter. Uniform scopes never
+ * restrict freshness, coverage, or host checks.
  *
  * @example
  * ```ts
@@ -624,7 +627,7 @@ export interface CaptureIntegrityInterface {
  * 	directory: `${process.cwd()}/tmp/captures/states`,
  * 	record: 'tmp/captures/states/runs/a/light-390.json',
  * 	inputs: ['src/**'],
- * 	closing: 'showcase journeys places every registered state and writes the variant artifact',
+ * 	final: 'showcase journeys places every registered state and writes the variant artifact',
  * 	first: 'light-390',
  * 	portfolios: [{ portfolio: 'states', directory: 'tmp/captures/states', scoped: true }],
  * 	standalone: [],
@@ -639,8 +642,9 @@ export interface CaptureProject {
 	readonly directory: string
 	readonly record: string
 	readonly inputs: readonly string[]
-	readonly closing: string
+	readonly final: string
 	readonly first: string
+	readonly uniform?: readonly string[]
 	readonly portfolios: readonly CapturePortfolioRoot[]
 	readonly standalone: readonly CapturePortfolioRoot[]
 }
@@ -722,7 +726,7 @@ export interface CaptureStagePlan {
  * `entry` is the absolute Vitest entry and `config` the absolute wrapper path. `report` is the
  * absolute JSON reporter path and `projects` the Vitest project labels the stage runs. `filter`
  * is the tag expression. An exact `case` adds the anchored name pattern for that case and the
- * `closing` case, so the closing case still writes the run record. A `mode` adds Vitest's `--mode`
+ * `final` case, so the final case still writes the run record. A `mode` adds Vitest's `--mode`
  * flag, which the registry command forwards so a wrapper can select another registry.
  *
  * @example
@@ -733,7 +737,7 @@ export interface CaptureStagePlan {
  * 	report: '/repo/tmp/units/runs/a/journey-selected.json',
  * 	projects: ['journey:light-390'],
  * 	filter: 'owner:pages:mail',
- * 	closing: 'closes the run',
+ * 	final: 'closes the run',
  * }
  * ```
  */
@@ -744,7 +748,7 @@ export interface CaptureArgumentsOptions {
 	readonly projects: readonly string[]
 	readonly filter: string
 	readonly case?: string
-	readonly closing: string
+	readonly final: string
 	readonly mode?: string
 }
 
@@ -980,7 +984,7 @@ export interface CaptureOutcome {
  *
  * @remarks
  * `directory` is the repository-relative primary portfolio root, `config` the repository-relative
- * wrapper path, and `closing` the full name of the case that closes a variant's run. `filter` is
+ * wrapper path, and `final` the full name of the case that closes a variant's run. `filter` is
  * the tag expression. `case` and `state` appear only when the command line named them, and `case`
  * holds the resolved declaring case once a state selects one. `command` is the request command
  * every stage records.
@@ -992,7 +996,7 @@ export interface CaptureOutcome {
  * 	projects: [project],
  * 	selector: 'pages:mail',
  * 	filter: 'owner:pages:mail',
- * 	closing: 'closes the run',
+ * 	final: 'closes the run',
  * 	directory: 'tmp/captures/states',
  * 	config: 'configs/vite.journey.config.ts',
  * }
@@ -1005,7 +1009,7 @@ export interface CaptureRunPlan {
 	readonly filter: string
 	readonly case?: string
 	readonly state?: string
-	readonly closing: string
+	readonly final: string
 	readonly directory: string
 	readonly config: string
 }
@@ -1374,9 +1378,12 @@ export interface CaptureReaderDefaults {
 }
 
 /**
- * Returns a reader's authenticated selection and the same engine for pixel classification.
+ * Returns a reader's authenticated selection, uniform scopes, and engine for pixel classification.
  *
- * @remarks `directory` is the host's primary run directory, which holds the stamped run records.
+ * @remarks
+ * `directory` is the host's primary run directory, which holds the stamped run records. `uniform`
+ * preserves the wrapper's uniform scopes for mixed observations only. Default: every scope. An
+ * empty list judges none, while the authenticated selection retains every frame for the other checks.
  *
  * @example
  * ```ts
@@ -1388,6 +1395,7 @@ export interface CaptureReaderSelection {
 	readonly population: CaptureReadResult
 	readonly variants: readonly CaptureProducer[]
 	readonly directory: string
+	readonly uniform?: readonly string[]
 }
 
 /**
@@ -1395,10 +1403,10 @@ export interface CaptureReaderSelection {
  *
  * @example
  * ```ts
- * const reading: CaptureArtifactReading = { record, run, file, text }
+ * const result: CaptureArtifactResult = { record, run, file, text }
  * ```
  */
-export interface CaptureArtifactReading {
+export interface CaptureArtifactResult {
 	readonly record: string
 	readonly run: CaptureRun
 	readonly file: string
@@ -1428,7 +1436,7 @@ export interface CaptureJudgedRecord {
  */
 export interface CaptureJudgedFrame {
 	readonly entry: CaptureDestination
-	readonly artifact: CaptureArtifactReading | undefined
+	readonly artifact: CaptureArtifactResult | undefined
 	readonly issues: readonly string[]
 }
 
@@ -1437,10 +1445,10 @@ export interface CaptureJudgedFrame {
  *
  * @example
  * ```ts
- * const reading: CaptureImageReading = { entry, picture, digest, size: 2048 }
+ * const result: CaptureImageResult = { entry, picture, digest, size: 2048 }
  * ```
  */
-export interface CaptureImageReading {
+export interface CaptureImageResult {
 	readonly entry: CaptureDestination
 	readonly picture: CapturePicture
 	readonly digest: string
@@ -1463,7 +1471,7 @@ export interface CaptureImageReading {
 export interface CaptureCheckFrame {
 	readonly entry: CaptureDestination
 	readonly picture: CapturePicture | undefined
-	readonly artifact: CaptureArtifactReading | undefined
+	readonly artifact: CaptureArtifactResult | undefined
 }
 
 /**
@@ -1480,7 +1488,7 @@ export type CaptureCheckHandler = (frame: CaptureCheckFrame) => readonly string[
  * Reports selected image checks without upgrading their engine freshness classifications.
  *
  * @remarks
- * `framing` reports dimension mixtures without inferring intended or actual capture mode.
+ * `mixed` reports dimension mixtures without inferring intended or actual capture mode.
  * `directory` names the host's primary run directory, which holds the stamped run records.
  *
  * @example
@@ -1490,17 +1498,17 @@ export type CaptureCheckHandler = (frame: CaptureCheckFrame) => readonly string[
  * ```
  */
 export interface CapturePreflightResult {
-	readonly framing: readonly string[]
+	readonly mixed: readonly string[]
 	readonly variants: readonly CaptureProducer[]
 	readonly directory: string
 	readonly selection: CaptureReadResult
 	readonly freshness: CaptureCheckResult
-	readonly images: readonly CaptureImageReading[]
+	readonly images: readonly CaptureImageResult[]
 	readonly issues: readonly string[]
 }
 
 /**
- * Reads the selected population's frames and reports their freshness, framing, and coverage.
+ * Reads the selected population's frames and reports their freshness, mixed observations, and coverage.
  *
  * @example
  * ```ts
@@ -1509,9 +1517,9 @@ export interface CapturePreflightResult {
  */
 export interface CapturePreflightInterface {
 	/**
-	 * Reads the authenticated selection and the host's declared viewports.
+	 * Reads the authenticated selection, uniform scopes, and the host's declared viewports.
 	 *
-	 * @returns The engine, the selected destinations, the viewports, and the primary run directory
+	 * @returns The engine, the selected destinations, the viewports, the uniform scopes, and the primary run directory
 	 * @throws Thrown when the wrapper, the registry, or the selection is invalid.
 	 *
 	 * @example
@@ -1522,9 +1530,9 @@ export interface CapturePreflightInterface {
 	read(): Promise<CaptureReaderSelection>
 
 	/**
-	 * Judges every selected frame and returns the framing, freshness, images, and issues.
+	 * Judges every selected frame and returns the mixed observations, freshness, images, and issues.
 	 *
-	 * @returns The preflight reading without upgrading any freshness classification
+	 * @returns The preflight result without upgrading any freshness classification
 	 * @throws Thrown when the selection or an artifact cannot be read.
 	 *
 	 * @example

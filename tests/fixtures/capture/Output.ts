@@ -29,6 +29,8 @@ if (mode === 'environment') {
 } else if (mode === 'tree' || mode === 'orphan') {
 	const child = spawn(process.execPath, [resolve(import.meta.dirname, 'Sleeper.ts')], {
 		windowsHide: true,
+		// A Windows descendant outlives the supervised tree, and keeps its inherited pipe, only detached.
+		detached: mode === 'orphan' && process.platform === 'win32',
 		stdio: ['ignore', 'pipe', 'inherit'],
 	})
 	await once(child.stdout, 'data')

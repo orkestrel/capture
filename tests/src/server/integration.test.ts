@@ -32,10 +32,10 @@ function readIntegrity(stdout: string): readonly unknown[] {
 }
 
 function readStatuses(stdout: string): readonly unknown[] {
-	const reading = requireValue(readIntegrity(stdout).at(0), 'The stale command printed no reading')
-	if (!isRecord(reading) || !Array.isArray(reading.entries))
+	const report = requireValue(readIntegrity(stdout).at(0), 'The stale command printed no reading')
+	if (!isRecord(report) || !Array.isArray(report.entries))
 		throw new Error('The stale reading carries no entries')
-	return reading.entries.map((entry: unknown) => (isRecord(entry) ? entry.status : undefined))
+	return report.entries.map((entry: unknown) => (isRecord(entry) ? entry.status : undefined))
 }
 
 function readHeld(fixture: ComposedFixture): readonly string[] {
@@ -76,11 +76,11 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(run.stdout).toContain(`journey selected: ${VARIANTS.join(', ')}; all;`)
 		expect(run.stdout).toContain('"stage":"selected"')
 		expect(run.stdout).toMatch(/journey:light-390: \d+ owner-bearing passed cases/u)
-		const readings = readIntegrity(run.stdout)
-		expect(readings).toHaveLength(1)
+		const reports = readIntegrity(run.stdout)
+		expect(reports).toHaveLength(1)
 		expect(countChildren(run.stdout)).toBe(2)
-		for (const reading of readings)
-			expect(reading).toMatchObject({ command: 'journey', stamps: 0, lookups: expect.any(Number) })
+		for (const report of reports)
+			expect(report).toMatchObject({ command: 'journey', stamps: 0, lookups: expect.any(Number) })
 		expect(readFixtureManifest(fixture.root)).toBeUndefined()
 		const journal: unknown = parseJSON(fixture.read(LOOKUPS).toString('utf8'))
 		if (!isCaptureLookupJournal(journal)) throw new Error('Invalid journey lookup journal')

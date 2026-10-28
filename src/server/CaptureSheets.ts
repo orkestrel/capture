@@ -100,7 +100,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 			const index = {
 				selection: result.selection,
 				freshness: result.freshness,
-				framing: result.framing,
+				mixed: result.mixed,
 				issues: result.issues,
 				acceptance: false,
 				sheets: sheets.map((sheet) => ({
@@ -168,7 +168,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 			const cells = result.selection.entries
 				.filter((entry) => this.#identity(entry) === identity)
 				.map((entry): CaptureSheetCell => {
-					const image = result.images.find((reading) => reading.entry.file === entry.file)
+					const image = result.images.find((candidate) => candidate.entry.file === entry.file)
 					const factor =
 						image === undefined
 							? 1
@@ -196,7 +196,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 						clipped:
 							image !== undefined &&
 							Math.floor(image.picture.height / factor) > CAPTURE_SHEET.limit,
-						freshness: result.freshness.entries.find((reading) => reading.file === entry.file),
+						freshness: result.freshness.entries.find((candidate) => candidate.file === entry.file),
 					}
 				})
 			return {
@@ -222,7 +222,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 		)
 	}
 
-	// Writes the notes document: the framing observations, then each sheet with its cells described.
+	// Writes the notes document: the mixed observations, then each sheet with its cells described.
 	#notes(
 		result: CapturePreflightResult,
 		sheets: readonly CaptureSheetPage[],
@@ -233,11 +233,11 @@ export class CaptureSheets implements CaptureSheetsInterface {
 			'',
 			'Iteration evidence only. Assembled-portfolio acceptance remains withheld.',
 			'',
-			'## Framing observations',
+			'## Mixed observations',
 			'',
-			...(result.framing.length === 0
+			...(result.mixed.length === 0
 				? ['No mixed geometry reported for this selection.']
-				: result.framing.map((observation) => `- ${observation}`)),
+				: result.mixed.map((observation) => `- ${observation}`)),
 			'',
 			...sheets.flatMap((sheet) => [
 				`## ${sheet.file}`,

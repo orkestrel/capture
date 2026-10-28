@@ -56,7 +56,7 @@ import {
  * @remarks
  * The wrapper and the installed Vitest supply the registry and the execution protocol, and the
  * wrapper's provided values supply every name the runner uses: the variants, the first-stage
- * variant, the closing case, and the portfolio roots. The runner never loads the wrapper itself: a
+ * variant, the final case, and the portfolio roots. The runner never loads the wrapper itself: a
  * `CaptureDiscovery` runs the consumer's installed Vitest in discovery mode and reads back the host
  * description the wrapper writes, so the runner imports neither Vite nor Vitest. It creates one
  * discovery invocation per `execute` call and a separate invocation per changed owner, and holds
@@ -302,7 +302,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			filter: buildCaptureFilter(command, selector, selectors),
 			...(selected === undefined ? {} : { case: selected }),
 			...(parsed.state === undefined ? {} : { state: parsed.state }),
-			closing: primary.closing,
+			final: primary.final,
 			directory: resolveCaptureRelative(root, primary.directory),
 			config: resolveCaptureRelative(root, parsed.config),
 		}
@@ -375,7 +375,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			projects: selected.map((project) => project.name),
 			filter: plan.filter,
 			...(plan.case === undefined ? {} : { case: plan.case }),
-			closing: plan.closing,
+			final: plan.final,
 		})
 		const request: CaptureRequest = {
 			version: 1,

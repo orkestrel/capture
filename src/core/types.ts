@@ -174,7 +174,7 @@ export interface CaptureEntry extends CaptureDestination {
 }
 
 /**
- * Names the journey artifact a closing case wrote and the SHA-256 of its bytes.
+ * Names the journey artifact a final case wrote and the SHA-256 of its bytes.
  *
  * @example
  * ```ts

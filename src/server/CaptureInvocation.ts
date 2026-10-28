@@ -218,9 +218,19 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 				await session.end()
 				const outcome = await session.exit
 				const tail = decoder.end()
-				if (tail !== '') {
-					this.#options.stdout(tail)
-					appendFileSync(log, tail)
+				// The tail is written outside the session's listener isolation, so its failure joins the same refusal.
+				try {
+					if (tail !== '') {
+						this.#options.stdout(tail)
+						appendFileSync(log, tail)
+					}
+				} catch (error) {
+					failure.abort(
+						new CaptureError('Capture child output could not be recorded', {
+							code: 'STAGE',
+							cause: error,
+						}),
+					)
 				}
 				failure.signal.throwIfAborted()
 				if (!outcome.drained)

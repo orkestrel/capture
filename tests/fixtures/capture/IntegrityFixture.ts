@@ -23,7 +23,7 @@ import { INPUTS, PORTFOLIOS, VARIANTS } from '../../setupServer.js'
  * Owns a real isolated Git workspace, producer children, and the engine under test.
  *
  * @remarks
- * The producer is a plain Node child that writes the reporter, the closing records, and the frames
+ * The producer is a plain Node child that writes the reporter, the final records, and the frames
  * from inert fixture data. It validates nothing the engine owns, so every refusal the tests read
  * comes from the engine.
  */

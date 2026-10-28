@@ -12,7 +12,7 @@ import {
 	FIXTURE_DISCOVERY_MESSAGES,
 	FIXTURE_TIMEOUT,
 	INPUTS,
-	READER_CLOSING,
+	READER_FINAL,
 	VARIANTS,
 	withEnvironment,
 } from '../../setupServer.js'
@@ -94,7 +94,7 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 			const project = description?.projects.at(0)?.project
 			expect(project).toMatchObject({
 				first: COMPOSED_FIRST,
-				closing: READER_CLOSING,
+				final: READER_FINAL,
 				tags: COMPOSED_OWNERS.map((owner) => `owner:${owner}`),
 				inputs: [...INPUTS],
 			})

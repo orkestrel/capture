@@ -30,7 +30,7 @@ const projects = ['wide', 'narrow'].map((variant) => ({
 			inputs: ['configs/**'],
 			variant,
 			variants: [{ name: 'wide', width: 1024, height: 768 }, { name: 'narrow', width: 390, height: 844 }],
-			closing: 'closes the run',
+			final: 'closes the run',
 			first: 'narrow',
 			portfolios: [{ portfolio: 'frames', directory: 'out/frames', scoped: true }],
 		},

@@ -18,7 +18,7 @@ import {
 	FIXTURE_TIMEOUT,
 	MAIL,
 	QUOTED,
-	READER_CLOSING,
+	READER_FINAL,
 	RUNNER_COMMANDS,
 	RUNNER_REFUSALS,
 	SUPPORTS_GROUP_SIGNAL,
@@ -63,9 +63,9 @@ function readReceipt(fixture: ComposedFixture): unknown {
 
 function readStatuses(stdout: string): readonly unknown[] {
 	const line = stdout.split('\n').find((entry) => entry.startsWith(INTEGRITY))
-	const reading: unknown = parseJSON(line?.slice(INTEGRITY.length) ?? '')
-	return isRecord(reading) && Array.isArray(reading.entries)
-		? reading.entries.map((entry: unknown) => (isRecord(entry) ? entry.status : undefined))
+	const result: unknown = parseJSON(line?.slice(INTEGRITY.length) ?? '')
+	return isRecord(result) && Array.isArray(result.entries)
+		? result.entries.map((entry: unknown) => (isRecord(entry) ? entry.status : undefined))
 		: []
 }
 
@@ -131,9 +131,9 @@ describe.each(RUNNER_COMMANDS)(
 			// match each of the two names exactly and nothing that merely resembles them.
 			const pattern = new RegExp(args[args.indexOf('-t') + 1] ?? '', 'u')
 			expect(pattern.test(QUOTED)).toBe(true)
-			expect(pattern.test(READER_CLOSING)).toBe(true)
+			expect(pattern.test(READER_FINAL)).toBe(true)
 			expect(pattern.test(`${QUOTED} extra`)).toBe(false)
-			expect(pattern.test(`x${READER_CLOSING}`)).toBe(false)
+			expect(pattern.test(`x${READER_FINAL}`)).toBe(false)
 			expect(run.stdout).toMatch(/^pid=\d+\n/mu)
 			expect(
 				base.read(`${base.requests}/runs/${readInvocation(run.stdout)}/${command}-${stage}.log`),
@@ -626,7 +626,7 @@ describe('CaptureRunner wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () => {
 			fixture.seed()
 			fixture.write(
 				fixture.config,
-				fixture.read(fixture.config).toString('utf8').replace(READER_CLOSING, 'closes another run'),
+				fixture.read(fixture.config).toString('utf8').replace(READER_FINAL, 'closes another run'),
 			)
 			const run = await fixture.run('journey', ['pages:mail'])
 			expect(run.code).toBe(1)
@@ -736,10 +736,10 @@ describe('CaptureRunner stale command', { timeout: FIXTURE_TIMEOUT }, () => {
 					failure: undefined,
 				})
 				const refused = await fixture.run('stale', args)
-				expect({ args, code: refused.code, reading: refused.stdout.includes(INTEGRITY) }).toEqual({
+				expect({ args, code: refused.code, reported: refused.stdout.includes(INTEGRITY) }).toEqual({
 					args,
 					code: 64,
-					reading: false,
+					reported: false,
 				})
 				expect(refused.stderr).toContain('Unattested declared variant: light-1280')
 			}

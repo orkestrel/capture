@@ -330,14 +330,14 @@ export function isCaptureArtifact(value: unknown): value is CaptureArtifact {
 }
 
 /**
- * Checks whether a closing record preserves declarations, observations, and output separately.
+ * Checks whether a final record preserves declarations, observations, and output separately.
  *
  * @param value - The decoded run record
  * @returns True if the record has the supported protocol shape; false otherwise
  *
  * @example
  * ```ts
- * isCaptureRun(JSON.parse(text)) // true for a closing run record
+ * isCaptureRun(JSON.parse(text)) // true for a final run record
  * isCaptureRun(null) // false
  * ```
  */

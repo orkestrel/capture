@@ -294,7 +294,7 @@ const ROWS: ReadonlyArray<
 ]
 
 describe('capture guards', () => {
-	it('accepts a selected journey request and closing identity while retaining malformed-stage refusals', () => {
+	it('accepts a selected journey request and final identity while retaining malformed-stage refusals', () => {
 		const identity = createIdentityFixture({ stage: 'selected' })
 		const request = createRequestFixture({
 			...identity,
@@ -444,7 +444,7 @@ describe('capture guard totality', () => {
 	})
 
 	it('keeps the remaining guards total over the same corpus, answering a boolean and never throwing', () => {
-		const remaining = [
+		const predicates = [
 			isCapturePath,
 			isCapturePattern,
 			isCaptureSegment,
@@ -454,7 +454,7 @@ describe('capture guard totality', () => {
 			isCaptureStoredManifest,
 		]
 		for (const value of hostile) {
-			for (const guard of remaining) expect(typeof guard(value)).toBe('boolean')
+			for (const guard of predicates) expect(typeof guard(value)).toBe('boolean')
 		}
 	})
 

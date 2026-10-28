@@ -86,7 +86,7 @@
 	"dependencies": {
 		"@orkestrel/contract": "^0.0.19",
 		"@orkestrel/process": "^0.0.15",
-		"@orkestrel/timeout": "0.0.13"
+		"@orkestrel/timeout": "^0.0.13"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.59.4",
