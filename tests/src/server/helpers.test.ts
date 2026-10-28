@@ -50,8 +50,8 @@ import {
 	readCaptureRunning,
 	readCaptureViewport,
 	resolveCaptureWrapperProject,
-	readFlag,
-	readFlags,
+	readCaptureOptions,
+	CAPTURE_COMMAND_OPTIONS,
 	requireCaptureProjects,
 	resolveCaptureRelative,
 	resolveCaptureRequests,
@@ -141,30 +141,42 @@ describe('normalizeSlashes', () => {
 	})
 })
 
-describe('readFlag', () => {
-	it('reads the value after the first occurrence of a flag', () => {
-		expect(readFlag(['pages:mail', '--case', 'inbox', '--case', 'other'], '--case')).toBe('inbox')
+describe('readCaptureOptions', () => {
+	it('retains repeated variants, standard equals values, and flag positions', () => {
+		const parsed = readCaptureOptions(
+			['--variant=wide', 'app', '--variant', 'phone', '--case=-draft'],
+			CAPTURE_COMMAND_OPTIONS.journey,
+			'Usage: capture journey <selector>',
+		)
+		expect(parsed.values).toEqual({ variant: ['wide', 'phone'], case: '-draft' })
+		expect(parsed.positionals).toEqual(['app'])
+		expect(
+			parsed.tokens.filter((token) => token.kind === 'option').map((token) => token.name),
+		).toEqual(['variant', 'variant', 'case'])
 	})
 
-	it('answers undefined for an absent, last, or valueless flag', () => {
-		expect(readFlag(['pages:mail'], '--case')).toBeUndefined()
-		expect(readFlag(['pages:mail', '--case'], '--case')).toBeUndefined()
-		expect(readFlag(['--case', '--state', 'inbox'], '--case')).toBeUndefined()
-		expect(readFlag([], '--case')).toBeUndefined()
-	})
-})
-
-describe('readFlags', () => {
-	it('reads every value of a repeated flag in order', () => {
-		expect(readFlags(['--variant', 'a', '--state', 'x', '--variant', 'b'], '--variant')).toEqual([
-			'a',
-			'b',
-		])
-	})
-
-	it('skips an occurrence with no value and answers empty when the flag never appears', () => {
-		expect(readFlags(['--variant', '--variant', 'b', '--variant'], '--variant')).toEqual(['b'])
-		expect(readFlags(['pages:mail'], '--variant')).toEqual([])
+	it.each([
+		['--plan', '--plan'],
+		['--plan=true'],
+		['--case=', 'app'],
+		['--config', ''],
+		['--case', '-draft'],
+		['--case=a', '--case', 'b'],
+		['--', 'app'],
+		['app', '--'],
+		['--unknown=value'],
+	])('refuses ambiguous or malformed options %j with command usage', (...argv) => {
+		const error = readThrown(() =>
+			readCaptureOptions(
+				argv,
+				CAPTURE_COMMAND_OPTIONS.journey,
+				'Usage: capture journey <selector>',
+			),
+		)
+		expect(error).toMatchObject({
+			code: 'USAGE',
+			message: expect.stringContaining('Usage: capture journey <selector>'),
+		})
 	})
 })
 
@@ -849,6 +861,18 @@ describe('buildCaptureChangePlan', () => {
 })
 
 describe('renderCaptureCommand', () => {
+	it('uses equals form for dash-leading values in a printed next command', () => {
+		const root = process.cwd()
+		const parsed = readCaptureArguments(
+			['app', '--case=-draft', '--config=-wrapper.ts'],
+			'journey',
+			root,
+			'default.ts',
+		)
+		expect(renderCaptureCommand('journey', parsed, 'app', root)).toBe(
+			"capture journey app '--case=-draft' '--config=-wrapper.ts'",
+		)
+	})
 	it('prints executable names and preserves every effective selection flag without changed or plan', () => {
 		const root = process.cwd()
 		expect(
@@ -891,6 +915,16 @@ describe('renderCaptureCommand', () => {
 })
 
 describe('readCaptureArguments changed selection', () => {
+	it('accepts equals-form changed selection while retaining plan semantics', () => {
+		expect(
+			readCaptureArguments(
+				['--changed=HEAD', '--plan', '--variant=wide'],
+				'journey',
+				process.cwd(),
+				'journey.ts',
+			),
+		).toEqual({ config: resolve('journey.ts'), changed: 'HEAD', plan: true, variants: ['wide'] })
+	})
 	it('combines one changed ref with plan and repeated distinct variants', () => {
 		expect(
 			readCaptureArguments(
@@ -910,7 +944,7 @@ describe('readCaptureArguments changed selection', () => {
 	it('refuses malformed, repeated, misplaced, or missing changed and plan flags', () => {
 		for (const argv of [
 			['--changed'],
-			['--changed=HEAD'],
+			['--changed='],
 			['--changed', 'HEAD', '--changed', 'HEAD'],
 			['--changed', 'HEAD', '--plan', '--plan'],
 			['--plan'],
@@ -927,7 +961,7 @@ describe('readCaptureArguments changed selection', () => {
 		}
 		expect(() =>
 			readCaptureArguments(['--changed', 'HEAD'], 'stale', process.cwd(), 'journey.ts'),
-		).toThrow('belong to journey and frames')
+		).toThrow("Unknown option '--changed'")
 	})
 })
 
@@ -1499,6 +1533,31 @@ describe('readCaptureRequest', () => {
 describe('readCaptureReaderArguments', () => {
 	const ROOT = resolve('workspace')
 	const DEFAULTS = { config: 'configs/default.config.ts', journeys: 'tmp/default-journeys' }
+	it('accepts equals values after the leading selector and retains each selected variant', () => {
+		const command = readCaptureReaderArguments(
+			['app', '--variant=wide', '--variant=phone', '--case=-draft', '--output=sheets'],
+			ROOT,
+			DEFAULTS,
+		)
+		expect(command.reader.selection).toEqual({
+			selector: 'app',
+			variants: ['wide', 'phone'],
+			case: '-draft',
+		})
+		expect(command.output).toBe(resolve(ROOT, 'sheets'))
+	})
+
+	it.each([
+		['--variant=wide', 'app'],
+		['app', '--'],
+		['app', '--output='],
+		['app', '--plan'],
+		['app', '--output=a', '--output=b'],
+	])('keeps reader positional and option refusals for %j', (...argv) => {
+		expect(readThrown(() => readCaptureReaderArguments(argv, ROOT, DEFAULTS))).toMatchObject({
+			code: 'USAGE',
+		})
+	})
 
 	it('reads a selector and every flag into absolute paths', () => {
 		expect(
@@ -1568,47 +1627,47 @@ describe('readCaptureReaderArguments', () => {
 	})
 
 	it.each([
-		{ title: 'no arguments', argv: [], message: 'Usage: <selector>' },
+		{ title: 'no arguments', argv: [], message: 'Usage: capture sheets <selector>' },
 		{
 			title: 'a flag where the selector belongs',
 			argv: ['--variant', 'wide'],
-			message: 'Usage: <selector>',
+			message: 'Usage: capture sheets <selector>',
 		},
 		{
 			title: 'an unknown flag',
 			argv: ['app', '--mode', 'vue'],
-			message: 'Unknown reader option: --mode',
+			message: "Unknown option '--mode'",
 		},
 		{
 			title: 'a second positional argument',
 			argv: ['app', 'tools'],
-			message: 'Unknown reader option: tools',
+			message: 'Usage: capture sheets <selector>',
 		},
 		{
 			title: 'a flag with no value',
 			argv: ['app', '--variant'],
-			message: 'Missing reader option value',
+			message: "Option '--variant <value>' argument missing",
 		},
 		{
 			title: 'a flag followed by a flag',
 			argv: ['app', '--variant', '--state', 'x'],
-			message: 'Missing reader option value',
+			message: "Option '--variant' argument is ambiguous",
 		},
-		{ title: 'a blank value', argv: ['app', '--case', ''], message: 'Missing reader option value' },
+		{ title: 'a blank value', argv: ['app', '--case', ''], message: 'Missing value: --case' },
 		{
 			title: 'a repeated state',
 			argv: ['app', '--state', 'a', '--state', 'b'],
-			message: 'Repeated reader option: --state',
+			message: 'Repeated option: --state',
 		},
 		{
 			title: 'a repeated output',
 			argv: ['app', '--output', 'a', '--output', 'b'],
-			message: 'Repeated reader option: --output',
+			message: 'Repeated option: --output',
 		},
 		{
 			title: 'a repeated checks module',
 			argv: ['app', '--checks', 'a.ts', '--checks', 'b.ts'],
-			message: 'Repeated reader option: --checks',
+			message: 'Repeated option: --checks',
 		},
 	])('refuses $title as a usage failure', ({ argv, message }) => {
 		const failure = readThrown(() => readCaptureReaderArguments(argv, ROOT, DEFAULTS))
@@ -2239,6 +2298,24 @@ describe('answerCaptureDiscovery', () => {
 })
 
 describe('readCaptureRegistryArguments', () => {
+	it('accepts equals values and keeps a dash-leading mode in the argument vector', () => {
+		expect(
+			readCaptureRegistryArguments(
+				['--mode=-custom', '--variant=wide', '--variant=phone', '--config=alternate.ts'],
+				process.cwd(),
+				'default.ts',
+			),
+		).toEqual({ mode: '-custom', variants: ['wide', 'phone'], config: resolve('alternate.ts') })
+	})
+
+	it.each([['--mode='], ['--mode=a', '--mode=b'], ['--'], ['--plan'], ['--variant=wide', 'app']])(
+		'retains registry refusals for %j',
+		(...argv) => {
+			expect(
+				readThrown(() => readCaptureRegistryArguments(argv, process.cwd(), 'default.ts')),
+			).toMatchObject({ code: 'USAGE' })
+		},
+	)
 	const ROOT = resolve('workspace')
 
 	it('reads repeated variants, a mode, and an absolute wrapper path', () => {
@@ -2337,6 +2414,26 @@ describe('readCaptureInputs', () => {
 })
 
 describe('writeCaptureDocument', () => {
+	it('preserves prior bytes and cleans temporary siblings after serialization or rename fails', () => {
+		const scratch = createScratch({ prefix: 'document-failure-' })
+		try {
+			const path = resolve(scratch.path, 'registry.json')
+			writeCaptureDocument(path, { value: 'earlier' })
+			const circular: Record<string, unknown> = {}
+			circular.self = circular
+			expect(() => writeCaptureDocument(path, circular)).toThrow(TypeError)
+			expect(scratch.read('registry.json')).toBe('{"value":"earlier"}\n')
+			scratch.ensure('directory')
+			scratch.write('directory/sentinel.txt', 'kept')
+			expect(() =>
+				writeCaptureDocument(resolve(scratch.path, 'directory'), { value: 'later' }),
+			).toThrow(/EISDIR|EPERM|EEXIST|ENOTEMPTY|EACCES/u)
+			expect(scratch.read('directory/sentinel.txt')).toBe('kept')
+			expect(scratch.names().toSorted()).toEqual(['directory', 'registry.json'])
+		} finally {
+			scratch.destroy()
+		}
+	})
 	it('writes the document and a newline, creating each missing directory, and leaves no temporary file', () => {
 		const scratch = createScratch({ prefix: 'document-' })
 		try {

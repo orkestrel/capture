@@ -695,12 +695,12 @@ export const RUNNER_REFUSALS: readonly RunnerRefusal[] = Object.freeze([
 	{
 		title: 'unsupported flag',
 		args: ['pages:mail', '--mode', 'vue'],
-		message: 'Unknown option: --mode',
+		message: "Unknown option '--mode'",
 	},
 	{
 		title: 'missing option value',
 		args: ['pages:mail', '--variant'],
-		message: 'Missing value: --variant',
+		message: "Option '--variant <value>' argument missing",
 	},
 	{
 		title: 'repeated option',
@@ -716,7 +716,7 @@ export const RUNNER_REFUSALS: readonly RunnerRefusal[] = Object.freeze([
 	{
 		title: 'portfolio flag',
 		args: ['pages:mail', '--portfolio', 'vue'],
-		message: 'Portfolio selection is available only to stale',
+		message: "Unknown option '--portfolio'",
 	},
 ])
 
@@ -1107,37 +1107,37 @@ export const ARGUMENT_REFUSALS: readonly ArgumentRefusal[] = Object.freeze([
 		title: 'a state under journey',
 		command: 'journey',
 		argv: ['app', '--state', 'inbox'],
-		message: 'State selection is available only to capture and stale',
+		message: "Unknown option '--state'",
 	},
 	{
 		title: 'a portfolio under journey',
 		command: 'journey',
 		argv: ['app', '--portfolio', 'gallery'],
-		message: 'Portfolio selection is available only to stale',
+		message: "Unknown option '--portfolio'",
 	},
 	{
 		title: 'a portfolio under capture',
 		command: 'capture',
 		argv: ['app', '--portfolio', 'gallery'],
-		message: 'Portfolio selection is available only to stale',
+		message: "Unknown option '--portfolio'",
 	},
 	{
 		title: 'an unknown flag',
 		command: 'stale',
 		argv: ['app', '--mode', 'vue'],
-		message: 'Unknown option: --mode',
+		message: "Unknown option '--mode'",
 	},
 	{
 		title: 'a flag at the end',
 		command: 'journey',
 		argv: ['app', '--case'],
-		message: 'Missing value: --case',
+		message: "Option '--case <value>' argument missing",
 	},
 	{
 		title: 'a flag followed by a flag',
 		command: 'journey',
 		argv: ['app', '--case', '--variant', 'wide'],
-		message: 'Missing value: --case',
+		message: "Option '--case' argument is ambiguous",
 	},
 	{
 		title: 'a flag with an empty value',
@@ -1495,12 +1495,16 @@ export const REGISTRY_ARGUMENT_REFUSALS: readonly RegistryArgumentRefusal[] = Ob
 		argv: ['pages:mail'],
 		reason: 'the registry command takes no selector',
 	},
-	{ title: 'an unknown flag', argv: ['--state', 'inbox'], reason: 'Unknown option "--state"' },
-	{ title: 'a flag with no value', argv: ['--variant'], reason: 'Missing value: --variant' },
+	{ title: 'an unknown flag', argv: ['--state', 'inbox'], reason: "Unknown option '--state'" },
+	{
+		title: 'a flag with no value',
+		argv: ['--variant'],
+		reason: "Option '--variant <value>' argument missing",
+	},
 	{
 		title: 'a flag whose value opens with two dashes',
 		argv: ['--mode', '--config', 'x'],
-		reason: 'Missing value: --mode',
+		reason: "Option '--mode' argument is ambiguous",
 	},
 	{
 		title: 'a repeated config',
@@ -1541,12 +1545,12 @@ export const BIN_REFUSALS: readonly BinRefusal[] = Object.freeze([
 	{
 		title: 'a state on a journey',
 		argv: ['journey', 'pages:mail', '--state', 'mail-screen'],
-		reason: 'State selection is available only to capture and stale',
+		reason: "Unknown option '--state'",
 	},
 	{
 		title: 'an unknown flag on stale',
 		argv: ['stale', 'pages:mail', '--bogus', 'x'],
-		reason: 'Unknown option: --bogus',
+		reason: "Unknown option '--bogus'",
 	},
 	{
 		title: 'an unknown scope',
@@ -1558,16 +1562,16 @@ export const BIN_REFUSALS: readonly BinRefusal[] = Object.freeze([
 		argv: ['frames', 'pages:none'],
 		reason: 'Unknown owner: none',
 	},
-	{ title: 'a bare preflight', argv: ['preflight'], reason: 'Usage: <selector>' },
+	{ title: 'a bare preflight', argv: ['preflight'], reason: 'Usage: capture preflight <selector>' },
 	{
 		title: 'an unknown reader flag',
 		argv: ['preflight', 'pages:mail', '--bogus', 'x'],
-		reason: 'Unknown reader option: --bogus',
+		reason: "Unknown option '--bogus'",
 	},
 	{
 		title: 'an output on a preflight',
 		argv: ['preflight', 'pages:mail', '--output', 'tmp/sheets'],
-		reason: 'takes no --output',
+		reason: "Unknown option '--output'",
 	},
 	{
 		title: 'sheets without an output',

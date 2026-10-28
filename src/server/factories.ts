@@ -1,4 +1,6 @@
 import type {
+	CaptureCLIInterface,
+	CaptureCLIOptions,
 	CaptureDiscoveryInterface,
 	CaptureDiscoveryRunOptions,
 	CaptureIntegrityInterface,
@@ -12,6 +14,7 @@ import type {
 	CaptureSheetOptions,
 	CaptureSheetsInterface,
 } from './types.js'
+import { CaptureCLI } from './CaptureCLI.js'
 import { CaptureDiscovery } from './CaptureDiscovery.js'
 import { CaptureIntegrity } from './CaptureIntegrity.js'
 import { CapturePreflight } from './CapturePreflight.js'
@@ -143,4 +146,19 @@ export function createCaptureRegistrar(
 	options: CaptureRegistrarOptions,
 ): CaptureRegistrarInterface {
 	return new CaptureRegistrar(options)
+}
+
+/**
+ * Creates the executable's command dispatcher over a workspace and injected writers.
+ *
+ * @param options - The workspace and the report and diagnostic writers; default: the working directory and the process streams
+ * @returns A new dispatcher whose `execute` runs one command line and returns its exit code
+ *
+ * @example
+ * ```ts
+ * const exit = await createCaptureCLI().execute(['journey', 'pages:mail']) // 0 when the journey passed
+ * ```
+ */
+export function createCaptureCLI(options: CaptureCLIOptions = {}): CaptureCLIInterface {
+	return new CaptureCLI(options)
 }

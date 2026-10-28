@@ -493,7 +493,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('refuses journey state projection before any execution child starts', async () => {
 		const run = await base.run('journey', ['pages:mail', '--state', 'mail-reader'])
 		expect(run.code).toBe(64)
-		expect(run.stderr).toContain('State selection is available only to capture and stale')
+		expect(run.stderr).toContain("Unknown option '--state'")
 		expect(run.stdout).not.toMatch(STAGE_LINE)
 	})
 

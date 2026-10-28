@@ -7,7 +7,7 @@ const ENGINE_VALUES = [
 	'CAPTURE_DEFAULTS',
 	'CAPTURE_DISCOVERY',
 	'CAPTURE_REQUESTS_FLAG',
-	'CAPTURE_REGISTRY_FLAGS',
+	'CAPTURE_COMMAND_OPTIONS',
 	'CAPTURE_REGISTRY_LINE',
 	'CAPTURE_REGISTRY_STAGE',
 	'CAPTURE_SUBCOMMANDS',
@@ -52,8 +52,7 @@ const ENGINE_VALUES = [
 	'normalizeSlashes',
 	'predictCaptureByte',
 	'readCaptureChunks',
-	'readFlag',
-	'readFlags',
+	'readCaptureOptions',
 	'shrinkCapturePicture',
 	'unfilterCaptureRow',
 ]

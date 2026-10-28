@@ -1,3 +1,4 @@
+import type { ParseArgsOptionsConfig, parseArgs } from 'node:util'
 import type {
 	CaptureCollectionReceipt,
 	CaptureDeclaration,
@@ -118,12 +119,14 @@ export interface CaptureStageProject {
 }
 
 /**
- * Carries the native child close outcome without treating a signal as a successful exit.
+ * Carries the supervised child outcome without treating a signal as a successful exit.
  *
  * @remarks
- * The null values mirror the `close` event of a Node child process. `pid` is the id of the child the
- * runner spawned, when it spawned one, and `expired` is present and `true` only when the runner ended
- * the child because its deadline passed.
+ * The null values mirror the native child outcome. `signal` carries the fleet's signal string.
+ * `pid` is the id of the child the runner spawned, when it spawned one, and `expired` is present
+ * and `true` only when the runner ended
+ * the child because its deadline passed. Observation cutoffs and writer failures throw instead of
+ * returning an outcome that could authorize evidence.
  *
  * @example
  * ```ts
@@ -132,9 +135,29 @@ export interface CaptureStageProject {
  */
 export interface CaptureExecutionResult {
 	readonly code: number | null
-	readonly signal: NodeJS.Signals | null
+	readonly signal: string | null
 	readonly pid?: number
 	readonly expired?: boolean
+}
+
+/**
+ * Carries the typed values and tokens of a strictly parsed capture command line.
+ *
+ * @example
+ * ```ts
+ * const parsed: CaptureParsedArguments<typeof CAPTURE_COMMAND_OPTIONS.journey> = readCaptureOptions(argv, CAPTURE_COMMAND_OPTIONS.journey, usage)
+ * ```
+ */
+export type CaptureParsedArguments<Options extends ParseArgsOptionsConfig> = {
+	readonly [
+		Key in keyof ReturnType<
+			typeof parseArgs<{ options: Options; tokens: true; strict: true; allowPositionals: true }>
+		>
+	]: Readonly<
+		ReturnType<
+			typeof parseArgs<{ options: Options; tokens: true; strict: true; allowPositionals: true }>
+		>[Key]
+	>
 }
 
 /**
@@ -635,6 +658,37 @@ export interface CaptureProject {
 export type CaptureWriteHandler = (text: string) => unknown
 
 /**
+ * Configures the executable's workspace and its report and diagnostic writers.
+ *
+ * @remarks
+ * `root` defaults to the working directory; `stdout` and `stderr` default to the process streams.
+ *
+ * @example
+ * ```ts
+ * const options: CaptureCLIOptions = { root: process.cwd(), stdout: (text) => process.stdout.write(text) }
+ * ```
+ */
+export interface CaptureCLIOptions {
+	readonly root?: string
+	readonly stdout?: CaptureWriteHandler
+	readonly stderr?: CaptureWriteHandler
+}
+
+/**
+ * Runs capture command lines through injected output writers.
+ *
+ * @example
+ * ```ts
+ * const cli: CaptureCLIInterface = createCaptureCLI()
+ * const exit = await cli.execute(['journey', 'pages:mail'])
+ * ```
+ */
+export interface CaptureCLIInterface {
+	/** Returns 0 for passed work, 1 for failed evidence, or 64 for refused usage. */
+	execute(argv: readonly string[]): Promise<number>
+}
+
+/**
  * Creates the integrity engine the runner reads and stamps through, from the options it derives.
  *
  * @remarks The default constructs the package's own engine.
@@ -896,8 +950,8 @@ export interface CaptureDiscoveryInterface {
 	 *
 	 * @returns The validated host description, accepted only after the exchange and the child's exit both succeeded
 	 * @throws Thrown as a `USAGE` capture error for a wrapper outside the workspace, and as a `HOST`
-	 * capture error for a missing Vitest, an interrupted, failed, or expired child, and a missing,
-	 * replayed, mismatched, or malformed description.
+	 * capture error for a missing Vitest, a failed or expired child, and a missing, replayed,
+	 * mismatched, or malformed description. Interruption and lost child observation throw `STAGE`.
 	 *
 	 * @example
 	 * ```ts
@@ -1095,7 +1149,9 @@ export interface CaptureInvocationInterface {
 	 * @param log - The absolute path of the file that receives the child's output
 	 * @param capture - If `true`, sets the capture variable in the child; if `false`, removes it
 	 * @param deadline - Milliseconds after which the runner ends the child's process tree; default: unbounded
-	 * @returns The native close outcome of the child, its process id, and whether the deadline ended it
+	 * @returns The drained child outcome, its process id, and whether the deadline ended it
+	 * @throws Thrown as a `STAGE` capture error for a pre-aborted invocation, a child observation
+	 * cutoff, or a writer, log, or child fault.
 	 *
 	 * @example
 	 * ```ts

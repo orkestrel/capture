@@ -166,9 +166,14 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('ends a wrapper that never answers at the deadline, and refuses it by name', async () => {
 		const fixture = new ComposedFixture()
 		try {
-			const { error, description } = await discover(fixture, { fault: 'hang', deadline: 1_500 })
+			const { error, description, invocation } = await discover(fixture, {
+				fault: 'hang',
+				deadline: 1_500,
+			})
 			expect(description).toBeUndefined()
 			expect(error).toMatchObject({ code: 'HOST' })
+			expect(invocation.interrupted).toBe(false)
+			expect(invocation.signal.aborted).toBe(false)
 			expect(error instanceof Error ? error.message : '').toContain(FIXTURE_DISCOVERY_MESSAGES.hang)
 			const pids = fixture.readReady()
 			expect(pids).toHaveLength(1)
@@ -184,9 +189,14 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('ends the child and refuses as an interrupted run when an interrupt arrives mid-exchange', async () => {
 		const fixture = new ComposedFixture()
 		try {
-			const { error, description } = await discover(fixture, { fault: 'hang', interrupt: true })
+			const { error, description, invocation } = await discover(fixture, {
+				fault: 'hang',
+				interrupt: true,
+				deadline: 10_000,
+			})
 			expect(description).toBeUndefined()
 			expect(error).toMatchObject({ code: 'STAGE', message: 'Runner interrupted' })
+			expect(invocation.interrupted).toBe(true)
 			const pids = fixture.readReady()
 			await waitForCondition('the interrupted child has exited', () =>
 				pids.every((pid) => !isRunning(pid)),

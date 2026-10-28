@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto'
 import { existsSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
-import { requireValue } from '@orkestrel/test'
+import { requireValue, waitForCondition } from '@orkestrel/test'
+import { isRunning } from '@orkestrel/test/server'
 import { isCaptureRegistry } from '@src/core'
 import { CaptureRegistrar } from '@src/server'
 import { describe, expect, it } from 'vitest'
@@ -235,6 +236,11 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 			})
 			expect(run.code).toBe(1)
 			expect(run.stderr).toContain('Runner interrupted')
+			const pids = fixture.readReady()
+			expect(pids).toHaveLength(2)
+			await waitForCondition('the registry child and its descendant have exited', () =>
+				pids.every((pid) => !isRunning(pid)),
+			)
 			expect(existsSync(resolve(fixture.root, REGISTRY))).toBe(false)
 			expect(readHeld(fixture)).toEqual([])
 			expect(process.listenerCount('SIGINT')).toBe(before)
@@ -243,32 +249,35 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 
-	it('forwards the mode to the wrapper process through the recorded request', async () => {
-		const fixture = new ComposedFixture()
-		try {
-			const run = await fixture.refresh(['--mode', 'vue'])
-			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
-			const registry = readRegistry(fixture)
-			const id = requireValue(
-				readReceipt(registry, 'light-1280').report.file.split('/').at(3),
-				'The report path names no invocation',
-			)
-			const record: unknown = parseJSON(
-				fixture
-					.read(`${COMPOSED_DIRECTORY}/runs/${id}/registry-light-1280/light-1280.json`)
-					.toString('utf8'),
-			)
-			const args = isRecord(record) && isRecord(record.request) ? record.request.args : undefined
-			expect(Array.isArray(args) ? args.slice(2, 6) : args).toEqual([
-				'--config',
-				resolve(fixture.root, 'fixture with spaces.config.ts'),
-				'--mode',
-				'vue',
-			])
-		} finally {
-			fixture.destroy()
-		}
-	})
+	it.each([['--mode', 'vue'], ['--mode=vue']])(
+		'forwards the mode to the wrapper process through the recorded request',
+		async (...argv) => {
+			const fixture = new ComposedFixture()
+			try {
+				const run = await fixture.refresh(argv)
+				expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+				const registry = readRegistry(fixture)
+				const id = requireValue(
+					readReceipt(registry, 'light-1280').report.file.split('/').at(3),
+					'The report path names no invocation',
+				)
+				const record: unknown = parseJSON(
+					fixture
+						.read(`${COMPOSED_DIRECTORY}/runs/${id}/registry-light-1280/light-1280.json`)
+						.toString('utf8'),
+				)
+				const args = isRecord(record) && isRecord(record.request) ? record.request.args : undefined
+				expect(Array.isArray(args) ? args.slice(2, 6) : args).toEqual([
+					'--config',
+					resolve(fixture.root, 'fixture with spaces.config.ts'),
+					'--mode',
+					'vue',
+				])
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
 
 	it('refuses an unknown variant and a selector as usage before it starts any journey', async () => {
 		const fixture = new ComposedFixture()

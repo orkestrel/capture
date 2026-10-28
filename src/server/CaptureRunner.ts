@@ -17,6 +17,7 @@ import type {
 } from './types.js'
 import { rmSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { attempt } from '@orkestrel/contract'
 import {
 	CAPTURE_LOOKUPS_FILE,
 	CAPTURE_MANIFEST_FILE,
@@ -42,7 +43,6 @@ import {
 	buildCaptureFilter,
 	describeCaptureSelectorFault,
 	readCaptureArguments,
-	readFlag,
 	renderCaptureCommand,
 	requireCaptureProjects,
 	resolveCaptureRelative,
@@ -100,8 +100,10 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			stderr: this.#stderr,
 		})
 		invocation.attach()
+		const argumentsResult = attempt(() => readCaptureArguments(argv, command, root, config))
 		try {
-			const parsed = readCaptureArguments(argv, command, root, config)
+			if (!argumentsResult.success) throw argumentsResult.error
+			const parsed = argumentsResult.value
 			const description = await new CaptureDiscovery({
 				root,
 				config: parsed.config,
@@ -120,7 +122,10 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			)
 			const next = renderCaptureCommand(
 				command,
-				{ config: resolve(root, readFlag(argv, '--config') ?? config), variants: [] },
+				{
+					config: argumentsResult.success ? argumentsResult.value.config : resolve(root, config),
+					variants: [],
+				},
 				'all',
 				root,
 			)

@@ -151,7 +151,8 @@ Engine, runner, preflight, and contact-sheet contracts from [`types.ts`](../src/
 | `CaptureHashHandler`            | type      | Digests the exact bytes of one file reading and returns the lowercase hexadecimal digest.                                 |
 | `CaptureIntegrityOptions`       | interface | Configures the engine's workspace and separate evidence documents.                                                        |
 | `CaptureStageProject`           | interface | Supplies one selected project's expected closing record and bounded input population.                                     |
-| `CaptureExecutionResult`        | interface | Carries the native child close outcome without treating a signal as a successful exit.                                    |
+| `CaptureParsedArguments`        | type      | Carries the typed values and tokens of a strictly parsed capture command line.                                            |
+| `CaptureExecutionResult`        | interface | Carries the supervised child outcome without treating a signal as a successful exit.                                      |
 | `CaptureExecutionHandler`       | type      | Executes the runner's child after the engine captures its input snapshot.                                                 |
 | `CaptureStageOptions`           | interface | Binds a stage transaction to its exact request, projects, reporter, and process boundary.                                 |
 | `CaptureFileSnapshot`           | interface | Records one physical file's bytes and native modification readings at a stage boundary.                                   |
@@ -180,6 +181,8 @@ Engine, runner, preflight, and contact-sheet contracts from [`types.ts`](../src/
 | `CaptureChangePlan`             | interface | Holds changed paths and the stable owner selection reduced by ancestry.                                                   |
 | `CaptureOwnerOutcome`           | interface | Records one changed owner's exit and whether an execution child started.                                                  |
 | `CaptureWriteHandler`           | type      | Writes one chunk of runner output to the stream the host chooses.                                                         |
+| `CaptureCLIOptions`             | interface | Configures the executable's workspace and its report and diagnostic writers.                                              |
+| `CaptureCLIInterface`           | interface | Runs capture command lines through injected output writers.                                                               |
 | `CaptureIntegrityHandler`       | type      | Creates the integrity engine the runner reads and stamps through, from the options it derives.                            |
 | `CaptureStagePlan`              | interface | Names one planned stage and the variants it runs in one Vitest process.                                                   |
 | `CaptureArgumentsOptions`       | interface | Configures the Vitest argument list one stage spawns with.                                                                |
@@ -223,31 +226,29 @@ Engine, runner, preflight, and contact-sheet contracts from [`types.ts`](../src/
 
 The runner's names and bounds from [`constants.ts`](../src/server/constants.ts).
 
-| Name                     | Kind  | Summary                                                                                                                                                                                                                         |
-| ------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CAPTURE_COMMAND_NAMES`  | const | Names the executable subcommand each runner command answers to.                                                                                                                                                                 |
-| `CAPTURE_EXIT`           | const | Holds the exit status each runner outcome maps to.                                                                                                                                                                              |
-| `CAPTURE_STAGES`         | const | Names the selected journey stage and the narrow and remaining frame stages.                                                                                                                                                     |
-| `CAPTURE_OPTION_FLAGS`   | const | Lists the runner flags that take exactly one value.                                                                                                                                                                             |
-| `CAPTURE_TAG_OPERATORS`  | const | Lists the words a tag name can never be, because a tag filter reads them as operators.                                                                                                                                          |
-| `CAPTURE_OWNER_PREFIX`   | const | Names the tag prefix that marks a case's owner path and each ancestor of it.                                                                                                                                                    |
-| `CAPTURE_FLAG`           | const | Names the environment variable that turns frame capture on for a Vitest child.                                                                                                                                                  |
-| `CAPTURE_FLAG_VALUE`     | const | Holds the one value of the capture variable that turns frame capture on.                                                                                                                                                        |
-| `CAPTURE_VITEST_ENTRY`   | const | Names the repository-relative path of the Vitest entry the runner spawns through Node.                                                                                                                                          |
-| `CAPTURE_RUNS_DIRECTORY` | const | Names the directory beneath a portfolio or request directory that holds one invocation's records.                                                                                                                               |
-| `CAPTURE_READER_FLAGS`   | const | Lists the command-line flags a reader reads, each followed by exactly one value.                                                                                                                                                |
-| `CAPTURE_MINIMUM_IMAGE`  | const | Holds the byte count under which an image is too small to be a real frame.                                                                                                                                                      |
-| `CAPTURE_REPORT_LINES`   | const | Names the first word of the line a reader prints, followed by its JSON report.                                                                                                                                                  |
-| `CAPTURE_SHEET`          | const | Holds the contact-sheet geometry: how wide a cell shrinks toward, how tall it may grow, the mark that stands in for an unreadable image, the gap between neighbors, and how many cells, rows, and pairs a row and a sheet hold. |
-| `CAPTURE_SHEET_FILES`    | const | Names the contact-sheet files: the sheet prefix and digits, and the two index documents.                                                                                                                                        |
-| `CAPTURE_REGISTRY_FLAGS` | const | Lists the command-line flags the registry refresh reads, each followed by exactly one value.                                                                                                                                    |
-| `CAPTURE_REGISTRY_STAGE` | const | Names the stage each producing variant's complete journey runs in, ahead of the variant's name.                                                                                                                                 |
-| `CAPTURE_REGISTRY_LINE`  | const | Names the first word of the line the registry refresh prints, followed by its JSON summary.                                                                                                                                     |
-| `CAPTURE_REQUESTS_FLAG`  | const | Names the environment variable that carries the absolute request directory to a Vitest child.                                                                                                                                   |
-| `CAPTURE_DISCOVERY`      | const | Holds the discovery exchange's fixed names and bound.                                                                                                                                                                           |
-| `CAPTURE_SUBCOMMANDS`    | const | Names the executable's subcommands in the order its usage text lists them.                                                                                                                                                      |
-| `CAPTURE_DEFAULTS`       | const | Holds the repository-relative paths the executable falls back to when the command line names none.                                                                                                                              |
-| `CAPTURE_USAGE`          | const | Holds the usage text the executable prints when it is given no subcommand or an unknown one.                                                                                                                                    |
+| Name                      | Kind  | Summary                                                                                                                                                                                                                         |
+| ------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CAPTURE_COMMAND_NAMES`   | const | Names the executable subcommand each runner command answers to.                                                                                                                                                                 |
+| `CAPTURE_COMMAND_OPTIONS` | const | Defines each command's frozen options for Node's standard argument parser.                                                                                                                                                      |
+| `CAPTURE_EXIT`            | const | Holds the exit status each runner outcome maps to.                                                                                                                                                                              |
+| `CAPTURE_STAGES`          | const | Names the selected journey stage and the narrow and remaining frame stages.                                                                                                                                                     |
+| `CAPTURE_TAG_OPERATORS`   | const | Lists the words a tag name can never be, because a tag filter reads them as operators.                                                                                                                                          |
+| `CAPTURE_OWNER_PREFIX`    | const | Names the tag prefix that marks a case's owner path and each ancestor of it.                                                                                                                                                    |
+| `CAPTURE_FLAG`            | const | Names the environment variable that turns frame capture on for a Vitest child.                                                                                                                                                  |
+| `CAPTURE_FLAG_VALUE`      | const | Holds the one value of the capture variable that turns frame capture on.                                                                                                                                                        |
+| `CAPTURE_VITEST_ENTRY`    | const | Names the repository-relative path of the Vitest entry the runner spawns through Node.                                                                                                                                          |
+| `CAPTURE_RUNS_DIRECTORY`  | const | Names the directory beneath a portfolio or request directory that holds one invocation's records.                                                                                                                               |
+| `CAPTURE_MINIMUM_IMAGE`   | const | Holds the byte count under which an image is too small to be a real frame.                                                                                                                                                      |
+| `CAPTURE_REPORT_LINES`    | const | Names the first word of the line a reader prints, followed by its JSON report.                                                                                                                                                  |
+| `CAPTURE_SHEET`           | const | Holds the contact-sheet geometry: how wide a cell shrinks toward, how tall it may grow, the mark that stands in for an unreadable image, the gap between neighbors, and how many cells, rows, and pairs a row and a sheet hold. |
+| `CAPTURE_SHEET_FILES`     | const | Names the contact-sheet files: the sheet prefix and digits, and the two index documents.                                                                                                                                        |
+| `CAPTURE_REGISTRY_STAGE`  | const | Names the stage each producing variant's complete journey runs in, ahead of the variant's name.                                                                                                                                 |
+| `CAPTURE_REGISTRY_LINE`   | const | Names the first word of the line the registry refresh prints, followed by its JSON summary.                                                                                                                                     |
+| `CAPTURE_REQUESTS_FLAG`   | const | Names the environment variable that carries the absolute request directory to a Vitest child.                                                                                                                                   |
+| `CAPTURE_DISCOVERY`       | const | Holds the discovery exchange's fixed names and bound.                                                                                                                                                                           |
+| `CAPTURE_SUBCOMMANDS`     | const | Names the executable's subcommands in the order its usage text lists them.                                                                                                                                                      |
+| `CAPTURE_DEFAULTS`        | const | Holds the repository-relative paths the executable falls back to when the command line names none.                                                                                                                              |
+| `CAPTURE_USAGE`           | const | Holds the usage text the executable prints when it is given no subcommand or an unknown one.                                                                                                                                    |
 
 ### Server helpers
 
@@ -257,8 +258,6 @@ Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry
 | ------------------------------ | -------- | --------------------------------------------------------------------------------------------------------- |
 | `computeCaptureHash`           | function | Hashes exact source or image bytes with SHA-256.                                                          |
 | `normalizeSlashes`             | function | Normalizes a host path to forward slashes.                                                                |
-| `readFlag`                     | function | Reads the value that follows a flag.                                                                      |
-| `readFlags`                    | function | Reads every value that follows a repeatable flag.                                                         |
 | `buildCaptureDigest`           | function | Computes the digest of both pattern declarations and expanded path and hash membership.                   |
 | `buildCaptureLookupJournal`    | function | Stores each distinct lookup input population once in a manifest-bound journal.                            |
 | `readCaptureLookups`           | function | Resolves journal lookup references after verifying each stored input population's digest.                 |
@@ -284,6 +283,7 @@ Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry
 | `buildCaptureChangePlan`       | function | Classifies changed paths through accepted patterns and reduces owners by ancestry.                        |
 | `renderCaptureCommand`         | function | Renders an exact owner command with the selected variants and filters in host shell syntax.               |
 | `buildCaptureArguments`        | function | Builds the exact Node argument array that spawns one Vitest stage.                                        |
+| `readCaptureOptions`           | function | Parses standard option tokens and refuses empty values, terminators, and repeated single options.         |
 | `readCaptureArguments`         | function | Reads the runner's command line into one selector, its flags, and the resolved wrapper path.              |
 | `readCapturePortfolios`        | function | Reads the physical portfolio roots a wrapper declares and refuses a malformed or repeated root.           |
 | `readCaptureProject`           | function | Reads one wrapper project's host declarations from its Vitest test configuration.                         |
@@ -328,6 +328,8 @@ The integrity engine from [`CaptureIntegrity.ts`](../src/server/CaptureIntegrity
 | `createCaptureSheets`    | function | Creates the contact-sheet writer for the selected frames.                                                    |
 | `CaptureRegistrar`       | class    | Refreshes the accepted registry from one complete capture-free journey per producing variant.                |
 | `createCaptureRegistrar` | function | Creates the registry refresh that runs each producing variant's complete journey and publishes the registry. |
+| `CaptureCLI`             | class    | Dispatches capture commands and maps usage and evidence refusals to their exit codes.                        |
+| `createCaptureCLI`       | function | Creates the executable's command dispatcher over a workspace and injected writers.                           |
 
 ## Methods
 
@@ -386,6 +388,12 @@ The integrity engine from [`CaptureIntegrity.ts`](../src/server/CaptureIntegrity
 | --------- | ------------------------------------------------------------------------------------------------- |
 | `execute` | Runs each producing variant's complete journey, imports the receipts, and publishes the registry. |
 
+#### `CaptureCLIInterface`
+
+| Name      | Summary                                                                    |
+| --------- | -------------------------------------------------------------------------- |
+| `execute` | Returns 0 for passed work, 1 for failed evidence, or 64 for refused usage. |
+
 ## Server modules
 
 Each section below is filled by the unit that lands its module.
@@ -441,7 +449,7 @@ The exit is 0 when every stage is green and work ran, 1 for a failed stage, an i
 
 **Frame stages.** `frames` keeps the `first` variant alone in `narrow`, then every other selected variant together in `rest`, so narrow frames can be inspected first. Omitting the first variant runs only `rest`; the runner adds no unselected variant. A failed stage stops later stages. An inapplicable narrow stage prints why the rest stage carries the selector and continues. A `STAGES` JSON line names the stages run, passed, failed, and not run, with the reason, followed by an exact `NEXT` command.
 
-**Changed selection.** For journey or frames, use `--changed <ref>` instead of a selector. The flag takes exactly one Git ref and cannot accompany a positional selector. `HEAD` selects uncommitted work. The engine authenticates the accepted registry, resolves the ref's merge-base with HEAD, reads `git diff --name-only --no-renames -z <merge-base> --`, and adds `git ls-files --others --exclude-standard -z`. Renames contribute both paths; deleted paths and names containing spaces remain intact. An unknown ref exits 64 with Git's diagnostic. A missing registry prints `Missing accepted registry; run the explicit complete-registry refresh` and the exact registry command.
+**Changed selection.** For journey or frames, use `--changed <ref>` instead of a selector. The flag takes exactly one Git ref and cannot accompany a positional selector. `HEAD` selects uncommitted work. The engine authenticates the accepted registry, resolves the ref's merge-base with HEAD, reads `git diff --name-only --no-renames -z <merge-base> --`, and adds `git ls-files --others --exclude-standard -z`. Renames contribute both paths; deleted paths and names containing spaces remain intact. Every Git read uses `executeSync` with a 30-second deadline and a 64 MiB output limit; failed or truncated reads are refused before any NUL-separated names are consumed. An unknown ref exits 64 with Git's diagnostic. A missing registry prints `Missing accepted registry; run the explicit complete-registry refresh` and the exact registry command.
 
 Each path gets exactly one class through the registry's native glob patterns. `own` matches a destination's own sources and names every matching owner. `shared` matches any shared or test pattern and names every destination owner; it takes precedence when a path also matches own sources. `outside` matches no source pattern and names no owner. The selected owners come from own paths, sorted and reduced by colon-delimited ancestry, so selecting a page drops its selected sections.
 
@@ -505,9 +513,13 @@ const request = readCaptureRequest({
 request?.selector // 'pages:mail' when a runner is the parent, otherwise undefined
 ````
 
-**Processes.** The runner spawns `process.execPath` with the installed `node_modules/vitest/vitest.mjs`, an argument array, and no shell. The child inherits the environment with every case-folded `capture` name removed and `CAPTURE_REQUESTS` set to the request directory, and a `capture` command, like discovery, sets exactly one `CAPTURE=1`. Each stage writes its own log and JSON report under `<requests>/runs/<id>/`, and the child's output is teed to the host's streams and the log. An interrupt aborts the stage's signal and ends each child's process tree: `killTree` on win32, which has no signal a process group can receive, and `killProcess` on every other host, which signals the detached group. The invocation then removes its request and releases its handlers.
+**Processes.** The runner spawns `process.execPath` with the installed `node_modules/vitest/vitest.mjs`, an argument array, and no shell. The child inherits the environment with every case-folded `capture` name removed and `CAPTURE_REQUESTS` set to the request directory, and a `capture` command, like discovery, sets exactly one `CAPTURE=1`. Each stage writes its own log and JSON report under `<requests>/runs/<id>/`, and the child's output is teed to the host's streams and the log. Each child runs through `@orkestrel/process` `createSession` with stdin closed immediately. Its byte output is decoded with `StringDecoder`, preserving split UTF-8, carriage returns, and missing final newlines, and the decoder is flushed at termination. A writer or log failure, or a session whose output did not drain before its observation bound, refuses the stage. An interrupt aborts the stage's signal and ends each child's tree: Windows tree termination, or POSIX `SIGTERM` followed by `SIGKILL` after a 250 ms grace. A pre-aborted invocation launches no child. The invocation then removes its request and releases its handlers.
 
 **Limits.** An external Ctrl+C on win32 reaches the runner only through a console-capable terminal, and Node exposes no console-mode API, so that reading is recorded by hand rather than proved here. The external process-group signal on a POSIX host is a case gated on the mechanism that makes it applicable, and it has not run on a POSIX host yet.
+
+Discovery uses `@orkestrel/timeout` `createTimeout`, linked to the invocation's signal. Expiry is read from the armed signal before cleanup, so clearing the handle or receiving a later interrupt cannot erase it. An expired discovery is a `HOST` refusal; interruption remains a `STAGE` refusal and retains precedence if both are present when discovery settles. Neither a deadline nor a writer failure sets the invocation's interrupted state.
+
+Atomic evidence writes use an exclusive temporary sibling and `writeFileSync` with `flush: true`, then check cancellation before renaming. Integrity publication also rechecks containment of both paths before the rename. A refused write preserves the prior document and cleans its temporary sibling.
 
 ### Preflight and sheets
 
@@ -588,11 +600,13 @@ The `capture` executable is one entry that dispatches six subcommands, each a th
 - `capture sheets <selector> --output <directory>` calls `createCaptureSheets` with the preflight's flags and a required `--output`.
 - `capture registry` calls `createCaptureRegistrar` and reads `--variant` (repeats), `--mode`, and `--config`.
 
-`frames` runs the request command `capture`, because `capture capture` would stutter. Every flag except the valueless `--plan` takes exactly one value, only `--variant` repeats, and an unknown, repeated, misplaced, or valueless value flag is refused. The `--flag=value` form is refused. The executable falls back to `CAPTURE_DEFAULTS` when the command line names none: the wrapper `configs/app/vite.journey.config.ts`, the request directory `tmp/capture`, and the journey artifact directory `tmp/journey`. The request directory reaches the wrapper through `CAPTURE_REQUESTS`, so the wrapper repeats nothing.
+`frames` runs the request command `capture`, because `capture capture` would stutter. Node's `node:util` `parseArgs` reads one frozen option table per command. Every flag except the valueless `--plan` takes one nonempty value, either `--flag value` or `--flag=value`. A value beginning with `-` must use equals form, such as `--case=-draft`. Only `--variant` repeats; a repeated boolean, a repeated single-value option (including mixed forms), an empty value, an unknown or command-inappropriate option, and the `--` terminator are refused. Runner flags may precede or follow the selector; preflight and sheets retain a leading selector; registry takes no positional arguments. Parser refusals carry `USAGE`, the parser diagnostic, and the command's usage text. The executable falls back to `CAPTURE_DEFAULTS` when the command line names none: the wrapper `configs/app/vite.journey.config.ts`, the request directory `tmp/capture`, and the journey artifact directory `tmp/journey`. The request directory reaches the wrapper through `CAPTURE_REQUESTS`, so the wrapper repeats nothing.
+
+The bin entry declares nothing: it calls `createCaptureCLI().execute(process.argv.slice(2))` and assigns the returned code to `process.exitCode`. `CaptureCLI` takes optional `root`, `stdout`, and `stderr` options (`CaptureCLIOptions`) and exposes `execute(argv): Promise<number>`; every command's report and refusal uses those writers, so a host can drive the whole executable in process.
 
 **Exit.** 0 when the work passed, 1 when a stage failed, the selection held no work, a reading found a stale or unsound frame, or the evidence refused, and 64 when the command line was refused. Every refusal prints on the error stream and teaches: it names the subject, the flag or value that was wrong, and the usage line, and the executable prints the whole usage text beside an unknown or missing command. The preflight takes no `--output`, which belongs to the sheets, and the sheets require one.
 
-**Limits.** The subcommand names are a decision for the user to confirm. The external Ctrl+C on win32 and the process-group signal on a POSIX host are the runner's recorded limits and apply unchanged to the executable.
+**Limits.** The subcommand names are a decision for the user to confirm. The interrupt behaviour was read on 2026-10-28: a real console Ctrl+C on Windows and a process-group SIGINT through the built executable on Linux each ended the stage tree, started no later stage, removed the request, and left the manifest bytes unchanged.
 
 ## Tests
 

@@ -44,21 +44,61 @@ export const CAPTURE_STAGES = Object.freeze({
 } as const)
 
 /**
- * Lists the runner flags that take exactly one value.
+ * Defines each command's frozen options for Node's standard argument parser.
  *
  * @example
  * ```ts
- * CAPTURE_OPTION_FLAGS.includes('--variant') // true
+ * CAPTURE_COMMAND_OPTIONS.journey.variant.multiple // true
  * ```
  */
-export const CAPTURE_OPTION_FLAGS: readonly string[] = Object.freeze([
-	'--config',
-	'--variant',
-	'--case',
-	'--state',
-	'--portfolio',
-	'--changed',
-])
+export const CAPTURE_COMMAND_OPTIONS = Object.freeze({
+	journey: Object.freeze({
+		config: Object.freeze({ type: 'string' }),
+		variant: Object.freeze({ type: 'string', multiple: true }),
+		case: Object.freeze({ type: 'string' }),
+		changed: Object.freeze({ type: 'string' }),
+		plan: Object.freeze({ type: 'boolean' }),
+	}),
+	capture: Object.freeze({
+		config: Object.freeze({ type: 'string' }),
+		variant: Object.freeze({ type: 'string', multiple: true }),
+		case: Object.freeze({ type: 'string' }),
+		state: Object.freeze({ type: 'string' }),
+		changed: Object.freeze({ type: 'string' }),
+		plan: Object.freeze({ type: 'boolean' }),
+	}),
+	stale: Object.freeze({
+		config: Object.freeze({ type: 'string' }),
+		variant: Object.freeze({ type: 'string', multiple: true }),
+		case: Object.freeze({ type: 'string' }),
+		state: Object.freeze({ type: 'string' }),
+		portfolio: Object.freeze({ type: 'string' }),
+	}),
+	preflight: Object.freeze({
+		variant: Object.freeze({ type: 'string', multiple: true }),
+		state: Object.freeze({ type: 'string' }),
+		case: Object.freeze({ type: 'string' }),
+		portfolio: Object.freeze({ type: 'string' }),
+		config: Object.freeze({ type: 'string' }),
+		journeys: Object.freeze({ type: 'string' }),
+		checks: Object.freeze({ type: 'string' }),
+	}),
+	sheets: Object.freeze({
+		variant: Object.freeze({ type: 'string', multiple: true }),
+		state: Object.freeze({ type: 'string' }),
+		case: Object.freeze({ type: 'string' }),
+		portfolio: Object.freeze({ type: 'string' }),
+		config: Object.freeze({ type: 'string' }),
+		journeys: Object.freeze({ type: 'string' }),
+		checks: Object.freeze({ type: 'string' }),
+		output: Object.freeze({ type: 'string' }),
+	}),
+	registry: Object.freeze({
+		variant: Object.freeze({ type: 'string', multiple: true }),
+		config: Object.freeze({ type: 'string' }),
+		mode: Object.freeze({ type: 'string' }),
+	}),
+} as const)
 
 /**
  * Lists the words a tag name can never be, because a tag filter reads them as operators.
@@ -121,27 +161,6 @@ export const CAPTURE_VITEST_ENTRY = 'node_modules/vitest/vitest.mjs'
 export const CAPTURE_RUNS_DIRECTORY = 'runs'
 
 /**
- * Lists the command-line flags a reader reads, each followed by exactly one value.
- *
- * @remarks `--variant` is the only flag that repeats. `--output` belongs to the contact sheets.
- *
- * @example
- * ```ts
- * CAPTURE_READER_FLAGS.includes('--checks') // true
- * ```
- */
-export const CAPTURE_READER_FLAGS: readonly string[] = Object.freeze([
-	'--variant',
-	'--state',
-	'--case',
-	'--portfolio',
-	'--config',
-	'--journeys',
-	'--checks',
-	'--output',
-])
-
-/**
  * Holds the byte count under which an image is too small to be a real frame.
  *
  * @example
@@ -197,22 +216,6 @@ export const CAPTURE_SHEET_FILES = Object.freeze({
 	data: 'index.json',
 	notes: 'index.md',
 } as const)
-
-/**
- * Lists the command-line flags the registry refresh reads, each followed by exactly one value.
- *
- * @remarks `--variant` is the only flag that repeats. `--mode` is forwarded to the wrapper's Vitest.
- *
- * @example
- * ```ts
- * CAPTURE_REGISTRY_FLAGS.includes('--mode') // true
- * ```
- */
-export const CAPTURE_REGISTRY_FLAGS: readonly string[] = Object.freeze([
-	'--variant',
-	'--config',
-	'--mode',
-])
 
 /**
  * Names the stage each producing variant's complete journey runs in, ahead of the variant's name.
@@ -333,6 +336,6 @@ export const CAPTURE_USAGE = [
 	'  registry [--variant <name>]... [--mode <name>] [--config <file>]',
 	'--changed takes one Git ref; HEAD selects uncommitted work. It cannot accompany a selector.',
 	'--plan requires --changed and prints paths and commands after read-only discovery; no execution child starts.',
-	'Only --variant repeats. Every flag except --plan takes exactly one value; --flag=value is refused.',
+	'Only --variant repeats. Every flag except --plan takes one nonempty value, as --flag value or --flag=value; use --flag=-x for a value beginning with a dash. The -- terminator is refused.',
 	'Exit: 0 passed, 1 failed or refused by the evidence, 64 refused usage.',
 ].join('\n')

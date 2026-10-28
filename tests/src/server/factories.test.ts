@@ -67,7 +67,7 @@ describe('createCaptureRunner', () => {
 		})
 		expect(runner).toBeInstanceOf(CaptureRunner)
 		expect(await runner.execute()).toBe(64)
-		expect(lines.join('')).toContain('Unknown option: --mode')
+		expect(lines.join('')).toContain("Unknown option '--mode'")
 	})
 })
 

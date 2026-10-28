@@ -1,4 +1,4 @@
-import type { ChildProcess } from 'node:child_process'
+import type { SessionInterface } from '@orkestrel/process'
 import type { CaptureRequest } from '@src/core'
 import type {
 	CaptureDiscoveryRequest,
@@ -6,13 +6,18 @@ import type {
 	CaptureInvocationInterface,
 	CaptureInvocationOptions,
 } from './types.js'
-import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { PROCESS_CONFIRMATION } from '@orkestrel/process'
-import { killProcess, killTree } from '@orkestrel/process/server'
-import { CAPTURE_REQUEST_PREFIX, CaptureError } from '@src/core'
+import { StringDecoder } from 'node:string_decoder'
+import { createSession } from '@orkestrel/process/server'
+import { createTimeout } from '@orkestrel/timeout'
+import {
+	CAPTURE_REQUEST_PREFIX,
+	CaptureError,
+	describeCaptureError,
+	isCaptureError,
+} from '@src/core'
 import {
 	CAPTURE_FLAG,
 	CAPTURE_FLAG_VALUE,
@@ -25,10 +30,12 @@ import { readCaptureRequestOwner, readCaptureRunning } from './helpers.js'
  * Owns one runner invocation's identity, request file, children, and interruption.
  *
  * @remarks
- * The runner creates one for discovery and each changed owner, so the abort controller, child registry,
- * spawn log, and interrupt flag belong to an invocation and never to the runner. An interrupt ends each child's
- * process tree through `killTree` on win32, where the platform has no signal a process group can
- * receive, and through `killProcess` on every other host, which signals the detached group.
+ * The runner creates one for discovery and each changed owner, so the abort controller, session
+ * registry, and spawn log belong to an invocation. Interruption derives from the controller's
+ * signal. Sessions end the Windows process tree, or signal the POSIX group with SIGTERM and then
+ * SIGKILL after a 250 ms grace. A linked timeout ends discovery without interrupting the invocation.
+ * Raw stdout is decoded across chunk boundaries and flushed at termination. A writer failure or
+ * an observation cutoff refuses the stage rather than accepting incomplete evidence.
  *
  * @example
  * ```ts
@@ -46,13 +53,11 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 	readonly #options: CaptureInvocationOptions
 	readonly #id = randomUUID()
 	readonly #controller = new AbortController()
-	readonly #children = new Set<ChildProcess>()
-	readonly #expired = new Set<ChildProcess>()
+	readonly #children = new Set<SessionInterface>()
 	readonly #launches: string[] = []
 	readonly #interrupt = this.#abort.bind(this)
 	readonly #request: string
 	readonly #directory: string
-	#interrupted = false
 	#termination: Promise<void> | undefined
 
 	/**
@@ -87,7 +92,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 	}
 
 	get interrupted(): boolean {
-		return this.#interrupted
+		return this.#controller.signal.aborted
 	}
 
 	attach(): void {
@@ -137,80 +142,118 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		return this.#launches.includes(log)
 	}
 
-	spawn(
+	async spawn(
 		args: readonly string[],
 		log: string,
 		capture: boolean,
 		deadline?: number,
 	): Promise<CaptureExecutionResult> {
-		this.#launches.push(log)
-		writeFileSync(log, '')
-		const environment = Object.fromEntries(
-			Object.entries(process.env).filter(
-				([name]) =>
-					name.toLowerCase() !== CAPTURE_FLAG.toLowerCase() &&
-					name.toLowerCase() !== CAPTURE_REQUESTS_FLAG.toLowerCase(),
-			),
-		)
-		// The child reads the directory the runner publishes to, so a wrapper never repeats it.
-		const inherited = {
-			...environment,
-			[CAPTURE_REQUESTS_FLAG]: resolve(this.#options.root, this.#options.requests),
+		this.signal.throwIfAborted()
+		const timeout =
+			deadline === undefined ? undefined : createTimeout({ ms: deadline, signal: this.signal })
+		// Keep the armed signal: a later parent abort clears the handle's expiry reading.
+		const expiry = timeout?.signal
+		const failure = new AbortController()
+		const decoder = new StringDecoder('utf8')
+		const signal = AbortSignal.any([
+			this.signal,
+			failure.signal,
+			...(expiry === undefined ? [] : [expiry]),
+		])
+		try {
+			writeFileSync(log, '')
+			const environment = Object.fromEntries(
+				Object.entries(process.env).filter(
+					([name]) =>
+						name.toLowerCase() !== CAPTURE_FLAG.toLowerCase() &&
+						name.toLowerCase() !== CAPTURE_REQUESTS_FLAG.toLowerCase(),
+				),
+			)
+			const session = createSession({
+				command: {
+					file: process.execPath,
+					arguments: args,
+					isolated: true,
+					environment: {
+						...environment,
+						[CAPTURE_REQUESTS_FLAG]: resolve(this.#options.root, this.#options.requests),
+						...(capture ? { [CAPTURE_FLAG]: CAPTURE_FLAG_VALUE } : {}),
+					},
+				},
+				workspace: this.#options.root,
+				grace: 250,
+				signal,
+				on: {
+					stdout: (bytes) => {
+						const text = decoder.write(Buffer.from(bytes))
+						this.#options.stdout(text)
+						appendFileSync(log, text)
+					},
+					stderr: (text) => {
+						this.#options.stderr(text)
+						appendFileSync(log, text)
+					},
+					error: (error) =>
+						failure.abort(
+							new CaptureError(`Capture child failed: ${describeCaptureError(error)}`, {
+								code: 'STAGE',
+								cause: error,
+							}),
+						),
+				},
+				// Session listeners isolate throws; a lost tee must still refuse all evidence.
+				error: (error) =>
+					failure.abort(
+						new CaptureError('Capture child output could not be recorded', {
+							code: 'STAGE',
+							cause: error,
+						}),
+					),
+			})
+			this.#children.add(session)
+			this.#launches.push(log)
+			try {
+				timeout?.start()
+				this.#options.stdout(`pid=${String(session.pid)}\n`)
+				await session.end()
+				const outcome = await session.exit
+				const tail = decoder.end()
+				if (tail !== '') {
+					this.#options.stdout(tail)
+					appendFileSync(log, tail)
+				}
+				failure.signal.throwIfAborted()
+				if (!outcome.drained)
+					throw new CaptureError(
+						'Capture child observation was cut off before its output drained',
+						{
+							code: 'STAGE',
+						},
+					)
+				return {
+					code: outcome.code,
+					signal: outcome.signal,
+					...(session.pid === undefined ? {} : { pid: session.pid }),
+					...(expiry?.aborted === true ? { expired: true } : {}),
+				}
+			} finally {
+				await session.destroy()
+				this.#children.delete(session)
+			}
+		} catch (error) {
+			if (isCaptureError(error)) throw error
+			throw new CaptureError('Capture child execution failed', { code: 'STAGE', cause: error })
+		} finally {
+			timeout?.clear()
 		}
-		const child = spawn(process.execPath, args, {
-			cwd: this.#options.root,
-			env: capture ? { ...inherited, [CAPTURE_FLAG]: CAPTURE_FLAG_VALUE } : inherited,
-			stdio: ['ignore', 'pipe', 'pipe'],
-			windowsHide: true,
-			detached: process.platform !== 'win32',
-		})
-		this.#children.add(child)
-		const timer =
-			deadline === undefined
-				? undefined
-				: setTimeout(() => {
-						this.#expired.add(child)
-						void this.#terminate(child)
-					}, deadline)
-		this.#options.stdout(`pid=${String(child.pid)}\n`)
-		child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
-			this.#options.stdout(chunk)
-			appendFileSync(log, chunk)
-		})
-		child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
-			this.#options.stderr(chunk)
-			appendFileSync(log, chunk)
-		})
-		return new Promise((done) => {
-			child.once('error', (error) => {
-				this.#options.stderr(`${error.message}\n`)
-			})
-			child.once('close', (code, signal) => {
-				clearTimeout(timer)
-				this.#children.delete(child)
-				done({
-					code,
-					signal,
-					...(child.pid === undefined ? {} : { pid: child.pid }),
-					...(this.#expired.has(child) ? { expired: true } : {}),
-				})
-			})
-		})
 	}
 
 	#abort(): void {
-		if (this.#interrupted) return
-		this.#interrupted = true
+		if (this.signal.aborted) return
 		this.#controller.abort(new CaptureError('Runner interrupted', { code: 'STAGE' }))
 		this.retract()
-		this.#termination = Promise.all(
-			[...this.#children].map((child) => this.#terminate(child)),
-		).then(() => undefined)
-	}
-
-	async #terminate(child: ChildProcess): Promise<void> {
-		if (child.pid === undefined) return
-		if (process.platform === 'win32') await killTree(child.pid, PROCESS_CONFIRMATION)
-		else killProcess(child, 'SIGKILL')
+		this.#termination = Promise.all([...this.#children].map((child) => child.stop())).then(
+			() => undefined,
+		)
 	}
 }

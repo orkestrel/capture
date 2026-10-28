@@ -1,3 +1,4 @@
+import type { ParseArgsOptionsConfig } from 'node:util'
 import type {
 	CaptureCollectionReceipt,
 	CaptureDestination,
@@ -20,6 +21,7 @@ import type {
 	CaptureHostEntry,
 	CaptureImageReading,
 	CaptureIntegrityOptions,
+	CaptureParsedArguments,
 	CapturePicture,
 	CapturePortfolioRoot,
 	CaptureProducer,
@@ -34,12 +36,9 @@ import type {
 } from './types.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
-	closeSync,
 	existsSync,
-	fsyncSync,
 	globSync,
 	mkdirSync,
-	openSync,
 	readFileSync,
 	renameSync,
 	rmSync,
@@ -47,6 +46,7 @@ import {
 	writeFileSync,
 } from 'node:fs'
 import { dirname, matchesGlob, relative, resolve } from 'node:path'
+import { parseArgs } from 'node:util'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 import {
 	arrayOf,
@@ -68,6 +68,7 @@ import {
 	CaptureError,
 	describeCaptureDeclaration,
 	describeCaptureDestination,
+	describeCaptureError,
 	isCaptureGeometry,
 	isCapturePath,
 	isCapturePattern,
@@ -82,13 +83,11 @@ import {
 	validateCaptureReceipt,
 } from '@src/core'
 import {
-	CAPTURE_DEFAULTS,
 	CAPTURE_COMMAND_NAMES,
+	CAPTURE_COMMAND_OPTIONS,
+	CAPTURE_DEFAULTS,
 	CAPTURE_DISCOVERY,
-	CAPTURE_OPTION_FLAGS,
 	CAPTURE_OWNER_PREFIX,
-	CAPTURE_READER_FLAGS,
-	CAPTURE_REGISTRY_FLAGS,
 	CAPTURE_REQUESTS_FLAG,
 	CAPTURE_RUNS_DIRECTORY,
 	CAPTURE_STAGES,
@@ -181,15 +180,19 @@ export function renderCaptureCommand(
 	selector: string | undefined,
 	root: string,
 ): string {
+	const config = resolveCaptureRelative(root, parsed.config)
 	return [
 		'capture',
 		command === 'registry' ? command : CAPTURE_COMMAND_NAMES[command],
 		...(selector === undefined ? [] : [selector]),
 		...parsed.variants.flatMap((variant) => ['--variant', variant]),
-		...(parsed.case === undefined ? [] : ['--case', parsed.case]),
+		...(parsed.case === undefined
+			? []
+			: parsed.case.startsWith('-')
+				? [`--case=${parsed.case}`]
+				: ['--case', parsed.case]),
 		...(parsed.state === undefined ? [] : ['--state', parsed.state]),
-		'--config',
-		resolveCaptureRelative(root, parsed.config),
+		...(config.startsWith('-') ? [`--config=${config}`] : ['--config', config]),
 	]
 		.map((argument) =>
 			/^[\w./:-]+$/u.test(argument)
@@ -214,44 +217,6 @@ export function renderCaptureCommand(
  */
 export function normalizeSlashes(path: string): string {
 	return path.replaceAll('\\', '/')
-}
-
-/**
- * Reads the value that follows a flag.
- *
- * @param argv - The arguments after the entry name
- * @param name - The flag, such as `--variant`
- * @returns The value after the flag, or `undefined` when the flag is absent, last, or followed by
- * another flag
- *
- * @example
- * ```ts
- * readFlag(['pages:mail', '--case', 'inbox'], '--case') // 'inbox'
- * ```
- */
-export function readFlag(argv: readonly string[], name: string): string | undefined {
-	const index = argv.indexOf(name)
-	const value = index === -1 ? undefined : argv[index + 1]
-	return value === undefined || value.startsWith('--') ? undefined : value
-}
-
-/**
- * Reads every value that follows a repeatable flag.
- *
- * @param argv - The arguments after the entry name
- * @param name - The flag, such as `--variant`
- * @returns The values in order, empty when the flag never appears
- *
- * @example
- * ```ts
- * readFlags(['--variant', 'a', '--variant', 'b'], '--variant') // ['a', 'b']
- * ```
- */
-export function readFlags(argv: readonly string[], name: string): readonly string[] {
-	return argv.flatMap((argument, index) => {
-		const value = argv[index + 1]
-		return argument === name && value !== undefined && !value.startsWith('--') ? [value] : []
-	})
 }
 
 /**
@@ -1016,12 +981,62 @@ export function buildCaptureArguments(options: CaptureArgumentsOptions): readonl
 }
 
 /**
+ * Parses standard option tokens and refuses empty values, terminators, and repeated single options.
+ *
+ * @param argv - The arguments after the subcommand
+ * @param options - The command's frozen Node option definitions
+ * @param usage - The command syntax appended to every parser refusal
+ * @returns Typed values, positionals, and the tokens that supplied them
+ * @example
+ * ```ts
+ * readCaptureOptions(['--case=-draft'], CAPTURE_COMMAND_OPTIONS.journey, 'Usage: capture journey <selector>').values.case // '-draft'
+ * ```
+ */
+export function readCaptureOptions<Options extends ParseArgsOptionsConfig>(
+	argv: readonly string[],
+	options: Options,
+	usage: string,
+): CaptureParsedArguments<Options> {
+	try {
+		const parsed = parseArgs({
+			args: [...argv],
+			options,
+			tokens: true,
+			strict: true,
+			allowPositionals: true,
+		})
+		for (const token of parsed.tokens) {
+			if (token.kind === 'option-terminator')
+				throw new CaptureError('The -- option terminator is refused', { code: 'USAGE' })
+			if (token.kind !== 'option') continue
+			if (token.value === '')
+				throw new CaptureError(`Missing value: --${token.name}`, { code: 'USAGE' })
+			if (
+				options[token.name]?.multiple !== true &&
+				parsed.tokens.some(
+					(earlier) =>
+						earlier.kind === 'option' && earlier.name === token.name && earlier.index < token.index,
+				)
+			)
+				throw new CaptureError(`Repeated option: --${token.name}`, { code: 'USAGE' })
+		}
+		return parsed
+	} catch (error) {
+		throw new CaptureError(`${describeCaptureError(error)}\n${usage}`, {
+			code: 'USAGE',
+			cause: error,
+		})
+	}
+}
+
+/**
  * Reads the runner's command line into one selector, its flags, and the resolved wrapper path.
  *
  * @remarks
  * `--state` belongs to `capture` and `stale`, and `--portfolio` to `stale`. Journey and capture
  * accept `--changed <ref>` instead of a selector, with optional valueless `--plan`. Every other
- * flag takes one value and only `--variant` repeats. A bare invocation leaves its selector absent
+ * flag takes one nonempty value, either separated or in equals form, and only `--variant` repeats.
+ * A value beginning with a dash requires equals form. A bare invocation leaves its selector absent
  * so the caller can print usage with the declared selectors.
  *
  * @param argv - The arguments after the entry name
@@ -1044,54 +1059,31 @@ export function readCaptureArguments(
 	root: string,
 	fallback: string,
 ): CaptureRunnerArguments {
-	const values: Array<{ readonly flag: string; readonly value: string }> = []
-	const positional: string[] = []
-	const cursor = argv.values()
-	for (const argument of cursor) {
-		if (!argument.startsWith('--')) {
-			positional.push(argument)
-			continue
-		}
-		if (argument === '--plan') {
-			if (values.some((entry) => entry.flag === argument))
-				throw new CaptureError('Repeated option: --plan', { code: 'USAGE' })
-			values.push({ flag: argument, value: 'true' })
-			continue
-		}
-		if (argument === '--state' && command === 'journey')
-			throw new CaptureError('State selection is available only to capture and stale', {
-				code: 'USAGE',
-			})
-		if (argument === '--portfolio' && command !== 'stale')
-			throw new CaptureError('Portfolio selection is available only to stale', { code: 'USAGE' })
-		if (!CAPTURE_OPTION_FLAGS.includes(argument))
-			throw new CaptureError(`Unknown option: ${argument}`, { code: 'USAGE' })
-		const value = cursor.next().value
-		if (value === undefined || value === '' || value.startsWith('--'))
-			throw new CaptureError(`Missing value: ${argument}`, { code: 'USAGE' })
-		if (argument !== '--variant' && values.some((entry) => entry.flag === argument))
-			throw new CaptureError(`Repeated option: ${argument}`, { code: 'USAGE' })
-		values.push({ flag: argument, value })
-	}
+	const usage = `Usage: capture ${CAPTURE_COMMAND_NAMES[command]} <selector> [options]${command === 'stale' ? '' : `; capture ${CAPTURE_COMMAND_NAMES[command]} --changed <ref> [--plan] [options]`}`
+	const { values, positionals: positional } = readCaptureOptions(
+		argv,
+		CAPTURE_COMMAND_OPTIONS[command],
+		usage,
+	)
 	if (positional.length > 1)
 		throw new CaptureError('Expected exactly one selector', { code: 'USAGE' })
-	const variants = readFlags(argv, '--variant')
+	const variants = values.variant ?? []
 	if (new Set(variants).size !== variants.length)
 		throw new CaptureError('Repeated variant', { code: 'USAGE' })
 	if (variants.some((variant) => !isCaptureSegment(variant)))
 		throw new CaptureError('Invalid variant identity', { code: 'USAGE' })
-	const state = readFlag(argv, '--state')
+	const state = 'state' in values && typeof values.state === 'string' ? values.state : undefined
 	if (state !== undefined && !isCaptureSegment(state))
 		throw new CaptureError('Invalid state identity', { code: 'USAGE' })
-	const name = readFlag(argv, '--case')
+	const name = values.case
 	if (name !== undefined && name.trim() === '')
 		throw new CaptureError('Empty case name', { code: 'USAGE' })
-	const portfolio = readFlag(argv, '--portfolio')
+	const portfolio =
+		'portfolio' in values && typeof values.portfolio === 'string' ? values.portfolio : undefined
 	const selector = positional.at(0)
-	const changed = readFlag(argv, '--changed')
-	const plan = values.some((entry) => entry.flag === '--plan')
-	if ((changed !== undefined || plan) && command === 'stale')
-		throw new CaptureError('--changed and --plan belong to journey and frames', { code: 'USAGE' })
+	const changed =
+		'changed' in values && typeof values.changed === 'string' ? values.changed : undefined
+	const plan = 'plan' in values && values.plan === true
 	if (changed !== undefined && selector !== undefined)
 		throw new CaptureError(
 			'A selector cannot be combined with --changed; use --changed <ref> alone',
@@ -1103,7 +1095,7 @@ export function readCaptureArguments(
 		...(selector === undefined ? {} : { selector }),
 		...(changed === undefined ? {} : { changed }),
 		...(plan ? { plan: true } : {}),
-		config: resolve(root, readFlag(argv, '--config') ?? fallback),
+		config: resolve(root, values.config ?? fallback),
 		variants,
 		...(name === undefined ? {} : { case: name }),
 		...(state === undefined ? {} : { state }),
@@ -1499,14 +1491,15 @@ export function readCaptureRequest(options: CaptureRequestOptions): CaptureReque
  * Reads a reader's command line into its selection, its flags, and the resolved paths.
  *
  * @remarks
- * The first argument is the selector and every flag after it takes exactly one value. Only
- * `--variant` repeats. `--output` belongs to the contact sheets and the caller refuses it for a
- * reader that writes none. The wrapper, the journey artifact directory, and the checks module
+ * The first argument is the selector and every flag after it takes one nonempty value, separated
+ * or in equals form. Only `--variant` repeats. `--output` belongs to sheets; the preflight option
+ * table refuses it before discovery. The wrapper, the journey artifact directory, and the checks module
  * resolve against `root`; `defaults` supplies the first two when the command line names neither.
  *
  * @param argv - The arguments after the entry name
  * @param root - The absolute workspace path the paths resolve against
  * @param defaults - The repository-relative wrapper and journey artifact directory to fall back to
+ * @param command - The reader command whose option table applies. Default: `sheets`
  * @returns The reader options and the optional contact-sheet directory
  * @throws Thrown as a `USAGE` capture error for an absent selector, an unknown, repeated, or
  * valueless flag.
@@ -1523,37 +1516,28 @@ export function readCaptureReaderArguments(
 	argv: readonly string[],
 	root: string,
 	defaults: CaptureReaderDefaults,
+	command: 'preflight' | 'sheets' = 'sheets',
 ): CaptureReaderCommand {
-	const selector = argv.at(0)
-	if (selector === undefined || selector.startsWith('--'))
-		throw new CaptureError(
-			'Usage: <selector> [--variant <output>] [--state <state>] [--case <name>] [--portfolio <name>] [--config <file>] [--journeys <directory>] [--checks <module>] [--output <directory>]',
-			{ code: 'USAGE' },
-		)
-	const rest = argv.slice(1)
-	for (const [index, argument] of rest.entries()) {
-		if (index % 2 === 0 && !CAPTURE_READER_FLAGS.includes(argument))
-			throw new CaptureError(`Unknown reader option: ${argument}`, { code: 'USAGE' })
-		if (index % 2 === 1 && (argument === '' || argument.startsWith('--')))
-			throw new CaptureError('Missing reader option value', { code: 'USAGE' })
-	}
-	if (rest.length % 2 === 1)
-		throw new CaptureError('Missing reader option value', { code: 'USAGE' })
-	for (const flag of CAPTURE_READER_FLAGS.filter((entry) => entry !== '--variant')) {
-		if (readFlags(argv, flag).length > 1)
-			throw new CaptureError(`Repeated reader option: ${flag}`, { code: 'USAGE' })
-	}
-	const variants = readFlags(argv, '--variant')
-	const state = readFlag(argv, '--state')
-	const name = readFlag(argv, '--case')
-	const portfolio = readFlag(argv, '--portfolio')
-	const checks = readFlag(argv, '--checks')
-	const output = readFlag(argv, '--output')
+	const usage = `Usage: capture ${command} <selector> ${command === 'sheets' ? '--output <directory> ' : ''}[options]`
+	const { values, positionals, tokens } = readCaptureOptions(
+		argv,
+		CAPTURE_COMMAND_OPTIONS[command],
+		usage,
+	)
+	const selector = positionals.at(0)
+	if (selector === undefined || positionals.length !== 1 || tokens.at(0)?.kind !== 'positional')
+		throw new CaptureError(usage, { code: 'USAGE' })
+	const variants = values.variant ?? []
+	const state = values.state
+	const name = values.case
+	const portfolio = values.portfolio
+	const checks = values.checks
+	const output = 'output' in values && typeof values.output === 'string' ? values.output : undefined
 	return {
 		reader: {
 			root: resolve(root),
-			config: resolve(root, readFlag(argv, '--config') ?? defaults.config),
-			journeys: resolve(root, readFlag(argv, '--journeys') ?? defaults.journeys),
+			config: resolve(root, values.config ?? defaults.config),
+			journeys: resolve(root, values.journeys ?? defaults.journeys),
 			selection: {
 				selector,
 				...(variants.length === 0 ? {} : { variants }),
@@ -2015,34 +1999,20 @@ export function readCaptureRegistryArguments(
 	fallback: string,
 ): CaptureRegistryArguments {
 	const usage = 'Usage: capture registry [--variant <name>]... [--mode <name>] [--config <file>]'
-	const flags: string[] = []
-	const cursor = argv.values()
-	for (const argument of cursor) {
-		if (!argument.startsWith('--'))
-			throw new CaptureError(
-				`Unexpected argument ${JSON.stringify(argument.slice(0, 80))}: the registry command takes no selector and refreshes every producing variant, or those named by --variant. ${usage}`,
-				{ code: 'USAGE' },
-			)
-		if (!CAPTURE_REGISTRY_FLAGS.includes(argument))
-			throw new CaptureError(
-				`Unknown option ${JSON.stringify(argument.slice(0, 80))}: expected one of ${CAPTURE_REGISTRY_FLAGS.join(', ')}. ${usage}`,
-				{ code: 'USAGE' },
-			)
-		const value = cursor.next().value
-		if (value === undefined || value === '' || value.startsWith('--'))
-			throw new CaptureError(`Missing value: ${argument}. ${usage}`, { code: 'USAGE' })
-		if (argument !== '--variant' && flags.includes(argument))
-			throw new CaptureError(`Repeated option: ${argument}. ${usage}`, { code: 'USAGE' })
-		flags.push(argument)
-	}
-	const variants = readFlags(argv, '--variant')
+	const { values, positionals } = readCaptureOptions(argv, CAPTURE_COMMAND_OPTIONS.registry, usage)
+	if (positionals.length > 0)
+		throw new CaptureError(
+			`Unexpected argument ${JSON.stringify(positionals[0]?.slice(0, 80))}: the registry command takes no selector and refreshes every producing variant, or those named by --variant. ${usage}`,
+			{ code: 'USAGE' },
+		)
+	const variants = values.variant ?? []
 	if (new Set(variants).size !== variants.length)
 		throw new CaptureError('Repeated variant', { code: 'USAGE' })
 	if (variants.some((variant) => !isCaptureSegment(variant)))
 		throw new CaptureError('Invalid variant identity', { code: 'USAGE' })
-	const mode = readFlag(argv, '--mode')
+	const mode = values.mode
 	return {
-		config: resolve(root, readFlag(argv, '--config') ?? fallback),
+		config: resolve(root, values.config ?? fallback),
 		variants,
 		...(mode === undefined ? {} : { mode }),
 	}
@@ -2107,13 +2077,7 @@ export function writeCaptureDocument(path: string, value: unknown, signal?: Abor
 	mkdirSync(dirname(path), { recursive: true })
 	const temporary = `${path}.${randomUUID()}.tmp`
 	try {
-		const handle = openSync(temporary, 'wx')
-		try {
-			writeFileSync(handle, `${JSON.stringify(value)}\n`)
-			fsyncSync(handle)
-		} finally {
-			closeSync(handle)
-		}
+		writeFileSync(temporary, `${JSON.stringify(value)}\n`, { flag: 'wx', flush: true })
 		signal?.throwIfAborted()
 		renameSync(temporary, path)
 	} finally {

@@ -30,16 +30,12 @@ import type {
 	CaptureStageResult,
 	CaptureStaleOptions,
 } from './types.js'
-import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
-	closeSync,
 	existsSync,
-	fsyncSync,
 	globSync,
 	lstatSync,
 	mkdirSync,
-	openSync,
 	readFileSync,
 	readdirSync,
 	realpathSync,
@@ -50,6 +46,7 @@ import {
 } from 'node:fs'
 import { dirname, isAbsolute, matchesGlob, relative, resolve, sep } from 'node:path'
 import { isObject, isRecord, parseJSON } from '@orkestrel/contract'
+import { executeSync } from '@orkestrel/process/server'
 import {
 	CAPTURE_VERSION,
 	CaptureError,
@@ -1508,11 +1505,16 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 
 	// Runs one Git read in the workspace; a synchronous read of provenance starts no supervised child.
 	#git(args: readonly string[]): string {
-		return execFileSync('git', [...args], {
-			cwd: this.#root,
-			encoding: 'utf8',
-			windowsHide: true,
-		})
+		const result = executeSync(
+			{ file: 'git', arguments: args },
+			{ workspace: this.#root, timeout: 30_000, limit: 64 * 1024 * 1024, strict: false },
+		)
+		if (result.failed || result.truncated)
+			throw new CaptureError(
+				`Git read failed${result.expired ? ' (deadline expired)' : ''}${result.truncated ? ' (output truncated)' : ''}: ${result.stderr.trim() || String(result.code ?? result.signal)}`,
+				{ code: 'HOST' },
+			)
+		return result.stdout
 	}
 
 	#provenance(): { readonly commit: string; readonly dirty: readonly string[] } {
@@ -1537,13 +1539,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		const temporary = `${file}.${randomUUID()}.tmp`
 		const path = this.#path(temporary)
 		try {
-			const handle = openSync(path, 'wx')
-			try {
-				writeFileSync(handle, `${JSON.stringify(value)}\n`)
-				fsyncSync(handle)
-			} finally {
-				closeSync(handle)
-			}
+			writeFileSync(path, `${JSON.stringify(value)}\n`, { flag: 'wx', flush: true })
 			signal?.throwIfAborted()
 			this.#path(file)
 			this.#path(temporary)

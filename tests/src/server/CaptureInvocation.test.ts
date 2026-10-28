@@ -1,6 +1,7 @@
-import { realpathSync } from 'node:fs'
+import { mkdirSync, realpathSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { parseJSON } from '@orkestrel/contract'
+import { attempt, isNumber, parseJSON } from '@orkestrel/contract'
+import { killTree } from '@orkestrel/process/server'
 import { waitForCondition } from '@orkestrel/test'
 import { isRunning } from '@orkestrel/test/server'
 import { isCaptureError } from '@src/core'
@@ -12,13 +13,282 @@ import {
 	stopFixtureChild,
 } from '../../fixtures/capture/ProcessFixture.js'
 import { createRequestFixture } from '../../setup.js'
-import { FIXTURE_TIMEOUT, RUNNER_REQUESTS, withEnvironment } from '../../setupServer.js'
+import {
+	FIXTURE_TIMEOUT,
+	RUNNER_REQUESTS,
+	SUPPORTS_GROUP_SIGNAL,
+	withEnvironment,
+} from '../../setupServer.js'
 
 const REPORTER = resolve(import.meta.dirname, '../../fixtures/capture/Reporter.ts')
 const SLEEPER = resolve(import.meta.dirname, '../../fixtures/capture/Sleeper.ts')
+const OUTPUT = resolve(import.meta.dirname, '../../fixtures/capture/Output.ts')
 
 // Each case spawns real Node children, which the default five-second budget leaves thin on a loaded host.
 describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('passes the complete filtered environment without reintroducing case-folded request aliases', async () => {
+		const fixture = new InvocationFixture()
+		try {
+			const { invocation, stdout, scratch } = fixture
+			invocation.prepare()
+			await withEnvironment(
+				{ Capture: 'old', capture_requests: 'wrong', CAPTURE_FIXTURE: 'inherited' },
+				() =>
+					invocation.spawn(
+						[OUTPUT, 'environment'],
+						resolve(invocation.directory, 'environment.log'),
+						true,
+					),
+			)
+			expect(parseJSON(stdout.join('').replace(/^pid=\d+\n/u, ''))).toEqual({
+				capture: [['CAPTURE', '1']],
+				requests: [['CAPTURE_REQUESTS', resolve(scratch.path, RUNNER_REQUESTS)]],
+				inherited: 'inherited',
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('destroys a launched child when the initial pid writer throws', async () => {
+		const fixture = new InvocationFixture()
+		const invocation = fixture.next({
+			stdout: (text) => {
+				fixture.stdout.push(text)
+				throw new Error('pid writer refused')
+			},
+		})
+		try {
+			invocation.prepare()
+			await expect(
+				invocation.spawn([OUTPUT], resolve(invocation.directory, 'pid.log'), false),
+			).rejects.toMatchObject({
+				code: 'STAGE',
+				cause: expect.objectContaining({ message: 'pid writer refused' }),
+			})
+			const pid = Number(/pid=(\d+)/u.exec(fixture.stdout.join(''))?.[1])
+			expect(Number.isInteger(pid)).toBe(true)
+			await waitForCondition('the child with a failed pid writer is gone', () => !isRunning(pid))
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('preserves split UTF-8, carriage returns, and absent final newlines in the tee', async () => {
+		const fixture = new InvocationFixture()
+		try {
+			const { invocation, stdout, stderr, scratch } = fixture
+			invocation.prepare()
+			const log = resolve(invocation.directory, 'bytes.log')
+			const outcome = await invocation.spawn([OUTPUT, 'bytes'], log, false)
+			expect(outcome.code).toBe(0)
+			expect(stdout.join('')).toBe(`pid=${String(outcome.pid)}\n€\rprogress\rcomplete`)
+			expect(stderr.join('')).toBe('diagnostic\rno newline')
+			const text = scratch.read(log) ?? ''
+			expect(text).toContain('€\rprogress\rcomplete')
+			expect(text).toContain('diagnostic\rno newline')
+			expect(text).not.toContain('\uFFFD')
+			expect(text.endsWith('\n')).toBe(false)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('flushes an incomplete final UTF-8 sequence at termination', async () => {
+		const fixture = new InvocationFixture()
+		try {
+			const { invocation, stdout, scratch } = fixture
+			invocation.prepare()
+			const log = resolve(invocation.directory, 'partial.log')
+			const outcome = await invocation.spawn([OUTPUT, 'partial'], log, false)
+			expect(stdout.join('')).toBe(`pid=${String(outcome.pid)}\n\uFFFD`)
+			expect(scratch.read(log)).toBe('\uFFFD')
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('refuses a pre-aborted invocation before launching a child or opening its log', async () => {
+		const fixture = new InvocationFixture()
+		const { invocation, scratch, stdout } = fixture
+		try {
+			invocation.prepare()
+			invocation.attach()
+			process.emit('SIGINT')
+			const log = resolve(invocation.directory, 'never.log')
+			await expect(invocation.spawn([OUTPUT], log, false, 0)).rejects.toMatchObject({
+				code: 'STAGE',
+				message: 'Runner interrupted',
+			})
+			expect(invocation.launched(log)).toBe(false)
+			expect(scratch.has(log)).toBe(false)
+			expect(stdout).toEqual([])
+		} finally {
+			await invocation.release()
+			fixture.destroy()
+		}
+	})
+
+	it.each(['stdout', 'stderr'] as const)(
+		'refuses a %s writer failure despite session listener isolation',
+		async (stream) => {
+			const fixture = new InvocationFixture()
+			const invocation = fixture.next({
+				[stream]: (text: string) => {
+					if (text.startsWith('pid=')) fixture.stdout.push(text)
+					else throw new Error('writer refused')
+				},
+			})
+			try {
+				invocation.prepare()
+				await expect(
+					invocation.spawn([OUTPUT, 'bytes'], resolve(invocation.directory, 'writer.log'), false),
+				).rejects.toMatchObject({
+					code: 'STAGE',
+					message: 'Capture child output could not be recorded',
+				})
+				const pid = Number(/pid=(\d+)/u.exec(fixture.stdout.join(''))?.[1])
+				await waitForCondition('the child with a failed writer is gone', () => !isRunning(pid))
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+
+	it('refuses a log append failure and destroys the child', async () => {
+		const fixture = new InvocationFixture()
+		const invocation = fixture.next({
+			stdout: (text) => {
+				fixture.stdout.push(text)
+				if (text.startsWith('pid=')) {
+					const log = resolve(invocation.directory, 'broken.log')
+					rmSync(log)
+					mkdirSync(log)
+				}
+			},
+		})
+		try {
+			invocation.prepare()
+			await expect(
+				invocation.spawn([OUTPUT], resolve(invocation.directory, 'broken.log'), false),
+			).rejects.toMatchObject({
+				code: 'STAGE',
+				message: 'Capture child output could not be recorded',
+			})
+			const pid = Number(/pid=(\d+)/u.exec(fixture.stdout.join(''))?.[1])
+			await waitForCondition('the child with a failed log is gone', () => !isRunning(pid))
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('ends a child and its descendant together on interruption', async () => {
+		const fixture = new InvocationFixture()
+		const { invocation, stdout, scratch } = fixture
+		try {
+			invocation.prepare()
+			invocation.attach()
+			const closing = invocation.spawn(
+				[OUTPUT, 'tree'],
+				resolve(invocation.directory, 'tree.log'),
+				false,
+			)
+			await waitForCondition('the descendant is ready', () =>
+				stdout.join('').includes('descendant='),
+			)
+			const descendant: unknown = parseJSON(scratch.read('descendant.json') ?? '')
+			expect(isNumber(descendant)).toBe(true)
+			process.emit('SIGINT')
+			const outcome = await closing
+			await waitForCondition(
+				'the whole tree has exited',
+				() =>
+					isNumber(descendant) &&
+					!isRunning(descendant) &&
+					outcome.pid !== undefined &&
+					!isRunning(outcome.pid),
+			)
+		} finally {
+			await invocation.release()
+			fixture.destroy()
+		}
+	})
+
+	it('refuses a successful root exit when an inherited pipe cuts observation off', async () => {
+		const fixture = new InvocationFixture()
+		const { invocation, scratch } = fixture
+		try {
+			invocation.prepare()
+			await expect(
+				invocation.spawn([OUTPUT, 'orphan'], resolve(invocation.directory, 'orphan.log'), false),
+			).rejects.toMatchObject({
+				code: 'STAGE',
+				message: 'Capture child observation was cut off before its output drained',
+			})
+		} finally {
+			const descendant: unknown = parseJSON(scratch.read('descendant.json') ?? 'null')
+			if (isNumber(descendant) && isRunning(descendant)) {
+				if (process.platform === 'win32') await killTree(descendant, 5_000)
+				else attempt(() => process.kill(descendant, 'SIGKILL'))
+				await waitForCondition('the orphan fixture is gone', () => !isRunning(descendant))
+			}
+			fixture.destroy()
+		}
+	})
+
+	it('keeps interruption ahead of a still-armed deadline', async () => {
+		const fixture = new InvocationFixture()
+		const invocation = fixture.next({
+			stdout: (text) => {
+				fixture.stdout.push(text)
+				if (text.includes('ready')) process.emit('SIGINT')
+			},
+		})
+		try {
+			invocation.prepare()
+			invocation.attach()
+			const outcome = await invocation.spawn(
+				[OUTPUT],
+				resolve(invocation.directory, 'interrupt-first.log'),
+				false,
+				10_000,
+			)
+			expect(outcome.expired).toBeUndefined()
+			expect(invocation.interrupted).toBe(true)
+		} finally {
+			await invocation.release()
+			fixture.destroy()
+		}
+	})
+
+	// Windows tree termination delivers no SIGTERM callback in which to schedule this interrupt.
+	it.runIf(SUPPORTS_GROUP_SIGNAL)(
+		'retains deadline expiry when an interrupt arrives during the POSIX grace window',
+		async () => {
+			const fixture = new InvocationFixture()
+			const invocation = fixture.next({
+				stdout: (text) => {
+					fixture.stdout.push(text)
+					if (text.includes('terminating')) process.emit('SIGINT')
+				},
+			})
+			try {
+				invocation.prepare()
+				invocation.attach()
+				const outcome = await invocation.spawn(
+					[OUTPUT, 'grace'],
+					resolve(invocation.directory, 'deadline-first.log'),
+					false,
+					1_500,
+				)
+				expect(fixture.stdout.join('')).toContain('terminating')
+				expect(outcome.expired).toBe(true)
+				expect(invocation.interrupted).toBe(true)
+			} finally {
+				await invocation.release()
+				fixture.destroy()
+			}
+		},
+	)
 	it('names its request by the process id and its report directory by its own identity', () => {
 		const fixture = new InvocationFixture()
 		try {

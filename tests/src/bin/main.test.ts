@@ -70,10 +70,10 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(run.stderr).toContain('no execution child starts')
 	})
 
-	it('refuses changed selection combined with a selector and rejects repeated or equals flags', () => {
+	it('refuses changed selection combined with a selector and rejects repeated or empty equals flags', () => {
 		for (const argv of [
 			['journey', 'pages:mail', '--changed', 'HEAD'],
-			['frames', '--changed=HEAD'],
+			['frames', '--changed='],
 			['journey', '--changed', 'HEAD', '--changed', 'HEAD'],
 			['frames', '--changed', 'HEAD', '--plan', '--plan'],
 		]) {
@@ -144,11 +144,16 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 		const stages = fixture.stages.length
 		try {
 			fixture.write('src/mail/view.ts', '// changed for planning\n')
-			const run = execute(['journey', '--changed', 'HEAD', '--plan', '--variant', 'light-390'])
-			expect(run.status === 0 ? 0 : run.stderr).toBe(0)
-			expect(fixture.stages).toHaveLength(stages)
-			expect(run.stdout).toContain('"classification":"own","owners":["pages:mail"]')
-			expect(run.stdout).toContain('COMMAND capture journey pages:mail --variant light-390')
+			for (const argv of [
+				['journey', '--changed', 'HEAD', '--plan', '--variant', 'light-390'],
+				['journey', '--changed=HEAD', '--plan', '--variant=light-390'],
+			]) {
+				const run = execute(argv)
+				expect(run.status === 0 ? 0 : run.stderr).toBe(0)
+				expect(fixture.stages).toHaveLength(stages)
+				expect(run.stdout).toContain('"classification":"own","owners":["pages:mail"]')
+				expect(run.stdout).toContain('COMMAND capture journey pages:mail --variant light-390')
+			}
 		} finally {
 			fixture.write('src/mail/view.ts', original)
 		}

@@ -1,7 +1,16 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, linkSync, renameSync, rmSync, symlinkSync, utimesSync } from 'node:fs'
+import {
+	existsSync,
+	linkSync,
+	readdirSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+	utimesSync,
+} from 'node:fs'
 import { resolve } from 'node:path'
 import { parseJSON } from '@orkestrel/contract'
+import { executeSync } from '@orkestrel/process/server'
 import { createScratch, supportsFileLinks } from '@orkestrel/test/server'
 import {
 	isCaptureError,
@@ -39,6 +48,19 @@ const LINKED = supportsFileLinks()
 const MAIL_LIGHT = { selector: 'pages:mail', variants: ['light-390'] }
 
 describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('keeps Unicode names intact through bounded NUL-separated Git output', () => {
+		const fixture = new IntegrityFixture()
+		try {
+			fixture.seed()
+			fixture.write('src/mail/café view.ts', '// unicode path\n')
+			expect(fixture.engine.changed('HEAD').changes).toEqual([
+				{ path: 'src/mail/café view.ts', classification: 'own', owners: ['pages:mail'] },
+			])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
 	it('classifies tracked, deleted, renamed, untracked, shared, test, and outside paths without losing spaces', () => {
 		const fixture = new IntegrityFixture()
 		try {
@@ -148,6 +170,16 @@ describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT },
 			const error = readThrown(() => fixture.engine.changed('missing-ref'))
 			expect(isCaptureError(error) ? error.code : undefined).toBe('USAGE')
 			expect(String(error)).toContain('fatal:')
+			const diagnostic = executeSync(
+				{
+					file: 'git',
+					arguments: ['rev-parse', '--verify', '--end-of-options', 'missing-ref^{commit}'],
+				},
+				{ workspace: fixture.root, strict: false },
+			)
+			expect(diagnostic.failed).toBe(true)
+			expect(diagnostic.stderr.trim()).not.toBe('')
+			expect(String(error)).toContain(diagnostic.stderr.trim())
 		} finally {
 			fixture.destroy()
 		}
@@ -627,6 +659,11 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 				}),
 			).rejects.toThrow('Fixture interruption before publication')
 			expect(readFixtureManifest(fixture.root)).toBe(before)
+			expect(
+				readdirSync(resolve(fixture.root, 'tmp/captures/states')).filter((name) =>
+					name.endsWith('.tmp'),
+				),
+			).toEqual([])
 		} finally {
 			fixture.destroy()
 		}
