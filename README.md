@@ -1,6 +1,6 @@
 # @orkestrel/capture
 
-The @orkestrel/capture package.
+> An evidence protocol, integrity engine, and runner that stamp browser journey frames with their source provenance and classify each frame's freshness.
 
 ## Development
 
