@@ -1,8 +1,11 @@
-import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isRecord, parseJSON } from '@orkestrel/contract'
+import { requireValue, waitForCondition } from '@orkestrel/test'
+import { isRunning } from '@orkestrel/test/server'
 import { CAPTURE_DEFAULTS, CAPTURE_USAGE } from '@src/server'
 import { afterAll, describe, expect, it } from 'vitest'
 import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
@@ -10,6 +13,7 @@ import {
 	BIN_REFUSALS,
 	COMPOSED_DIRECTORY,
 	FIXTURE_TIMEOUT,
+	SUPPORTS_GROUP_SIGNAL,
 	readFixtureManifest,
 } from '../../setupServer.js'
 
@@ -117,3 +121,51 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(readFixtureManifest(fixture.root)).toBe(before)
 	})
 })
+
+// A terminal's Ctrl+C reaches every process in the foreground group, so this reading starts the
+// executable as the leader of its own group and signals the group. Windows has no signal a process
+// group can receive; its console reading is taken in a terminal.
+describe.runIf(SUPPORTS_GROUP_SIGNAL)(
+	'bin entry under a process-group interrupt',
+	{ timeout: FIXTURE_TIMEOUT },
+	() => {
+		it('ends the stage child and its descendant, starts no later stage, and leaves the manifest and requests as they were', async () => {
+			const before = readFixtureManifest(fixture.root)
+			rmSync(resolve(fixture.root, 'ready.json'), { force: true })
+			const child = spawn(process.execPath, [BUILT, 'frames', 'pages:mail'], {
+				cwd: fixture.root,
+				env: { ...process.env, CAPTURE_PRODUCER_MODE: 'hang' },
+				detached: true,
+				windowsHide: true,
+			})
+			const stdout: string[] = []
+			child.stdout.setEncoding('utf8').on('data', (text: string) => stdout.push(text))
+			const exited = once(child, 'exit')
+			await waitForCondition(
+				'the stage child reports ready',
+				() => fixture.readReady().length > 0,
+				{
+					budget: 30_000,
+				},
+			)
+			const pids = fixture.readReady()
+			const leader = requireValue(child.pid)
+			process.kill(-leader, 'SIGINT')
+			const [code] = await exited
+			expect(code).toBe(1)
+			await waitForCondition(
+				'the stage child and its descendant have exited',
+				() => pids.every((pid) => !isRunning(pid)),
+				{ budget: 20_000 },
+			)
+			expect(stdout.join('')).toContain('capture narrow:')
+			expect(stdout.join('')).not.toContain('capture rest:')
+			expect(
+				readdirSync(resolve(fixture.root, fixture.requests)).filter((name) =>
+					name.startsWith('journey-selection'),
+				),
+			).toEqual([])
+			expect(readFixtureManifest(fixture.root)).toBe(before)
+		})
+	},
+)
