@@ -1,5 +1,6 @@
 import type {
 	CaptureCollectionReceipt,
+	CaptureDestination,
 	CaptureDigest,
 	CaptureLookup,
 	CaptureLookupJournal,
@@ -9,6 +10,8 @@ import type {
 } from '@src/core'
 import type {
 	CaptureArgumentsOptions,
+	CaptureChange,
+	CaptureChangePlan,
 	CaptureCommand,
 	CaptureDescriptionExpectation,
 	CaptureDiscoveryOptions,
@@ -43,7 +46,7 @@ import {
 	statSync,
 	writeFileSync,
 } from 'node:fs'
-import { dirname, relative, resolve } from 'node:path'
+import { dirname, matchesGlob, relative, resolve } from 'node:path'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 import {
 	arrayOf,
@@ -80,6 +83,7 @@ import {
 } from '@src/core'
 import {
 	CAPTURE_DEFAULTS,
+	CAPTURE_COMMAND_NAMES,
 	CAPTURE_DISCOVERY,
 	CAPTURE_OPTION_FLAGS,
 	CAPTURE_OWNER_PREFIX,
@@ -104,6 +108,97 @@ import {
  */
 export function computeCaptureHash(bytes: string | Uint8Array): string {
 	return createHash('sha256').update(bytes).digest('hex')
+}
+
+/**
+ * Classifies changed paths through accepted patterns and reduces owners by ancestry.
+ *
+ * @param paths - Git paths, including removed paths that no longer exist
+ * @param entries - The authenticated accepted registry destinations
+ * @returns Sorted path classifications and sorted minimal owners; shared patterns take precedence
+ * @example
+ * ```ts
+ * buildCaptureChangePlan(['README.md'], []).changes
+ * // [{ path: 'README.md', classification: 'outside', owners: [] }]
+ * ```
+ */
+export function buildCaptureChangePlan(
+	paths: readonly string[],
+	entries: readonly CaptureDestination[],
+): CaptureChangePlan {
+	const population = [...new Set(entries.map(resolveCaptureOwner))].toSorted()
+	const changes = [...new Set(paths)].toSorted().map((path): CaptureChange => {
+		if (
+			entries.some((entry) =>
+				[...entry.sources.shared, ...entry.sources.tests].some((pattern) =>
+					matchesGlob(path, pattern),
+				),
+			)
+		)
+			return { path, classification: 'shared', owners: population }
+		const owners = [
+			...new Set(
+				entries
+					.filter((entry) => entry.sources.own.some((pattern) => matchesGlob(path, pattern)))
+					.map(resolveCaptureOwner),
+			),
+		].toSorted()
+		return { path, classification: owners.length === 0 ? 'outside' : 'own', owners }
+	})
+	const owners = [
+		...new Set(
+			changes
+				.filter((change) => change.classification === 'own')
+				.flatMap((change) => change.owners),
+		),
+	].toSorted()
+	return {
+		changes,
+		owners: owners.filter(
+			(owner) =>
+				!owners.some((ancestor) => ancestor !== owner && matchesCaptureSelector(owner, ancestor)),
+		),
+	}
+}
+
+/**
+ * Renders an exact owner command with the selected variants and filters in host shell syntax.
+ *
+ * @param command - The request command, translated to its executable name, or the registry command
+ * @param parsed - The parsed flags; changed and plan flags are deliberately replaced by the owner
+ * @param selector - The explicit owner or all selector; omitted for a registry refresh
+ * @param root - The workspace that makes the wrapper path relative
+ * @returns The command ready to copy into the host shell
+ * @example
+ * ```ts
+ * renderCaptureCommand('journey', { config: '/repo/journey.ts', variants: [] }, 'pages:mail', '/repo')
+ * // 'capture journey pages:mail --config journey.ts'
+ * ```
+ */
+export function renderCaptureCommand(
+	command: CaptureCommand | 'registry',
+	parsed: CaptureRunnerArguments,
+	selector: string | undefined,
+	root: string,
+): string {
+	return [
+		'capture',
+		command === 'registry' ? command : CAPTURE_COMMAND_NAMES[command],
+		...(selector === undefined ? [] : [selector]),
+		...parsed.variants.flatMap((variant) => ['--variant', variant]),
+		...(parsed.case === undefined ? [] : ['--case', parsed.case]),
+		...(parsed.state === undefined ? [] : ['--state', parsed.state]),
+		'--config',
+		resolveCaptureRelative(root, parsed.config),
+	]
+		.map((argument) =>
+			/^[\w./:-]+$/u.test(argument)
+				? argument
+				: process.platform === 'win32'
+					? `'${argument.replaceAll("'", "''")}'`
+					: `'${argument.replaceAll("'", "'\\''")}'`,
+		)
+		.join(' ')
 }
 
 /**
@@ -804,30 +899,70 @@ export function buildCaptureFilter(
 }
 
 /**
- * Plans the stages of one invocation: the first variant alone, then every other variant together.
+ * Plans one selected journey stage or narrow and remaining frame stages.
  *
  * @remarks
- * A stage with no variant is dropped, so an invocation that does not select the first variant runs
- * the selected variants in one stage. The plan adds no variant the caller did not select.
+ * Journeys run every selected variant together. Frame captures stage the first variant alone and
+ * the remaining variants together. Empty stages are dropped and no unselected variant is added.
  *
  * @param variants - The selected variants in declaration order
  * @param first - The variant the wrapper stages alone first
+ * @param command - The journey or capture command whose stage contract applies
  * @returns The non-empty stages in run order
  *
  * @example
  * ```ts
- * resolveCaptureStages(['wide', 'compact'], 'compact')
+ * resolveCaptureStages(['wide', 'compact'], 'compact', 'capture')
  * // [{ name: 'narrow', variants: ['compact'] }, { name: 'rest', variants: ['wide'] }]
  * ```
  */
 export function resolveCaptureStages(
 	variants: readonly string[],
 	first: string,
+	command: CaptureRequest['command'],
 ): readonly CaptureStagePlan[] {
-	return [
+	if (command === 'journey')
+		return variants.length === 0 ? [] : [{ name: CAPTURE_STAGES.selected, variants: [...variants] }]
+	const stages: readonly CaptureStagePlan[] = [
 		{ name: CAPTURE_STAGES.first, variants: variants.filter((variant) => variant === first) },
 		{ name: CAPTURE_STAGES.rest, variants: variants.filter((variant) => variant !== first) },
-	].filter((stage) => stage.variants.length > 0)
+	]
+	return stages.filter((stage) => stage.variants.length > 0)
+}
+
+/**
+ * Resolves selected producing variants in declaration order and requires their projects.
+ *
+ * @param selected - Explicit variants, or an empty list for every declared variant
+ * @param projects - The discovered host projects
+ * @returns The declared variants the selection includes
+ * @throws Thrown as USAGE for an unknown variant or HOST for missing variant projects.
+ * @example
+ * ```ts
+ * const variants = resolveCaptureVariants(['light-390'], projects)
+ * // ['light-390'] when the wrapper declares its project
+ * ```
+ */
+export function resolveCaptureVariants(
+	selected: readonly string[],
+	projects: readonly CaptureProject[],
+): readonly string[] {
+	const declared = [...new Set(projects.flatMap((project) => project.variants))]
+	for (const variant of selected) {
+		if (!declared.includes(variant))
+			throw new CaptureError(`Unknown variant: ${variant}`, { code: 'USAGE', context: { variant } })
+	}
+	const variants = declared.filter((variant) => selected.length === 0 || selected.includes(variant))
+	if (variants.length === 0)
+		throw new CaptureError('The wrapper declares no journey variants', { code: 'HOST' })
+	for (const variant of variants) {
+		if (!projects.some((project) => project.variant === variant))
+			throw new CaptureError(`The wrapper declares no journey project for ${variant}`, {
+				code: 'HOST',
+				context: { variant },
+			})
+	}
+	return variants
 }
 
 /**
@@ -846,7 +981,7 @@ export function resolveCaptureStages(
  * const args = buildCaptureArguments({
  * 	entry: '/repo/node_modules/vitest/vitest.mjs',
  * 	config: '/repo/vite.journey.config.ts',
- * 	report: '/repo/tmp/units/runs/a/journey-narrow.json',
+ * 	report: '/repo/tmp/units/runs/a/journey-selected.json',
  * 	projects: ['journey:light-390'],
  * 	filter: 'owner:pages:mail',
  * 	closing: 'closes the run',
@@ -884,9 +1019,10 @@ export function buildCaptureArguments(options: CaptureArgumentsOptions): readonl
  * Reads the runner's command line into one selector, its flags, and the resolved wrapper path.
  *
  * @remarks
- * `--state` belongs to `capture` and `stale`, and `--portfolio` to `stale`. Every flag takes one
- * value, only `--variant` repeats, and exactly one positional selector is allowed. An omitted
- * selector is returned as absent so the caller can print its usage with the declared selectors.
+ * `--state` belongs to `capture` and `stale`, and `--portfolio` to `stale`. Journey and capture
+ * accept `--changed <ref>` instead of a selector, with optional valueless `--plan`. Every other
+ * flag takes one value and only `--variant` repeats. A bare invocation leaves its selector absent
+ * so the caller can print usage with the declared selectors.
  *
  * @param argv - The arguments after the entry name
  * @param command - The runner command the flags belong to
@@ -914,6 +1050,12 @@ export function readCaptureArguments(
 	for (const argument of cursor) {
 		if (!argument.startsWith('--')) {
 			positional.push(argument)
+			continue
+		}
+		if (argument === '--plan') {
+			if (values.some((entry) => entry.flag === argument))
+				throw new CaptureError('Repeated option: --plan', { code: 'USAGE' })
+			values.push({ flag: argument, value: 'true' })
 			continue
 		}
 		if (argument === '--state' && command === 'journey')
@@ -946,8 +1088,21 @@ export function readCaptureArguments(
 		throw new CaptureError('Empty case name', { code: 'USAGE' })
 	const portfolio = readFlag(argv, '--portfolio')
 	const selector = positional.at(0)
+	const changed = readFlag(argv, '--changed')
+	const plan = values.some((entry) => entry.flag === '--plan')
+	if ((changed !== undefined || plan) && command === 'stale')
+		throw new CaptureError('--changed and --plan belong to journey and frames', { code: 'USAGE' })
+	if (changed !== undefined && selector !== undefined)
+		throw new CaptureError(
+			'A selector cannot be combined with --changed; use --changed <ref> alone',
+			{ code: 'USAGE' },
+		)
+	if (plan && changed === undefined)
+		throw new CaptureError('--plan requires --changed <ref>', { code: 'USAGE' })
 	return {
 		...(selector === undefined ? {} : { selector }),
+		...(changed === undefined ? {} : { changed }),
+		...(plan ? { plan: true } : {}),
 		config: resolve(root, readFlag(argv, '--config') ?? fallback),
 		variants,
 		...(name === undefined ? {} : { case: name }),

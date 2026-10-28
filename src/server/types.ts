@@ -172,7 +172,7 @@ export type CaptureExecutionHandler = () => Promise<CaptureExecutionResult>
  * const options: CaptureStageOptions = {
  * 	request,
  * 	projects: [project],
- * 	report: 'tmp/captures/states/runs/a/journey-narrow.json',
+ * 	report: 'tmp/captures/states/runs/a/journey-selected.json',
  * 	execute: async () => ({ code: 0, signal: null }),
  * }
  * ```
@@ -502,6 +502,19 @@ export interface CaptureReceiptInput {
  */
 export interface CaptureIntegrityInterface {
 	/**
+	 * Classifies changes since a Git merge-base through the accepted registry.
+	 *
+	 * @param ref - The Git ref whose merge-base with HEAD bounds tracked changes; HEAD selects uncommitted work
+	 * @returns Every tracked or untracked changed path and the reduced owner selection
+	 * @throws Thrown when Git refuses the ref or the accepted registry cannot be authenticated.
+	 * @example
+	 * ```ts
+	 * const plan = integrity.changed('HEAD')
+	 * ```
+	 */
+	changed(ref: string): CaptureChangePlan
+
+	/**
 	 * Reads current full-collection evidence and selects exact declaration destinations.
 	 *
 	 * @param options - The explicit selection; omitted variants derive from authenticated mappings
@@ -571,7 +584,7 @@ export interface CaptureIntegrityInterface {
  * producing variant that project runs, and `variants` lists every variant the wrapper declares.
  * `directory` is the absolute primary portfolio root and `record` the run record template.
  * `inputs` bounds attribution. `closing` is the full name of the case that closes a variant's
- * run, `first` is the variant the runner stages alone before the rest, and `portfolios`
+ * run, `first` is the variant a frame capture stages alone before the rest, and `portfolios`
  * authorizes every physical root a selector may reach through the primary registry. `standalone`
  * lists the roots that keep their own registry, manifest, and lookups beside their directory and
  * have no stamping route; a selector or `--portfolio` that names one reads through that root
@@ -640,11 +653,11 @@ export type CaptureIntegrityHandler = (
  *
  * @example
  * ```ts
- * const stage: CaptureStagePlan = { name: 'narrow', variants: ['light-390'] }
+ * const stage: CaptureStagePlan = { name: 'selected', variants: ['light-390', 'dark-390'] }
  * ```
  */
 export interface CaptureStagePlan {
-	readonly name: string
+	readonly name: 'selected' | 'narrow' | 'rest'
 	readonly variants: readonly string[]
 }
 
@@ -663,7 +676,7 @@ export interface CaptureStagePlan {
  * const options: CaptureArgumentsOptions = {
  * 	entry: '/repo/node_modules/vitest/vitest.mjs',
  * 	config: '/repo/configs/vite.journey.config.ts',
- * 	report: '/repo/tmp/units/runs/a/journey-narrow.json',
+ * 	report: '/repo/tmp/units/runs/a/journey-selected.json',
  * 	projects: ['journey:light-390'],
  * 	filter: 'owner:pages:mail',
  * 	closing: 'closes the run',
@@ -1144,6 +1157,8 @@ export interface CaptureRunnerOptions {
  */
 export interface CaptureRunnerArguments {
 	readonly selector?: string
+	readonly changed?: string
+	readonly plan?: boolean
 	readonly config: string
 	readonly variants: readonly string[]
 	readonly case?: string
@@ -1152,7 +1167,49 @@ export interface CaptureRunnerArguments {
 }
 
 /**
- * Drives owner-selected journeys through narrow and remaining variant stages.
+ * Classifies one changed Git path against accepted source attribution.
+ *
+ * @remarks Shared and test patterns take precedence over ownership; shared owners name every destination owner.
+ * @example
+ * ```ts
+ * const change: CaptureChange = { path: 'src/mail/view.ts', classification: 'own', owners: ['pages:mail'] }
+ * ```
+ */
+export interface CaptureChange {
+	readonly path: string
+	readonly classification: 'own' | 'shared' | 'outside'
+	readonly owners: readonly string[]
+}
+
+/**
+ * Holds changed paths and the stable owner selection reduced by ancestry.
+ *
+ * @example
+ * ```ts
+ * const plan: CaptureChangePlan = { changes: [], owners: [] }
+ * ```
+ */
+export interface CaptureChangePlan {
+	readonly changes: readonly CaptureChange[]
+	readonly owners: readonly string[]
+}
+
+/**
+ * Records one changed owner's exit and whether an execution child started.
+ *
+ * @example
+ * ```ts
+ * const outcome: CaptureOwnerOutcome = { owner: 'pages:mail', code: 0, ran: true }
+ * ```
+ */
+export interface CaptureOwnerOutcome {
+	readonly owner: string
+	readonly code: number
+	readonly ran: boolean
+}
+
+/**
+ * Drives selected owners through one journey stage or staged frame captures.
  *
  * @example
  * ```ts

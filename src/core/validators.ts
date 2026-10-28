@@ -185,8 +185,8 @@ export function isCaptureSources(value: unknown): value is CaptureSources {
  *
  * @example
  * ```ts
- * isCaptureIdentity({ id: 'run-1', stage: 'narrow', pid: 4242, config: 'configs/journey.ts' }) // true
- * isCaptureIdentity({ id: 'run-1', stage: 'narrow', pid: 0, config: 'configs/journey.ts' }) // false
+ * isCaptureIdentity({ id: 'run-1', stage: 'selected', pid: 4242, config: 'configs/journey.ts' }) // true
+ * isCaptureIdentity({ id: 'run-1', stage: 'selected', pid: 0, config: 'configs/journey.ts' }) // false
  * ```
  */
 export function isCaptureIdentity(value: unknown): value is CaptureIdentity {

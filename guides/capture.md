@@ -175,7 +175,10 @@ Engine, runner, preflight, and contact-sheet contracts from [`types.ts`](../src/
 | `CaptureProject`                | interface | Preserves the wrapper's host declarations for the runner.                                                                 |
 | `CaptureRunnerOptions`          | interface | Configures one runner invocation: its command, its workspace, and the command line it reads.                              |
 | `CaptureRunnerArguments`        | interface | Carries parsed runner arguments while leaving omitted selectors available to the usage diagnostic.                        |
-| `CaptureRunnerInterface`        | interface | Drives owner-selected journeys through narrow and remaining variant stages.                                               |
+| `CaptureRunnerInterface`        | interface | Drives selected owners through one journey stage or staged frame captures.                                                |
+| `CaptureChange`                 | interface | Classifies one changed Git path against accepted source attribution.                                                      |
+| `CaptureChangePlan`             | interface | Holds changed paths and the stable owner selection reduced by ancestry.                                                   |
+| `CaptureOwnerOutcome`           | interface | Records one changed owner's exit and whether an execution child started.                                                  |
 | `CaptureWriteHandler`           | type      | Writes one chunk of runner output to the stream the host chooses.                                                         |
 | `CaptureIntegrityHandler`       | type      | Creates the integrity engine the runner reads and stamps through, from the options it derives.                            |
 | `CaptureStagePlan`              | interface | Names one planned stage and the variants it runs in one Vitest process.                                                   |
@@ -224,8 +227,8 @@ The runner's names and bounds from [`constants.ts`](../src/server/constants.ts).
 | ------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CAPTURE_COMMAND_NAMES`  | const | Names the executable subcommand each runner command answers to.                                                                                                                                                                 |
 | `CAPTURE_EXIT`           | const | Holds the exit status each runner outcome maps to.                                                                                                                                                                              |
-| `CAPTURE_STAGES`         | const | Names the two stages a runner invocation plans: the first variant alone, then the rest together.                                                                                                                                |
-| `CAPTURE_OPTION_FLAGS`   | const | Lists the command-line flags the runner reads, each followed by exactly one value.                                                                                                                                              |
+| `CAPTURE_STAGES`         | const | Names the selected journey stage and the narrow and remaining frame stages.                                                                                                                                                     |
+| `CAPTURE_OPTION_FLAGS`   | const | Lists the runner flags that take exactly one value.                                                                                                                                                                             |
 | `CAPTURE_TAG_OPERATORS`  | const | Lists the words a tag name can never be, because a tag filter reads them as operators.                                                                                                                                          |
 | `CAPTURE_OWNER_PREFIX`   | const | Names the tag prefix that marks a case's owner path and each ancestor of it.                                                                                                                                                    |
 | `CAPTURE_FLAG`           | const | Names the environment variable that turns frame capture on for a Vitest child.                                                                                                                                                  |
@@ -276,7 +279,10 @@ Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry
 | `resolveCaptureRelative`       | function | Resolves a path to the slash-separated form the evidence documents store, relative to a root.             |
 | `escapeCapturePattern`         | function | Escapes every regular-expression metacharacter so a case name matches only itself.                        |
 | `buildCaptureFilter`           | function | Builds the tag expression that selects an owner population, and its capture tags for frames.              |
-| `resolveCaptureStages`         | function | Plans the stages of one invocation: the first variant alone, then every other variant together.           |
+| `resolveCaptureStages`         | function | Plans one selected journey stage or narrow and remaining frame stages.                                    |
+| `resolveCaptureVariants`       | function | Resolves selected producing variants in declaration order and requires their projects.                    |
+| `buildCaptureChangePlan`       | function | Classifies changed paths through accepted patterns and reduces owners by ancestry.                        |
+| `renderCaptureCommand`         | function | Renders an exact owner command with the selected variants and filters in host shell syntax.               |
 | `buildCaptureArguments`        | function | Builds the exact Node argument array that spawns one Vitest stage.                                        |
 | `readCaptureArguments`         | function | Reads the runner's command line into one selector, its flags, and the resolved wrapper path.              |
 | `readCapturePortfolios`        | function | Reads the physical portfolio roots a wrapper declares and refuses a malformed or repeated root.           |
@@ -311,7 +317,7 @@ The integrity engine from [`CaptureIntegrity.ts`](../src/server/CaptureIntegrity
 | ------------------------ | -------- | ------------------------------------------------------------------------------------------------------------ |
 | `CaptureIntegrity`       | class    | Validates capture transactions, freshness, and state lookup against real filesystem evidence.                |
 | `createCaptureIntegrity` | function | Creates the integrity engine bound to an explicit workspace and host portfolio mapping.                      |
-| `CaptureRunner`          | class    | Drives owner-selected journeys through narrow and remaining variant stages.                                  |
+| `CaptureRunner`          | class    | Drives selected owners through one journey stage or staged frame captures.                                   |
 | `CaptureInvocation`      | class    | Owns one runner invocation's identity, request file, children, and interruption.                             |
 | `CaptureDiscovery`       | class    | Reads a consumer's wrapper by running the consumer's installed Vitest in discovery mode.                     |
 | `createCaptureDiscovery` | function | Creates the discovery that reads a consumer's wrapper through the consumer's own Vitest.                     |
@@ -327,12 +333,13 @@ The integrity engine from [`CaptureIntegrity.ts`](../src/server/CaptureIntegrity
 
 #### `CaptureIntegrityInterface`
 
-| Name     | Summary                                                                                  |
-| -------- | ---------------------------------------------------------------------------------------- |
-| `read`   | Reads current full-collection evidence and selects exact declaration destinations.       |
-| `stamp`  | Validates an executed stage before atomically publishing its authorized evidence.        |
-| `check`  | Checks the explicitly selected output population without changing evidence or images.    |
-| `lookup` | Resolves an explicitly requested state through fresh registry and passing case evidence. |
+| Name      | Summary                                                                                  |
+| --------- | ---------------------------------------------------------------------------------------- |
+| `read`    | Reads current full-collection evidence and selects exact declaration destinations.       |
+| `stamp`   | Validates an executed stage before atomically publishing its authorized evidence.        |
+| `check`   | Checks the explicitly selected output population without changing evidence or images.    |
+| `lookup`  | Resolves an explicitly requested state through fresh registry and passing case evidence. |
+| `changed` | Classifies changes since a Git merge-base through the accepted registry.                 |
 
 #### `CaptureDiscoveryInterface`
 
@@ -430,7 +437,40 @@ const exit = await runner.execute() // 0 when every stage passed and work ran
 
 The exit is 0 when every stage is green and work ran, 1 for a failed stage, an interrupt, or an empty workload, and 64 for a refused command line or selection. The runner branches on the `USAGE` condition of a `CaptureError`, never on message text. Every refusal that precedes a spawn is `USAGE`; a wrapper fault is `HOST`; a stage that failed or was interrupted is `STAGE`.
 
-**Stages.** The `first` variant runs alone in the `narrow` stage, and every other selected variant shares the `rest` stage in declaration order. A selection that omits the first variant runs in the `rest` stage alone, and the runner adds no variant the caller did not select. The runner stops at the first stage that fails and runs one Vitest process at a time. When the first stage finds no applicable work it prints that the rest stage carries the selector and continues. An invocation in which no requested project held applicable work exits 1.
+**Journey stage.** A journey runs all selected variants in declaration order in one execution child with `--bail=1`, under the stage name `selected`. Its stage line names every selected variant, its request carries that same list, and one stamping transaction validates all selected records before publishing lookup and collection receipts. Records remain keyed by run, stage, and variant at `<directory>/runs/<id>/selected/<variant>.json`. A failed, bailed, or interrupted child publishes no evidence from that stage. An invocation with no applicable work exits 1.
+
+**Frame stages.** `frames` keeps the `first` variant alone in `narrow`, then every other selected variant together in `rest`, so narrow frames can be inspected first. Omitting the first variant runs only `rest`; the runner adds no unselected variant. A failed stage stops later stages. An inapplicable narrow stage prints why the rest stage carries the selector and continues. A `STAGES` JSON line names the stages run, passed, failed, and not run, with the reason, followed by an exact `NEXT` command.
+
+**Changed selection.** For journey or frames, use `--changed <ref>` instead of a selector. The flag takes exactly one Git ref and cannot accompany a positional selector. `HEAD` selects uncommitted work. The engine authenticates the accepted registry, resolves the ref's merge-base with HEAD, reads `git diff --name-only --no-renames -z <merge-base> --`, and adds `git ls-files --others --exclude-standard -z`. Renames contribute both paths; deleted paths and names containing spaces remain intact. An unknown ref exits 64 with Git's diagnostic. A missing registry prints `Missing accepted registry; run the explicit complete-registry refresh` and the exact registry command.
+
+Each path gets exactly one class through the registry's native glob patterns. `own` matches a destination's own sources and names every matching owner. `shared` matches any shared or test pattern and names every destination owner; it takes precedence when a path also matches own sources. `outside` matches no source pattern and names no owner. The selected owners come from own paths, sorted and reduced by colon-delimited ancestry, so selecting a page drops its selected sections.
+
+**Plan.** Add `--plan` to `--changed` to print a `CHANGE` JSON line per path, then `COMMAND` lines containing the exact per-owner commands. The plan uses the read-only discovery child to learn the wrapper declarations and starts no execution child. It exits 0 for a runnable or empty plan and 64 for a refused plan. A `SUMMARY` JSON line says what ran, passed, failed, and did not run, with the reason; `NEXT` lines give the commands to execute. For a mail source change, the plan includes these lines:
+
+```text
+CHANGE {"path":"src/mail/view.ts","classification":"own","owners":["pages:mail"]}
+COMMAND capture journey pages:mail --config configs/app/vite.journey.config.ts
+SUMMARY {"run":[],"passed":[],"failed":[],"notrun":["pages:mail"],"reason":"--plan starts no execution child"}
+NEXT capture journey pages:mail --config configs/app/vite.journey.config.ts
+```
+
+Any shared path refuses the whole changed run with exit 64, listing those paths and explaining that every destination reads them, so they cannot be narrowed. The output includes per-owner commands for own changes and `capture journey all` with the effective wrapper and variant flags for the shared proof. No owner starts automatically. Without own or shared paths, an execution exits 1 with `No journey input changed` and lists the outside paths.
+
+Without `--plan`, the runner executes each reduced owner through the ordinary single-selector path in stable order and stops at the first red owner. Every owner gets a distinct run ID, so its stage records remain available. The final `SUMMARY` names owners run, passed, failed, and not run, gives the stopping reason, and prints the exact commands for failed and unrun owners. `--variant`, `--case`, and the frames-only `--state` retain their ordinary meanings; a command printed for the shared proof carries no case or state narrowing. The changed flags never enter the request protocol.
+
+### Choosing what to run
+
+Climb from the smallest applicable selection to the gate:
+
+- One case on one variant: `capture journey pages:mail --case 'mail shows the inbox' --variant light-390`.
+- The changed set: inspect `capture journey --changed HEAD --plan`, then run `capture journey --changed HEAD`. For frames, use `capture frames --changed HEAD --plan`, then `capture frames --changed HEAD`.
+- A section or page: `capture journey pages:mail:inbox` or `capture journey pages:mail`.
+- A group: `capture journey pages`.
+- The gate: `capture journey all`.
+
+Use only owner and case names the wrapper declares. Follow a refusal's exact next commands before widening a selection.
+
+### Runner selection and process protocol
 
 **Selection.** A selector is `all` or an owner path the wrapper's tags declare; each segment is checked, and the refusal names the first unknown one, labelled `scope` at the first depth and `owner` below it. A journey filters on `owner:<selector>`. A capture also intersects the capture tag, which is the selector's scope and part, and `all` unions every declared scope. `--case` selects one case by its exact full name, and the runner passes the anchored pattern for that case and the closing case with every regular-expression metacharacter quoted. `--state` asks the engine for the declaring case and refuses, before any process starts, when the engine's evidence is missing, stale, or ambiguous.
 
@@ -541,14 +581,14 @@ const exit = await registrar.execute() // 0 when the registry was published
 
 The `capture` executable is one entry that dispatches six subcommands, each a thin call into a server factory. It declares nothing itself.
 
-- `capture journey <selector>` calls `createCaptureRunner` with the `journey` command and reads `--variant` (repeats), `--case`, and `--config`.
-- `capture frames <selector>` calls `createCaptureRunner` with the `capture` command and reads `--variant` (repeats), `--case`, `--state`, and `--config`.
+- `capture journey <selector>` calls `createCaptureRunner` with the `journey` command and reads `--variant` (repeats), `--case`, and `--config`. Replace the selector with `--changed <ref>` and optionally add `--plan`.
+- `capture frames <selector>` calls `createCaptureRunner` with the `capture` command and reads `--variant` (repeats), `--case`, `--state`, and `--config`. Replace the selector with `--changed <ref>` and optionally add `--plan`.
 - `capture stale <selector>` calls `createCaptureRunner` with the `stale` command and reads `--variant` (repeats), `--case`, `--state`, `--portfolio`, and `--config`.
 - `capture preflight <selector>` calls `createCapturePreflight` and reads `--variant` (repeats), `--state`, `--case`, `--portfolio`, `--config`, `--journeys`, and `--checks`.
 - `capture sheets <selector> --output <directory>` calls `createCaptureSheets` with the preflight's flags and a required `--output`.
 - `capture registry` calls `createCaptureRegistrar` and reads `--variant` (repeats), `--mode`, and `--config`.
 
-`frames` runs the request command `capture`, because `capture capture` would stutter. A flag takes exactly one value, only `--variant` repeats, and an unknown, repeated, misplaced, or valueless flag is refused. The executable falls back to `CAPTURE_DEFAULTS` when the command line names none: the wrapper `configs/app/vite.journey.config.ts`, the request directory `tmp/capture`, and the journey artifact directory `tmp/journey`. The request directory reaches the wrapper through `CAPTURE_REQUESTS`, so the wrapper repeats nothing.
+`frames` runs the request command `capture`, because `capture capture` would stutter. Every flag except the valueless `--plan` takes exactly one value, only `--variant` repeats, and an unknown, repeated, misplaced, or valueless value flag is refused. The `--flag=value` form is refused. The executable falls back to `CAPTURE_DEFAULTS` when the command line names none: the wrapper `configs/app/vite.journey.config.ts`, the request directory `tmp/capture`, and the journey artifact directory `tmp/journey`. The request directory reaches the wrapper through `CAPTURE_REQUESTS`, so the wrapper repeats nothing.
 
 **Exit.** 0 when the work passed, 1 when a stage failed, the selection held no work, a reading found a stale or unsound frame, or the evidence refused, and 64 when the command line was refused. Every refusal prints on the error stream and teaches: it names the subject, the flag or value that was wrong, and the usage line, and the executable prints the whole usage text beside an unknown or missing command. The preflight takes no `--output`, which belongs to the sheets, and the sheets require one.
 

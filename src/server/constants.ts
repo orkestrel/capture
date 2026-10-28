@@ -30,17 +30,21 @@ export const CAPTURE_COMMAND_NAMES = Object.freeze({
 export const CAPTURE_EXIT = Object.freeze({ passed: 0, failed: 1, usage: 64 } as const)
 
 /**
- * Names the two stages a runner invocation plans: the first variant alone, then the rest together.
+ * Names the selected journey stage and the narrow and remaining frame stages.
  *
  * @example
  * ```ts
  * CAPTURE_STAGES.first // 'narrow'
  * ```
  */
-export const CAPTURE_STAGES = Object.freeze({ first: 'narrow', rest: 'rest' } as const)
+export const CAPTURE_STAGES = Object.freeze({
+	selected: 'selected',
+	first: 'narrow',
+	rest: 'rest',
+} as const)
 
 /**
- * Lists the command-line flags the runner reads, each followed by exactly one value.
+ * Lists the runner flags that take exactly one value.
  *
  * @example
  * ```ts
@@ -53,6 +57,7 @@ export const CAPTURE_OPTION_FLAGS: readonly string[] = Object.freeze([
 	'--case',
 	'--state',
 	'--portfolio',
+	'--changed',
 ])
 
 /**
@@ -319,10 +324,15 @@ export const CAPTURE_USAGE = [
 	'Usage: capture <command> [arguments]',
 	'Commands:',
 	'  journey <selector> [--variant <name>]... [--case <full name>] [--config <file>]',
+	'  journey --changed <ref> [--plan] [--variant <name>]... [--case <full name>] [--config <file>]',
 	'  frames <selector> [--variant <name>]... [--case <full name>] [--state <name>] [--config <file>]',
+	'  frames --changed <ref> [--plan] [--variant <name>]... [--case <full name>] [--state <name>] [--config <file>]',
 	'  stale <selector> [--variant <name>]... [--case <full name>] [--state <name>] [--portfolio <name>] [--config <file>]',
 	'  preflight <selector> [--variant <name>]... [--state <name>] [--case <full name>] [--portfolio <name>] [--config <file>] [--journeys <directory>] [--checks <module>]',
 	'  sheets <selector> --output <new directory> [--variant <name>]... [--state <name>] [--case <full name>] [--portfolio <name>] [--config <file>] [--journeys <directory>] [--checks <module>]',
 	'  registry [--variant <name>]... [--mode <name>] [--config <file>]',
+	'--changed takes one Git ref; HEAD selects uncommitted work. It cannot accompany a selector.',
+	'--plan requires --changed and prints paths and commands after read-only discovery; no execution child starts.',
+	'Only --variant repeats. Every flag except --plan takes exactly one value; --flag=value is refused.',
 	'Exit: 0 passed, 1 failed or refused by the evidence, 64 refused usage.',
 ].join('\n')

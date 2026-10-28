@@ -27,7 +27,7 @@ import {
 } from '../../setupServer.js'
 
 // A stage line is printed only when an execution child is about to start; discovery prints none.
-const STAGE_LINE = /^(?:journey|capture) (?:narrow|rest):/mu
+const STAGE_LINE = /^(?:journey|capture) (?:selected|narrow|rest):/mu
 const INTEGRITY = 'INTEGRITY '
 
 function readInvocation(stdout: string): string {
@@ -83,6 +83,7 @@ describe.each(RUNNER_COMMANDS)(
 	'CaptureRunner %s command',
 	{ timeout: FIXTURE_TIMEOUT },
 	(command) => {
+		const stage = command === 'journey' ? 'selected' : 'narrow'
 		it.each(RUNNER_REFUSALS)(
 			'refuses $title before any execution child starts',
 			async (refusal) => {
@@ -110,10 +111,10 @@ describe.each(RUNNER_COMMANDS)(
 				QUOTED,
 			])
 			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
-			const request = readRequest(base, run.stdout, 'narrow', COMPOSED_FIRST)
+			const request = readRequest(base, run.stdout, stage, COMPOSED_FIRST)
 			expect(request).toMatchObject({
 				version: 1,
-				stage: 'narrow',
+				stage,
 				command,
 				selector: 'pages:mail',
 				case: QUOTED,
@@ -135,18 +136,34 @@ describe.each(RUNNER_COMMANDS)(
 			expect(pattern.test(`x${READER_CLOSING}`)).toBe(false)
 			expect(run.stdout).toMatch(/^pid=\d+\n/mu)
 			expect(
-				base.read(`${base.requests}/runs/${readInvocation(run.stdout)}/${command}-narrow.log`),
+				base.read(`${base.requests}/runs/${readInvocation(run.stdout)}/${command}-${stage}.log`),
 			).toBeDefined()
 			expect(readHeld(base)).toEqual([])
 			expect(readReceipt(base)).toMatchObject({ requests: resolve(base.root, base.requests) })
 		})
 
-		it('runs the first variant alone, then the others together, in declaration order', async () => {
+		it('runs journeys in one selected stage and frames in narrow then rest stages', async () => {
 			const run = await base.run(command, ['pages:mail'])
 			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
-			expect(run.stdout).toContain(`${command} narrow: ${COMPOSED_FIRST};`)
-			expect(run.stdout).toContain(
-				`${command} rest: ${VARIANTS.filter((variant) => variant !== COMPOSED_FIRST).join(', ')};`,
+			const lines = run.stdout.split(/\r\n|\n/u).filter((line) => STAGE_LINE.test(line))
+			expect(lines).toHaveLength(command === 'journey' ? 1 : 2)
+			expect(lines[0]).toContain(
+				command === 'journey'
+					? `journey selected: ${VARIANTS.join(', ')};`
+					: `capture narrow: ${COMPOSED_FIRST};`,
+			)
+			expect(
+				run.stdout.split(/\r\n|\n/u).filter((line) => line.startsWith(INTEGRITY)),
+			).toHaveLength(command === 'journey' ? 1 : 2)
+			const requests = (command === 'journey' ? VARIANTS : []).map((variant) =>
+				readRequest(base, run.stdout, 'selected', variant),
+			)
+			expect(
+				requests.map((request) => [request?.variants, request?.args.includes('--bail=1')]),
+			).toEqual(command === 'journey' ? VARIANTS.map(() => [VARIANTS, true]) : [])
+			const rest = `capture rest: ${VARIANTS.filter((variant) => variant !== COMPOSED_FIRST).join(', ')};`
+			expect(lines.slice(1).map((line) => line.includes(rest))).toEqual(
+				command === 'journey' ? [] : [true],
 			)
 			for (const variant of VARIANTS)
 				expect(run.stdout).toMatch(
@@ -157,7 +174,9 @@ describe.each(RUNNER_COMMANDS)(
 		it('adds no variant the caller did not select, and runs a lone non-first variant in one stage', async () => {
 			const run = await base.run(command, ['pages:mail', '--variant', 'dark-390'])
 			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
-			expect(run.stdout).toContain(`${command} rest: dark-390;`)
+			expect(run.stdout).toContain(
+				`${command} ${command === 'journey' ? 'selected' : 'rest'}: dark-390;`,
+			)
 			expect(run.stdout).not.toContain(`${command} narrow:`)
 		})
 
@@ -165,7 +184,7 @@ describe.each(RUNNER_COMMANDS)(
 			const owner = await base.run(command, ['examples:files', '--variant', COMPOSED_FIRST])
 			const all = await base.run(command, ['all', '--variant', COMPOSED_FIRST])
 			const filters = [owner, all].map((run) =>
-				readFilter(readRequest(base, run.stdout, 'narrow', COMPOSED_FIRST)?.args),
+				readFilter(readRequest(base, run.stdout, stage, COMPOSED_FIRST)?.args),
 			)
 			expect(filters).toEqual(
 				command === 'journey'
@@ -182,7 +201,7 @@ describe.each(RUNNER_COMMANDS)(
 				environment: { CAPTURE_PRODUCER_MODE: 'failed-child' },
 			})
 			expect(run.code).toBe(1)
-			expect(run.stdout).toContain(`${command} narrow:`)
+			expect(run.stdout).toContain(`${command} ${stage}:`)
 			expect(run.stdout).not.toContain(`${command} rest:`)
 			expect(readHeld(base)).toEqual([])
 		})
@@ -200,17 +219,25 @@ describe.each(RUNNER_COMMANDS)(
 			expect(readHeld(base)).toEqual([])
 		})
 
-		it('keeps the rest stage when only the first variant held no work', async () => {
+		it('keeps applicable variants when the first variant held no work', async () => {
 			const fixture = new ComposedFixture({ first: 'light-1280' })
 			try {
 				fixture.seed()
 				const run = await fixture.run(command, ['examples:files'])
 				expect(run.code === 0 ? 0 : run.stderr).toBe(0)
-				expect(run.stdout).toContain(
-					'light-1280 is inapplicable; the rest stage carries examples:files when requested',
-				)
-				expect(run.stdout).toContain(`${command} narrow: light-1280;`)
-				expect(run.stdout).toContain(`${command} rest: dark-1280, light-390, dark-390;`)
+				const expected =
+					command === 'capture'
+						? {
+								present: [
+									'light-1280 is inapplicable; the rest stage carries examples:files when requested',
+									'capture narrow: light-1280;',
+									'capture rest: dark-1280, light-390, dark-390;',
+								],
+								absent: [],
+							}
+						: { present: [`journey selected: ${VARIANTS.join(', ')};`], absent: ['rest stage'] }
+				for (const text of expected.present) expect(run.stdout).toContain(text)
+				for (const text of expected.absent) expect(run.stdout).not.toContain(text)
 			} finally {
 				fixture.destroy()
 			}
@@ -219,6 +246,234 @@ describe.each(RUNNER_COMMANDS)(
 )
 
 describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('refuses a changed plan without an accepted registry and prints the exact refresh command', async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			const run = await fixture.run('journey', ['--changed', 'HEAD', '--plan'])
+			expect(run.code).toBe(64)
+			expect(run.stderr).toContain(
+				'Missing accepted registry; run the explicit complete-registry refresh',
+			)
+			expect(run.stderr).toContain(`NEXT capture registry --config '${fixture.config}'`)
+			expect(fixture.stages).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints a changed plan with exact commands and starts no execution child', async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			fixture.seed()
+			fixture.write('src/mail/a view.ts', '// untracked own\n')
+			const run = await fixture.run('journey', [
+				'--changed',
+				'HEAD',
+				'--plan',
+				'--variant',
+				COMPOSED_FIRST,
+			])
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+			expect(fixture.stages).toEqual([])
+			expect(run.stdout).toContain(
+				'CHANGE {"path":"src/mail/a view.ts","classification":"own","owners":["pages:mail"]}',
+			)
+			expect(run.stdout).toContain(
+				`COMMAND capture journey pages:mail --variant ${COMPOSED_FIRST} --config '${fixture.config}'`,
+			)
+			expect(run.stdout).toContain('"notrun":["pages:mail"]')
+			expect(run.stdout).toContain('--plan starts no execution child')
+			expect(run.stdout).not.toMatch(STAGE_LINE)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('refuses shared inputs in plans and runs, lists the paths, and prints own and full journey commands', async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			fixture.seed()
+			fixture.write('src/mail/view.ts', '// own\n')
+			fixture.write('src/shared/theme.ts', '// shared\n')
+			fixture.write('behavior/journeys.ts', '// test\n')
+			for (const flags of [[], ['--plan']]) {
+				const run = await fixture.run('capture', [
+					'--changed',
+					'HEAD',
+					'--variant',
+					COMPOSED_FIRST,
+					...flags,
+				])
+				expect(run.code).toBe(64)
+				expect(run.stderr).toContain('every destination reads them')
+				expect(run.stderr).toContain('src/shared/theme.ts')
+				expect(run.stderr).toContain('behavior/journeys.ts')
+				expect(run.stdout).toContain(
+					`NEXT capture frames pages:mail --variant ${COMPOSED_FIRST} --config '${fixture.config}'`,
+				)
+				expect(run.stdout).toContain(
+					`NEXT capture journey all --variant ${COMPOSED_FIRST} --config '${fixture.config}'`,
+				)
+				expect(fixture.stages).toEqual([])
+			}
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('reports no journey input for an unchanged source tree and lists outside paths without running', async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			fixture.seed()
+			const unchanged = await fixture.run('journey', ['--changed', 'HEAD'])
+			expect(unchanged.code).toBe(1)
+			expect(unchanged.stdout).toContain('No journey input changed')
+			fixture.write('outside.ts', '// outside\n')
+			const outside = await fixture.run('journey', ['--changed', 'HEAD', '--plan'])
+			expect(outside.code).toBe(0)
+			expect(outside.stdout).toContain(
+				'CHANGE {"path":"outside.ts","classification":"outside","owners":[]}',
+			)
+			expect(outside.stdout).toContain('No journey input changed')
+			expect(fixture.stages).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('refuses unknown refs and selector-plus-changed before execution', async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			fixture.seed()
+			const unknown = await fixture.run('journey', ['--changed', 'missing-ref', '--plan'])
+			expect(unknown.code).toBe(64)
+			expect(unknown.stderr).toContain('fatal:')
+			const mixed = await fixture.run('journey', ['pages:mail', '--changed', 'HEAD'])
+			expect(mixed.code).toBe(64)
+			expect(mixed.stderr).toContain('A selector cannot be combined with --changed')
+			expect(fixture.stages).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints a refused plan when state lookup would refuse the ordinary frame command', async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			fixture.seed()
+			fixture.write('src/mail/view.ts', '// changed\n')
+			const run = await fixture.run('capture', [
+				'--changed',
+				'HEAD',
+				'--plan',
+				'--state',
+				'mail-reader',
+				'--variant',
+				COMPOSED_FIRST,
+			])
+			expect(run.code).toBe(64)
+			expect(run.stdout).toContain('"classification":"own"')
+			expect(run.stdout).toContain('COMMAND capture frames pages:mail')
+			expect(fixture.stages).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('runs separate owner invocations in stable order and retains each record', async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			fixture.seed({ variants: ['light-1280'] })
+			fixture.write('src/board/view.ts', '// board\n')
+			fixture.write('src/mail/view.ts', '// mail\n')
+			const run = await fixture.run('journey', ['--changed', 'HEAD', '--variant', 'light-1280'])
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+			expect(fixture.stages.map((request) => request.selector)).toEqual([
+				'examples:board',
+				'pages:mail',
+			])
+			expect(new Set(fixture.stages.map((request) => request.id)).size).toBe(2)
+			for (const request of fixture.stages) {
+				expect(request.stage).toBe('selected')
+				expect(request.variants).toEqual(['light-1280'])
+				expect(
+					isCaptureRun(
+						parseJSON(
+							fixture
+								.read(`${COMPOSED_DIRECTORY}/runs/${request.id}/selected/light-1280.json`)
+								.toString('utf8'),
+						),
+					),
+				).toBe(true)
+			}
+			expect(run.stdout).toContain(
+				'"passed":["examples:board","pages:mail"],"failed":[],"notrun":[]',
+			)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('stops a changed run at the first red owner and names the owners not run and their exact commands', async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			fixture.seed({ variants: ['light-1280'] })
+			fixture.write('src/board/view.ts', '// board\n')
+			fixture.write('src/mail/view.ts', '// mail\n')
+			const run = await fixture.run('journey', ['--changed', 'HEAD', '--variant', 'light-1280'], {
+				environment: { CAPTURE_PRODUCER_MODE: 'failed-child' },
+			})
+			expect(run.code).toBe(1)
+			expect(fixture.stages.map((request) => request.selector)).toEqual(['examples:board'])
+			expect(run.stdout).toContain(
+				'"run":["examples:board"],"passed":[],"failed":["examples:board"],"notrun":["pages:mail"]',
+			)
+			expect(run.stdout).toContain('stopped at the first red owner')
+			expect(run.stdout).toContain(
+				`NEXT capture journey pages:mail --variant light-1280 --config '${fixture.config}'`,
+			)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('keeps the narrow then rest stages when changed frames select an owner', async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			fixture.seed()
+			fixture.write('src/mail/view.ts', '// own\n')
+			const run = await fixture.run('capture', ['--changed', 'HEAD'])
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+			expect(fixture.stages.map((request) => request.stage)).toEqual(['narrow', 'rest'])
+			expect(fixture.stages.map((request) => request.selector)).toEqual([
+				'pages:mail',
+				'pages:mail',
+			])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('interrupts a changed owner, stops its process tree, and leaves the next owner unrun', async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			fixture.seed({ variants: ['light-1280'] })
+			fixture.write('src/board/view.ts', '// board\n')
+			fixture.write('src/mail/view.ts', '// mail\n')
+			const run = await fixture.run('journey', ['--changed', 'HEAD', '--variant', 'light-1280'], {
+				environment: { CAPTURE_PRODUCER_MODE: 'hang' },
+				interrupt: 'emit',
+			})
+			expect(run.code).toBe(1)
+			expect(fixture.stages.map((request) => request.selector)).toEqual(['examples:board'])
+			expect(fixture.readReady().filter((pid) => isRunning(pid))).toEqual([])
+			expect(run.stdout).toContain('"notrun":["pages:mail"],"reason":"interrupted"')
+			expect(readHeld(fixture)).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
 	it('removes an inherited capture variable under journey', async () => {
 		const run = await base.run('journey', ['pages:mail', '--variant', COMPOSED_FIRST], {
 			environment: { Capture: '1' },

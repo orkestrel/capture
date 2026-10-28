@@ -70,16 +70,15 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(read.entries.length).toBeGreaterThan(0)
 	})
 
-	it('runs the first variant alone, then the rest, and publishes lookups but stamps no frame', async () => {
+	it('runs every selected variant together and publishes lookups but stamps no frame', async () => {
 		const run = await fixture.run('journey', ['all'])
 		expect(run.code === 0 ? 0 : run.stderr).toBe(0)
-		expect(run.stdout).toContain(`journey narrow: ${COMPOSED_FIRST}; all;`)
-		expect(run.stdout).toContain(
-			`journey rest: ${VARIANTS.filter((variant) => variant !== COMPOSED_FIRST).join(', ')}; all;`,
-		)
+		expect(run.stdout).toContain(`journey selected: ${VARIANTS.join(', ')}; all;`)
+		expect(run.stdout).toContain('"stage":"selected"')
 		expect(run.stdout).toMatch(/journey:light-390: \d+ owner-bearing passed cases/u)
 		const readings = readIntegrity(run.stdout)
-		expect(readings).toHaveLength(2)
+		expect(readings).toHaveLength(1)
+		expect(countChildren(run.stdout)).toBe(2)
 		for (const reading of readings)
 			expect(reading).toMatchObject({ command: 'journey', stamps: 0, lookups: expect.any(Number) })
 		expect(readFixtureManifest(fixture.root)).toBeUndefined()

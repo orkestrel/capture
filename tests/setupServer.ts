@@ -47,7 +47,7 @@ export const FIXTURE_FAULTS = Object.freeze([
 ] as const)
 
 /** Lists the authored declaration populations a fixture child can write. */
-export const FIXTURE_POPULATIONS = Object.freeze(['changed', 'partial', 'files'] as const)
+export const FIXTURE_POPULATIONS = Object.freeze(['changed', 'partial', 'files', 'nested'] as const)
 
 /** Lists the defective journey artifacts a fixture child can write. */
 export const FIXTURE_JOURNALS = Object.freeze(['blind', 'foreign'] as const)
@@ -55,7 +55,7 @@ export const FIXTURE_JOURNALS = Object.freeze(['blind', 'foreign'] as const)
 /** Selects one deliberately invalid external protocol reading or real filesystem mutation. */
 export type FixtureFault = (typeof FIXTURE_FAULTS)[number]
 
-/** Selects an authored declaration population: one changed, one partial, or primary Files states. */
+/** Selects an authored declaration population with changed, partial, Files, or nested owners. */
 export type FixturePopulation = (typeof FIXTURE_POPULATIONS)[number]
 
 /** Selects a defective journey artifact: one without page trees, or one naming another run. */
@@ -392,7 +392,7 @@ export function fixtureDestinations(
 		.filter((entry) => entry.eligible)
 		.flatMap((entry) =>
 			entry.states.map((state) => {
-				const [scope, part] = entry.owner.split(':')
+				const [scope, part, section] = entry.owner.split(':')
 				if (scope === undefined || part === undefined) throw new Error('Invalid fixture owner')
 				const focused = entry.case === FILES && state === 'files-reading'
 				const vue = scope === 'vue'
@@ -402,6 +402,7 @@ export function fixtureDestinations(
 					state,
 					scope,
 					part,
+					...(section === undefined ? {} : { section }),
 					variant,
 					project: `${vue ? 'vue' : 'journey'}:${entry.variant}`,
 					case: entry.case,
@@ -431,19 +432,23 @@ export function writeFixtureOutputs(input: FixtureWrite): void {
 	const reports = input.variants.map((variant) => {
 		const authored = fixtureDeclarations(variant, input.vue)
 		const declarations =
-			input.population === 'partial'
-				? authored.slice(1)
-				: input.population === 'changed'
-					? authored.map((entry) =>
-							entry.case === MAIL ? { ...entry, states: [...entry.states, 'mail-extra'] } : entry,
-						)
-					: input.population === 'files'
+			input.population === 'nested'
+				? authored.map((entry) =>
+						entry.case === MAIL ? { ...entry, owner: 'pages:mail:inbox' } : entry,
+					)
+				: input.population === 'partial'
+					? authored.slice(1)
+					: input.population === 'changed'
 						? authored.map((entry) =>
-								entry.case === FILES
-									? { ...entry, states: [...entry.states, 'files-empty'] }
-									: entry,
+								entry.case === MAIL ? { ...entry, states: [...entry.states, 'mail-extra'] } : entry,
 							)
-						: authored
+						: input.population === 'files'
+							? authored.map((entry) =>
+									entry.case === FILES
+										? { ...entry, states: [...entry.states, 'files-empty'] }
+										: entry,
+								)
+							: authored
 		const full = input.duplicate
 			? [
 					...declarations,

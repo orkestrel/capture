@@ -25,8 +25,8 @@ import { readCaptureRequestOwner, readCaptureRunning } from './helpers.js'
  * Owns one runner invocation's identity, request file, children, and interruption.
  *
  * @remarks
- * The runner creates one per call, so the abort controller, the child registry, the spawn log, and
- * the interrupt flag belong to that call and never to the runner. An interrupt ends each child's
+ * The runner creates one for discovery and each changed owner, so the abort controller, child registry,
+ * spawn log, and interrupt flag belong to an invocation and never to the runner. An interrupt ends each child's
  * process tree through `killTree` on win32, where the platform has no signal a process group can
  * receive, and through `killProcess` on every other host, which signals the detached group.
  *

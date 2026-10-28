@@ -11,6 +11,7 @@ import type {
 	CaptureStoredManifest,
 } from '@src/core'
 import type {
+	CaptureChangePlan,
 	CaptureCheckOptions,
 	CaptureCheckResult,
 	CaptureCollectionEvidence,
@@ -82,6 +83,7 @@ import {
 	validateCaptureRun,
 } from '@src/core'
 import {
+	buildCaptureChangePlan,
 	buildCaptureDigest,
 	buildCaptureLookupJournal,
 	computeCaptureHash,
@@ -160,6 +162,38 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				code: 'HOST',
 			})
 		for (const entry of options.portfolios) this.#path(entry.directory)
+	}
+
+	/**
+	 * Classifies changes since a Git merge-base through the accepted registry.
+	 *
+	 * @param ref - The Git ref whose merge-base with HEAD bounds tracked changes; HEAD selects uncommitted work
+	 * @returns Every tracked or untracked changed path and the reduced owner selection
+	 * @throws Thrown when Git refuses the ref or the accepted registry cannot be authenticated.
+	 * @example
+	 * ```ts
+	 * const plan = integrity.changed('HEAD')
+	 * ```
+	 */
+	changed(ref: string): CaptureChangePlan {
+		const registry = this.#registry(new Map(), new Map())
+		try {
+			const commit = this.#git([
+				'rev-parse',
+				'--verify',
+				'--end-of-options',
+				`${ref}^{commit}`,
+			]).trim()
+			const base = this.#git(['merge-base', commit, 'HEAD']).trim()
+			const tracked = this.#git(['diff', '--name-only', '--no-renames', '-z', base, '--'])
+			const untracked = this.#git(['ls-files', '--others', '--exclude-standard', '-z'])
+			return buildCaptureChangePlan(
+				[tracked, untracked].flatMap((text) => text.split('\0').filter((path) => path !== '')),
+				registry.entries,
+			)
+		} catch (error) {
+			throw new CaptureError(describeCaptureError(error), { code: 'USAGE', cause: error })
+		}
 	}
 
 	/**

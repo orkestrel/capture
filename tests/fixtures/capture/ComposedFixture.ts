@@ -1,10 +1,13 @@
+import type { CaptureRequest } from '@src/core'
 import type { CaptureCommand } from '@src/server'
 import type { ComposedExecution, ComposedRun } from '../../setupServer.js'
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
 import { waitForCondition } from '@orkestrel/test'
 import { isRunning } from '@orkestrel/test/server'
+import { isCaptureRequest } from '@src/core'
 import { createCaptureRegistrar, createCaptureRunner } from '@src/server'
 import {
 	COMPOSED_REQUESTS,
@@ -34,13 +37,15 @@ export class ComposedFixture extends IntegrityFixture {
 	 * Creates the committed workspace and writes the wrapper and the Vitest stand-in it spawns.
 	 *
 	 * @param options - The wrapper path and request directory to use in place of the fixture's own, as
-	 * an executable's built-in defaults need, and the variant the wrapper stages alone first
+	 * an executable's built-in defaults need, the variant the wrapper stages alone first, and whether
+	 * to commit the wrapper as the Git baseline for changed-selection proofs
 	 */
 	constructor(
 		options: {
 			readonly config?: string
 			readonly requests?: string
 			readonly first?: string
+			readonly committed?: boolean
 		} = {},
 	) {
 		super()
@@ -49,11 +54,43 @@ export class ComposedFixture extends IntegrityFixture {
 		try {
 			this.write(this.config, createComposedWrapper(this.root, options.first))
 			this.write('node_modules/vitest/vitest.mjs', createStandIn())
+			if (options.committed) {
+				execFileSync('git', ['add', '--', this.config], { cwd: this.root, windowsHide: true })
+				execFileSync(
+					'git',
+					[
+						'-c',
+						'user.name=Fixture',
+						'-c',
+						'user.email=fixture@example.invalid',
+						'commit',
+						'--quiet',
+						'--no-gpg-sign',
+						'-m',
+						'wrapper baseline',
+					],
+					{ cwd: this.root, windowsHide: true },
+				)
+			}
 		} catch (error) {
 			// A throwing constructor returns no instance, so no caller's finally block can destroy it.
 			this.destroy()
 			throw error
 		}
+	}
+
+	/** Lists the requests observed by actual execution children, excluding discovery. */
+	get stages(): readonly CaptureRequest[] {
+		const file = resolve(this.root, 'tmp/stage-children.jsonl')
+		if (!existsSync(file)) return []
+		return readFileSync(file, 'utf8')
+			.split(/\r\n|\n/u)
+			.filter((line) => line !== '')
+			.map((line) => {
+				const request: unknown = parseJSON(line)
+				if (!isCaptureRequest(request)) throw new Error('Invalid recorded stage request')
+				return request
+			})
 	}
 
 	/**

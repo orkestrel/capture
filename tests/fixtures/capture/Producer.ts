@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseJSON } from '@orkestrel/contract'
 import {
@@ -39,6 +39,7 @@ if (isFixtureDiscovery(request)) {
 	})
 } else {
 	if (!isFixtureRequest(request)) throw new Error('Invalid stage request')
+	appendFileSync('tmp/stage-children.jsonl', `${JSON.stringify(request)}\n`)
 	const output = process.argv.find((argument) => argument.startsWith('--outputFile.json='))
 	if (output === undefined) throw new Error('Missing JSON output argument')
 	// The receipt names what this child inherited, so a proof reads the environment the runner built.

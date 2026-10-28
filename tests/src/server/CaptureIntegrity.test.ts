@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { existsSync, linkSync, renameSync, rmSync, symlinkSync, utimesSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseJSON } from '@orkestrel/contract'
@@ -36,6 +37,122 @@ import {
 const LINKED = supportsFileLinks()
 
 const MAIL_LIGHT = { selector: 'pages:mail', variants: ['light-390'] }
+
+describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('classifies tracked, deleted, renamed, untracked, shared, test, and outside paths without losing spaces', () => {
+		const fixture = new IntegrityFixture()
+		try {
+			fixture.seed()
+			renameSync(
+				resolve(fixture.root, 'src/mail/view.ts'),
+				resolve(fixture.root, 'src/mail/renamed view.ts'),
+			)
+			rmSync(resolve(fixture.root, 'src/board/view.ts'))
+			fixture.write('src/mail/untracked view.ts', '// added\n')
+			fixture.write('src/shared/theme.ts', '// changed\n')
+			fixture.write('behavior/journeys.ts', '// changed\n')
+			fixture.write('outside.ts', '// changed\n')
+			execFileSync('git', ['add', '-A'], { cwd: fixture.root, windowsHide: true })
+			fixture.write('src/mail/still untracked.ts', '// not staged\n')
+			const plan = fixture.engine.changed('HEAD')
+			expect(
+				plan.changes
+					.filter((change) => change.classification === 'own')
+					.map((change) => change.path),
+			).toEqual([
+				'src/board/view.ts',
+				'src/mail/renamed view.ts',
+				'src/mail/still untracked.ts',
+				'src/mail/untracked view.ts',
+				'src/mail/view.ts',
+			])
+			expect(
+				plan.changes
+					.filter((change) => change.classification === 'shared')
+					.map((change) => change.path),
+			).toEqual(['behavior/journeys.ts', 'src/shared/theme.ts'])
+			expect(plan.changes.filter((change) => change.classification === 'outside')).toEqual([
+				{ path: 'outside.ts', classification: 'outside', owners: [] },
+			])
+			expect(plan.owners).toEqual(['examples:board', 'examples:files', 'pages:mail'])
+			expect(plan.changes.find((change) => change.path === 'src/shared/theme.ts')?.owners).toEqual(
+				plan.owners,
+			)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('includes commits after an ancestor ref and working changes while HEAD reads only uncommitted work', () => {
+		const fixture = new IntegrityFixture()
+		try {
+			fixture.seed()
+			execFileSync('git', ['branch', 'baseline'], { cwd: fixture.root, windowsHide: true })
+			fixture.write('src/mail/view.ts', '// committed after baseline\n')
+			execFileSync('git', ['add', 'src/mail/view.ts'], { cwd: fixture.root, windowsHide: true })
+			execFileSync(
+				'git',
+				[
+					'-c',
+					'user.name=Fixture',
+					'-c',
+					'user.email=fixture@example.invalid',
+					'commit',
+					'--quiet',
+					'--no-gpg-sign',
+					'-m',
+					'owned change',
+				],
+				{ cwd: fixture.root, windowsHide: true },
+			)
+			fixture.write('src/board/view.ts', '// working change\n')
+			expect(fixture.engine.changed('baseline').changes.map((change) => change.path)).toEqual([
+				'src/board/view.ts',
+				'src/mail/view.ts',
+			])
+			expect(fixture.engine.changed('HEAD').changes.map((change) => change.path)).toEqual([
+				'src/board/view.ts',
+			])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('reduces a selected descendant covered by a selected ancestor from accepted receipts', () => {
+		const fixture = new IntegrityFixture()
+		try {
+			fixture.seed({ population: 'nested' })
+			fixture.write('src/mail/view.ts', '// changed\n')
+			const plan = fixture.engine.changed('HEAD')
+			expect(plan.changes).toEqual([
+				{
+					path: 'src/mail/view.ts',
+					classification: 'own',
+					owners: ['pages:mail', 'pages:mail:inbox'],
+				},
+			])
+			expect(plan.owners).toEqual(['pages:mail'])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('requires an accepted registry, preserves Git ref failures, and reports an unchanged tree', () => {
+		const fixture = new IntegrityFixture()
+		try {
+			expect(() => fixture.engine.changed('HEAD')).toThrow(
+				'Missing accepted registry; run the explicit complete-registry refresh',
+			)
+			fixture.seed()
+			expect(fixture.engine.changed('HEAD')).toEqual({ changes: [], owners: [] })
+			const error = readThrown(() => fixture.engine.changed('missing-ref'))
+			expect(isCaptureError(error) ? error.code : undefined).toBe('USAGE')
+			expect(String(error)).toContain('fatal:')
+		} finally {
+			fixture.destroy()
+		}
+	})
+})
 
 function readJSON(fixture: IntegrityFixture, file: string): unknown {
 	return parseJSON(fixture.read(file).toString('utf8'))

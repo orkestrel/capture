@@ -176,7 +176,7 @@ export function createReceiptFixture(overrides: Partial<CaptureReceipt> = {}): C
 		version: 1,
 		variant: 'light-390',
 		time: '2026-10-28T09:00:00.000Z',
-		report: { file: 'tmp/captures/states/runs/run-1/journey-narrow.json', digest: FIXTURE_HASH },
+		report: { file: 'tmp/captures/states/runs/run-1/journey-selected.json', digest: FIXTURE_HASH },
 		inputs: { 'src/mail/view.ts': FIXTURE_HASH },
 		declarations: [createDeclarationFixture()],
 		registry: [createDestinationFixture()],

@@ -10,6 +10,7 @@ import {
 	CAPTURE_DEFAULTS,
 	answerCaptureDiscovery,
 	buildCaptureArguments,
+	buildCaptureChangePlan,
 	buildCaptureDigest,
 	buildCaptureLookupJournal,
 	buildCaptureDiscoveryConfig,
@@ -55,6 +56,8 @@ import {
 	resolveCaptureRelative,
 	resolveCaptureRequests,
 	resolveCaptureStages,
+	resolveCaptureVariants,
+	renderCaptureCommand,
 	shrinkCapturePicture,
 	unfilterCaptureRow,
 	writeCaptureDocument,
@@ -105,7 +108,7 @@ function createImportInput(
 	return {
 		receipt: createReceiptFixture({
 			report: {
-				file: 'tmp/captures/states/runs/run-1/journey-narrow.json',
+				file: 'tmp/captures/states/runs/run-1/journey-selected.json',
 				digest: computeCaptureHash(report),
 			},
 		}),
@@ -729,6 +732,12 @@ describe('buildCaptureFilter', () => {
 })
 
 describe('resolveCaptureStages', () => {
+	it('puts every journey variant in one explicitly named stage without adding the first variant', () => {
+		expect(resolveCaptureStages(['wide', 'phone'], 'compact', 'journey')).toEqual([
+			{ name: 'selected', variants: ['wide', 'phone'] },
+		])
+		expect(resolveCaptureStages([], 'compact', 'journey')).toEqual([])
+	})
 	it.each([
 		{
 			title: 'a first variant among others',
@@ -762,7 +771,163 @@ describe('resolveCaptureStages', () => {
 		},
 		{ title: 'no variant', variants: [], first: 'compact', expected: [] },
 	])('plans $title', ({ variants, first, expected }) => {
-		expect(resolveCaptureStages(variants, first)).toEqual(expected)
+		expect(resolveCaptureStages(variants, first, 'capture')).toEqual(expected)
+	})
+})
+
+describe('resolveCaptureVariants', () => {
+	it('keeps declaration order, narrows explicitly, and refuses unknown or unbacked variants', () => {
+		const project = readCaptureProject(
+			createProjectFixture({ provide: { variants: [{ name: 'wide' }], first: 'wide' } }),
+		)
+		expect(resolveCaptureVariants([], [project])).toEqual(project.variants)
+		expect(resolveCaptureVariants([project.variant], [project])).toEqual([project.variant])
+		expect(() => resolveCaptureVariants(['unknown'], [project])).toThrow('Unknown variant')
+		expect(() => resolveCaptureVariants([], [{ ...project, variants: ['absent'] }])).toThrow(
+			'no journey project',
+		)
+		expect(() => resolveCaptureVariants([], [])).toThrow('no journey variants')
+	})
+})
+
+describe('buildCaptureChangePlan', () => {
+	it('gives shared and test patterns precedence, preserves exact path ownership, and reduces at colon boundaries', () => {
+		const entries = [
+			createDestinationFixture({
+				part: 'mail',
+				sources: { own: ['src/mail/**'], shared: ['src/shared/**'], tests: ['tests/**'] },
+			}),
+			createDestinationFixture({
+				part: 'mail',
+				section: 'inbox',
+				sources: { own: ['src/mail/inbox/**'], shared: [], tests: [] },
+			}),
+			createDestinationFixture({
+				part: 'mailbox',
+				sources: { own: ['src/mailbox/**', 'src/shared/**', 'tests/**'], shared: [], tests: [] },
+			}),
+		]
+		const plan = buildCaptureChangePlan(
+			[
+				'src/mail/inbox/view.ts',
+				'src/mailbox/view.ts',
+				'src/shared/view.ts',
+				'tests/view.ts',
+				'README.md',
+				'README.md',
+			],
+			entries,
+		)
+		expect(plan.owners).toEqual(['pages:mail', 'pages:mailbox'])
+		expect(plan.changes).toEqual([
+			{ path: 'README.md', classification: 'outside', owners: [] },
+			{
+				path: 'src/mail/inbox/view.ts',
+				classification: 'own',
+				owners: ['pages:mail', 'pages:mail:inbox'],
+			},
+			{ path: 'src/mailbox/view.ts', classification: 'own', owners: ['pages:mailbox'] },
+			{
+				path: 'src/shared/view.ts',
+				classification: 'shared',
+				owners: ['pages:mail', 'pages:mail:inbox', 'pages:mailbox'],
+			},
+			{
+				path: 'tests/view.ts',
+				classification: 'shared',
+				owners: ['pages:mail', 'pages:mail:inbox', 'pages:mailbox'],
+			},
+		])
+	})
+
+	it('returns an empty plan when no paths changed', () => {
+		expect(buildCaptureChangePlan([], [createDestinationFixture()])).toEqual({
+			changes: [],
+			owners: [],
+		})
+	})
+})
+
+describe('renderCaptureCommand', () => {
+	it('prints executable names and preserves every effective selection flag without changed or plan', () => {
+		const root = process.cwd()
+		expect(
+			renderCaptureCommand(
+				'capture',
+				{
+					config: resolve(root, 'configs/journey.ts'),
+					variants: ['light-390', 'dark-390'],
+					changed: 'HEAD',
+					plan: true,
+					case: 'mail shows inbox',
+					state: 'inbox',
+				},
+				'pages:mail',
+				root,
+			),
+		).toBe(
+			"capture frames pages:mail --variant light-390 --variant dark-390 --case 'mail shows inbox' --state inbox --config configs/journey.ts",
+		)
+	})
+
+	it('quotes a shell-sensitive case and wrapper path in the host shell syntax', () => {
+		const root = process.cwd()
+		const command = renderCaptureCommand(
+			'journey',
+			{
+				config: resolve(root, 'wrapper with spaces.ts'),
+				variants: [],
+				case: "mail's $value `text`",
+			},
+			'pages:mail',
+			root,
+		)
+		expect(command).toBe(
+			process.platform === 'win32'
+				? "capture journey pages:mail --case 'mail''s $value `text`' --config 'wrapper with spaces.ts'"
+				: "capture journey pages:mail --case 'mail'\\''s $value `text`' --config 'wrapper with spaces.ts'",
+		)
+	})
+})
+
+describe('readCaptureArguments changed selection', () => {
+	it('combines one changed ref with plan and repeated distinct variants', () => {
+		expect(
+			readCaptureArguments(
+				['--changed', 'HEAD', '--plan', '--variant', 'light-390', '--variant', 'dark-390'],
+				'journey',
+				process.cwd(),
+				'journey.ts',
+			),
+		).toEqual({
+			config: resolve('journey.ts'),
+			changed: 'HEAD',
+			plan: true,
+			variants: ['light-390', 'dark-390'],
+		})
+	})
+
+	it('refuses malformed, repeated, misplaced, or missing changed and plan flags', () => {
+		for (const argv of [
+			['--changed'],
+			['--changed=HEAD'],
+			['--changed', 'HEAD', '--changed', 'HEAD'],
+			['--changed', 'HEAD', '--plan', '--plan'],
+			['--plan'],
+			['--plan=true'],
+			['pages:mail', '--changed', 'HEAD'],
+			['--changed', 'HEAD', 'pages:mail'],
+			['--changed', 'HEAD', '--unknown'],
+			['--changed', '--plan'],
+		]) {
+			const error = readThrown(() =>
+				readCaptureArguments(argv, 'journey', process.cwd(), 'journey.ts'),
+			)
+			expect(isCaptureError(error) ? error.code : undefined).toBe('USAGE')
+		}
+		expect(() =>
+			readCaptureArguments(['--changed', 'HEAD'], 'stale', process.cwd(), 'journey.ts'),
+		).toThrow('belong to journey and frames')
 	})
 })
 
@@ -770,7 +935,7 @@ describe('buildCaptureArguments', () => {
 	const BASE = {
 		entry: '/workspace/node_modules/vitest/vitest.mjs',
 		config: '/workspace/fixture with spaces.config.ts',
-		report: '/workspace/var/requests/runs/a/journey-narrow.json',
+		report: '/workspace/var/requests/runs/a/journey-selected.json',
 		projects: ['bench:compact', 'bench:wide'],
 		filter: 'owner:app:mail && app:mail',
 		closing: RUNNER_CLOSING,
@@ -788,7 +953,7 @@ describe('buildCaptureArguments', () => {
 			'--bail=1',
 			'--reporter=dot',
 			'--reporter=json',
-			'--outputFile.json=/workspace/var/requests/runs/a/journey-narrow.json',
+			'--outputFile.json=/workspace/var/requests/runs/a/journey-selected.json',
 			'--project',
 			'bench:compact',
 			'--project',

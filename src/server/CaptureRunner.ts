@@ -1,9 +1,11 @@
 import type { CaptureRequest } from '@src/core'
 import type {
+	CaptureChangePlan,
 	CaptureIntegrityInterface,
 	CaptureIntegrityOptions,
 	CaptureInvocationInterface,
 	CaptureOutcome,
+	CaptureOwnerOutcome,
 	CapturePortfolioRoot,
 	CaptureProject,
 	CaptureRunnerArguments,
@@ -40,13 +42,16 @@ import {
 	buildCaptureFilter,
 	describeCaptureSelectorFault,
 	readCaptureArguments,
+	readFlag,
+	renderCaptureCommand,
 	requireCaptureProjects,
 	resolveCaptureRelative,
 	resolveCaptureStages,
+	resolveCaptureVariants,
 } from './helpers.js'
 
 /**
- * Drives owner-selected journeys through narrow and remaining variant stages.
+ * Drives selected owners through one journey stage or staged frame captures.
  *
  * @remarks
  * The wrapper and the installed Vitest supply the registry and the execution protocol, and the
@@ -54,7 +59,8 @@ import {
  * variant, the closing case, and the portfolio roots. The runner never loads the wrapper itself: a
  * `CaptureDiscovery` runs the consumer's installed Vitest in discovery mode and reads back the host
  * description the wrapper writes, so the runner imports neither Vite nor Vitest. It creates one
- * `CaptureInvocation` per `execute` call and holds none of that call's state itself.
+ * discovery invocation per `execute` call and a separate invocation per changed owner, and holds
+ * none of that call's state itself.
  *
  * @example
  * ```ts
@@ -105,14 +111,164 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			const projects = description.projects.map((entry) => entry.project)
 			return command === 'stale'
 				? await this.#check(parsed, projects)
-				: await this.#run(invocation, command, parsed, projects)
+				: parsed.changed === undefined
+					? await this.#run(invocation, command, parsed, projects)
+					: await this.#changed(invocation, command, parsed, projects)
 		} catch (error) {
-			this.#stderr(`${describeCaptureError(error)}\n`)
+			const ran = Object.values(CAPTURE_STAGES).filter((stage) =>
+				invocation.launched(resolve(invocation.directory, `${command}-${stage}.log`)),
+			)
+			const next = renderCaptureCommand(
+				command,
+				{ config: resolve(root, readFlag(argv, '--config') ?? config), variants: [] },
+				'all',
+				root,
+			)
+			this.#stderr(
+				`${describeCaptureError(error)}\n${ran.length === 0 ? 'No execution child ran; the command was refused before execution.' : `Execution stopped after stages: ${ran.join(', ')}; no later stage ran.`}\nNEXT ${next}\n`,
+			)
 			return isCaptureError(error) && error.code === 'USAGE'
 				? CAPTURE_EXIT.usage
 				: CAPTURE_EXIT.failed
 		} finally {
 			await invocation.release()
+		}
+	}
+
+	async #changed(
+		discovery: CaptureInvocationInterface,
+		command: CaptureRequest['command'],
+		parsed: CaptureRunnerArguments,
+		projects: readonly CaptureProject[],
+	): Promise<number> {
+		const { root, requests } = this.#options
+		const primary = requireCaptureProjects(projects)
+		const plan = this.#changes(parsed, primary)
+		for (const change of plan.changes) this.#stdout(`CHANGE ${JSON.stringify(change)}\n`)
+		const commands = plan.owners.map((owner) => renderCaptureCommand(command, parsed, owner, root))
+		const shared = plan.changes.filter((change) => change.classification === 'shared')
+		const complete = renderCaptureCommand(
+			'journey',
+			{ config: parsed.config, variants: parsed.variants },
+			'all',
+			root,
+		)
+		for (const next of commands) this.#stdout(`COMMAND ${next}\n`)
+		const variants = resolveCaptureVariants(parsed.variants, projects)
+		if (shared.length > 0) {
+			this.#stderr(
+				`Shared journey inputs cannot be narrowed because every destination reads them: ${JSON.stringify(shared.map((change) => change.path))}\n`,
+			)
+			this.#stdout(
+				`SUMMARY ${JSON.stringify({ run: [], passed: [], failed: [], notrun: plan.owners, reason: 'shared inputs require an explicit journey selection' })}\n`,
+			)
+			for (const next of [...commands, complete]) this.#stdout(`NEXT ${next}\n`)
+			return CAPTURE_EXIT.usage
+		}
+		if (plan.owners.length === 0) {
+			this.#stdout(
+				`No journey input changed\nSUMMARY ${JSON.stringify({ run: [], passed: [], failed: [], notrun: [], reason: 'only outside paths or no changed paths' })}\nNEXT ${complete}\n`,
+			)
+			return parsed.plan ? CAPTURE_EXIT.passed : CAPTURE_EXIT.failed
+		}
+		const selectors = [...new Set(projects.flatMap((project) => project.tags))]
+			.filter((tag) => tag.startsWith(CAPTURE_OWNER_PREFIX))
+			.map((tag) => tag.slice(CAPTURE_OWNER_PREFIX.length))
+		for (const owner of plan.owners) {
+			const fault = describeCaptureSelectorFault(owner, selectors)
+			if (fault !== undefined) throw new CaptureError(fault, { code: 'USAGE' })
+			if (parsed.plan) await this.#resolve(this.#integrity(primary), parsed, owner, variants)
+		}
+		if (parsed.plan) {
+			this.#stdout(
+				`SUMMARY ${JSON.stringify({ run: [], passed: [], failed: [], notrun: plan.owners, reason: '--plan starts no execution child' })}\n`,
+			)
+			for (const next of commands) this.#stdout(`NEXT ${next}\n`)
+			return CAPTURE_EXIT.passed
+		}
+		const outcomes: CaptureOwnerOutcome[] = []
+		for (const owner of plan.owners) {
+			if (discovery.interrupted) break
+			const invocation = new CaptureInvocation({
+				command,
+				root,
+				requests,
+				stdout: this.#stdout,
+				stderr: this.#stderr,
+			})
+			invocation.attach()
+			try {
+				invocation.prepare()
+				const code = await this.#run(
+					invocation,
+					command,
+					{ ...parsed, selector: owner },
+					projects,
+				).catch((error: unknown) => {
+					this.#stderr(`${describeCaptureError(error)}\n`)
+					return isCaptureError(error) && error.code === 'USAGE'
+						? CAPTURE_EXIT.usage
+						: CAPTURE_EXIT.failed
+				})
+				outcomes.push({
+					owner,
+					code,
+					ran: Object.values(CAPTURE_STAGES).some((stage) =>
+						invocation.launched(resolve(invocation.directory, `${command}-${stage}.log`)),
+					),
+				})
+			} finally {
+				await invocation.release()
+			}
+			if (outcomes.some((outcome) => outcome.code !== CAPTURE_EXIT.passed)) break
+		}
+		const failed = outcomes.filter((outcome) => outcome.code !== CAPTURE_EXIT.passed)
+		const notrun = plan.owners.filter(
+			(owner) => !outcomes.some((outcome) => outcome.owner === owner && outcome.ran),
+		)
+		this.#stdout(
+			`SUMMARY ${JSON.stringify({
+				run: outcomes.filter((outcome) => outcome.ran).map((outcome) => outcome.owner),
+				passed: outcomes
+					.filter((outcome) => outcome.code === CAPTURE_EXIT.passed)
+					.map((outcome) => outcome.owner),
+				failed: failed.map((outcome) => outcome.owner),
+				notrun,
+				reason: discovery.interrupted
+					? 'interrupted'
+					: failed.length > 0
+						? 'stopped at the first red owner'
+						: 'every selected owner passed',
+			})}\n`,
+		)
+		for (const owner of [...new Set([...failed.map((outcome) => outcome.owner), ...notrun])])
+			this.#stdout(`NEXT ${renderCaptureCommand(command, parsed, owner, root)}\n`)
+		if (failed.length === 0 && notrun.length === 0) this.#stdout(`NEXT ${complete}\n`)
+		return failed.at(0)?.code ?? (discovery.interrupted ? CAPTURE_EXIT.failed : CAPTURE_EXIT.passed)
+	}
+
+	#changes(parsed: CaptureRunnerArguments, primary: CaptureProject): CaptureChangePlan {
+		try {
+			if (parsed.changed === undefined)
+				throw new CaptureError('Missing value: --changed', { code: 'USAGE' })
+			return this.#integrity(primary).changed(parsed.changed)
+		} catch (error) {
+			const command = renderCaptureCommand(
+				'journey',
+				{ config: parsed.config, variants: [] },
+				'all',
+				this.#options.root,
+			)
+			const registry = renderCaptureCommand(
+				'registry',
+				{ config: parsed.config, variants: [] },
+				undefined,
+				this.#options.root,
+			)
+			throw new CaptureError(
+				`${describeCaptureError(error)}\nNo owner ran; changed selection was refused.\n${isCaptureError(error) && error.code === 'EVIDENCE' ? `NEXT ${registry}\n` : ''}NEXT ${command}`,
+				{ code: 'USAGE', cause: error },
+			)
 		}
 	}
 
@@ -131,26 +287,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		if (selector === undefined) throw new CaptureError(this.#usage(selectors), { code: 'USAGE' })
 		const fault = describeCaptureSelectorFault(selector, selectors)
 		if (fault !== undefined) throw new CaptureError(fault, { code: 'USAGE', context: { selector } })
-		const declared = [...new Set(projects.flatMap((project) => project.variants))]
-		for (const variant of parsed.variants) {
-			if (!declared.includes(variant))
-				throw new CaptureError(`Unknown variant: ${variant}`, {
-					code: 'USAGE',
-					context: { variant },
-				})
-		}
-		const variants = declared.filter(
-			(variant) => parsed.variants.length === 0 || parsed.variants.includes(variant),
-		)
-		if (variants.length === 0)
-			throw new CaptureError('The wrapper declares no journey variants', { code: 'HOST' })
-		for (const variant of variants) {
-			if (!projects.some((project) => project.variant === variant))
-				throw new CaptureError(`The wrapper declares no journey project for ${variant}`, {
-					code: 'HOST',
-					context: { variant },
-				})
-		}
+		const variants = resolveCaptureVariants(parsed.variants, projects)
 		const integrity = this.#integrity(primary)
 		const selected = await this.#resolve(integrity, parsed, selector, variants)
 		const plan: CaptureRunPlan = {
@@ -165,18 +302,53 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			config: resolveCaptureRelative(root, parsed.config),
 		}
 		const outcomes: CaptureOutcome[] = []
-		for (const stage of resolveCaptureStages(variants, primary.first)) {
-			if (invocation.interrupted) return CAPTURE_EXIT.failed
-			outcomes.push(...(await this.#stage(invocation, integrity, plan, stage)))
+		const stages = resolveCaptureStages(variants, primary.first, command)
+		const completed: CaptureStagePlan[] = []
+		try {
+			for (const stage of stages) {
+				if (invocation.interrupted) return CAPTURE_EXIT.failed
+				outcomes.push(...(await this.#stage(invocation, integrity, plan, stage)))
+				completed.push(stage)
+			}
+			for (const outcome of outcomes) {
+				this.#stdout(`${outcome.project}: ${String(outcome.count)} owner-bearing passed cases\n`)
+			}
+			if (outcomes.every((outcome) => outcome.count === 0))
+				throw new CaptureError(
+					'Empty selected workload: no requested project held applicable work',
+					{ code: 'STAGE' },
+				)
+			return CAPTURE_EXIT.passed
+		} finally {
+			const ran = stages.filter((stage) =>
+				invocation.launched(resolve(invocation.directory, `${command}-${stage.name}.log`)),
+			)
+			const notrun = stages.filter((stage) => !ran.includes(stage))
+			const failed = ran.filter((stage) => !completed.includes(stage))
+			const passed =
+				completed.length === stages.length && outcomes.some((outcome) => outcome.count > 0)
+			this.#stdout(
+				`STAGES ${JSON.stringify({
+					selector,
+					run: ran.map((stage) => stage.name),
+					passed: completed.map((stage) => stage.name),
+					failed: failed.map((stage) => stage.name),
+					notrun: notrun.map((stage) => stage.name),
+					reason: invocation.interrupted
+						? 'interrupted; no later stage ran'
+						: passed
+							? 'selected workload passed'
+							: failed.length > 0
+								? 'stage failed; no later stage ran'
+								: notrun.length > 0
+									? 'refused before execution'
+									: 'empty selected workload',
+				})}\n`,
+			)
+			this.#stdout(
+				`NEXT ${renderCaptureCommand(passed ? 'journey' : command, passed ? { config: parsed.config, variants: [] } : parsed, passed ? 'all' : selector, root)}\n`,
+			)
 		}
-		for (const outcome of outcomes) {
-			this.#stdout(`${outcome.project}: ${String(outcome.count)} owner-bearing passed cases\n`)
-		}
-		if (outcomes.every((outcome) => outcome.count === 0))
-			throw new CaptureError('Empty selected workload: no requested project held applicable work', {
-				code: 'STAGE',
-			})
-		return CAPTURE_EXIT.passed
 	}
 
 	async #stage(
@@ -352,6 +524,6 @@ export class CaptureRunner implements CaptureRunnerInterface {
 	#usage(selectors: readonly string[]): string {
 		const { command } = this.#options
 		const state = command === 'capture' ? ' [--state <name>]' : ''
-		return `Usage: capture ${CAPTURE_COMMAND_NAMES[command]} <selector> [--variant <name>] [--case <full name>]${state} [--config <file>]\nSelectors:\n${selectors.toSorted().join('\n')}\nall (every declared scope; name it explicitly)`
+		return `Usage: capture ${CAPTURE_COMMAND_NAMES[command]} <selector> [--variant <name>] [--case <full name>]${state} [--config <file>]\nOr: capture ${CAPTURE_COMMAND_NAMES[command]} --changed <ref> [--plan] [--variant <name>] [--case <full name>]${state} [--config <file>]\nSelectors:\n${selectors.toSorted().join('\n')}\nall (every declared scope; name it explicitly)`
 	}
 }

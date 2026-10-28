@@ -65,6 +65,24 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('prints the whole usage text beside a refused command', () => {
 		const run = execute(['frobnicate'])
 		expect(run.stderr).toContain(CAPTURE_USAGE)
+		expect(run.stderr).toContain('journey --changed <ref> [--plan]')
+		expect(run.stderr).toContain('frames --changed <ref> [--plan]')
+		expect(run.stderr).toContain('no execution child starts')
+	})
+
+	it('refuses changed selection combined with a selector and rejects repeated or equals flags', () => {
+		for (const argv of [
+			['journey', 'pages:mail', '--changed', 'HEAD'],
+			['frames', '--changed=HEAD'],
+			['journey', '--changed', 'HEAD', '--changed', 'HEAD'],
+			['frames', '--changed', 'HEAD', '--plan', '--plan'],
+		]) {
+			const before = fixture.stages.length
+			const run = execute(argv)
+			expect(run.status).toBe(64)
+			expect(fixture.stages).toHaveLength(before)
+			expect(run.stderr).toContain('NEXT capture')
+		}
 	})
 
 	it('refuses a freshness reading before the registry exists, with the refresh command named', () => {
@@ -82,7 +100,7 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(existsSync(resolve(fixture.root, COMPOSED_DIRECTORY, 'registry.json'))).toBe(true)
 		const journey = execute(['journey', 'pages:mail', '--variant', 'light-390'])
 		expect(journey.status === 0 ? 0 : journey.stderr).toBe(0)
-		expect(journey.stdout).toContain('journey narrow: light-390; pages:mail;')
+		expect(journey.stdout).toContain('journey selected: light-390; pages:mail;')
 		expect(readFixtureManifest(fixture.root)).toBeUndefined()
 		const frames = execute(['frames', 'pages:mail', '--variant', 'light-390'], {
 			CAPTURE_PRODUCER_PICTURE: '1',
@@ -119,6 +137,21 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(run.status).toBe(1)
 		expect(run.stderr).toContain('Capture stage child did not exit successfully')
 		expect(readFixtureManifest(fixture.root)).toBe(before)
+	})
+
+	it('plans changed work through the executable without starting any execution child', () => {
+		const original = fixture.read('src/mail/view.ts')
+		const stages = fixture.stages.length
+		try {
+			fixture.write('src/mail/view.ts', '// changed for planning\n')
+			const run = execute(['journey', '--changed', 'HEAD', '--plan', '--variant', 'light-390'])
+			expect(run.status === 0 ? 0 : run.stderr).toBe(0)
+			expect(fixture.stages).toHaveLength(stages)
+			expect(run.stdout).toContain('"classification":"own","owners":["pages:mail"]')
+			expect(run.stdout).toContain('COMMAND capture journey pages:mail --variant light-390')
+		} finally {
+			fixture.write('src/mail/view.ts', original)
+		}
 	})
 })
 

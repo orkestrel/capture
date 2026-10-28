@@ -294,6 +294,17 @@ const ROWS: ReadonlyArray<
 ]
 
 describe('capture guards', () => {
+	it('accepts a selected journey request and closing identity while retaining malformed-stage refusals', () => {
+		const identity = createIdentityFixture({ stage: 'selected' })
+		const request = createRequestFixture({
+			...identity,
+			command: 'journey',
+			variants: ['light-390', 'dark-390'],
+		})
+		expect(isCaptureRequest(request)).toBe(true)
+		expect(isCaptureRun(createRunFixture({ identity, request }))).toBe(true)
+		expect(isCaptureRequest({ ...request, stage: '../selected' })).toBe(false)
+	})
 	it.each(ROWS)('%s accepts its positive control', (_name, guard, positive) => {
 		expect(guard(positive)).toBe(true)
 	})

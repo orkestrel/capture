@@ -208,11 +208,12 @@ export class IntegrityFixture {
 	stage(options: FixtureStage = {}): CaptureStageOptions {
 		const id = randomUUID()
 		const variants = options.variants ?? ['light-390']
-		const report = `tmp/stages/${id}/narrow.json`
+		const stage = options.command === 'journey' ? 'selected' : 'narrow'
+		const report = `tmp/stages/${id}/${stage}.json`
 		const request: CaptureRequest = {
 			version: CAPTURE_VERSION,
 			id,
-			stage: 'narrow',
+			stage,
 			pid: process.pid,
 			config: 'fixture with spaces.config.ts',
 			command: options.command ?? 'capture',
@@ -226,7 +227,7 @@ export class IntegrityFixture {
 			name: `journey:${variant}`,
 			variant,
 			inputs: INPUTS,
-			record: `tmp/captures/states/runs/${id}/narrow/${variant}.json`,
+			record: `tmp/captures/states/runs/${id}/${stage}/${variant}.json`,
 		}))
 		const input: FixtureWrite = {
 			request,

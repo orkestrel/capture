@@ -55,7 +55,7 @@ export interface CaptureSelection {
  * ```ts
  * const identity: CaptureIdentity = {
  * 	id: 'run-1',
- * 	stage: 'narrow',
+ * 	stage: 'selected',
  * 	pid: 4242,
  * 	config: 'configs/app/vite.journey.config.ts',
  * }
@@ -70,6 +70,9 @@ export interface CaptureIdentity {
 
 /**
  * Carries a runner request through Vitest's provided-context protocol.
+ *
+ * @remarks Journey selections use the selected stage; frame captures use narrow and rest stages.
+ * Registry refreshes retain their registry-prefixed stages. Records are keyed by id, stage, and variant.
  *
  * @example
  * ```ts
