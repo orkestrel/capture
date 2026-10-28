@@ -61,7 +61,7 @@ describe('installed capture executable and peers', () => {
 			typeof manifest === 'object' && manifest !== null && 'peerDependencies' in manifest
 				? manifest.peerDependencies
 				: undefined
-		expect(peers).toStrictEqual({ vite: '^8', vitest: '^4' })
+		expect(peers).toStrictEqual({ vite: '^8.3.5', vitest: '^4.1.12' })
 		const versions = ['vite', 'vitest'].map((name) => {
 			const installed = readDistributionJSON(
 				join(stage.consumer, 'node_modules', name, 'package.json'),

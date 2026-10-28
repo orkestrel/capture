@@ -329,6 +329,50 @@ export function readDistributionManifestName(path: string): string {
 	return manifest.name
 }
 
+// A host carries a package's required peers at its own root. A consumer that carries none leaves
+// npm to place them, and npm can then resolve an optional peer of a peer to a release the
+// package's own range refuses, so the consumer declares them as a host would.
+/**
+ * Reads the peers a host must carry: every peer dependency its metadata does not mark optional.
+ *
+ * @param path - The manifest to read.
+ * @returns Each required peer's name mapped to its declared range.
+ */
+export function readDistributionPeers(path: string): Readonly<Record<string, string>> {
+	const manifest = readDistributionJSON(path)
+	if (!isDistributionRecord(manifest) || !isDistributionRecord(manifest.peerDependencies)) {
+		return {}
+	}
+	const meta = isDistributionRecord(manifest.peerDependenciesMeta)
+		? manifest.peerDependenciesMeta
+		: undefined
+	const peers = Object.entries(manifest.peerDependencies).filter(
+		(entry): entry is [string, string] => typeof entry[1] === 'string',
+	)
+	return Object.fromEntries(
+		peers.filter(([name]) => {
+			const entry = meta?.[name]
+			return !isDistributionRecord(entry) || entry.optional !== true
+		}),
+	)
+}
+
+/**
+ * Writes the consumer manifest, declaring the required peers as dependencies.
+ *
+ * @param peers - Each required peer's name mapped to its declared range.
+ * @returns The manifest text; the bare manifest when the package declares no required peer.
+ */
+export function createDistributionConsumerManifest(
+	peers: Readonly<Record<string, string>>,
+): string {
+	const manifest: unknown = JSON.parse(DISTRIBUTION_CONSUMER_MANIFEST)
+	if (Object.keys(peers).length === 0 || !isDistributionRecord(manifest)) {
+		return DISTRIBUTION_CONSUMER_MANIFEST
+	}
+	return `${JSON.stringify({ ...manifest, dependencies: peers })}\n`
+}
+
 /**
  * Writes a consumer file after creating its parent directory.
  *
@@ -963,7 +1007,8 @@ export function buildDistributionStage(scratch: string): DistributionStage {
 	if (archives.length !== 1 || archive === undefined) {
 		throw new Error(`npm pack wrote no single archive: ${archives.join(', ')}`)
 	}
-	writeDistributionFile(join(consumer, 'package.json'), DISTRIBUTION_CONSUMER_MANIFEST)
+	const peers = readDistributionPeers(join(DISTRIBUTION_ROOT, 'package.json'))
+	writeDistributionFile(join(consumer, 'package.json'), createDistributionConsumerManifest(peers))
 	writeDistributionFile(join(consumer, DISTRIBUTION_ESM_DRIVER), DISTRIBUTION_ESM_DRIVER_SOURCE)
 	writeDistributionFile(join(consumer, DISTRIBUTION_CJS_DRIVER), DISTRIBUTION_CJS_DRIVER_SOURCE)
 	const install = runDistributionNpm(
