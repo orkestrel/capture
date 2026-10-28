@@ -105,7 +105,7 @@ The `astra` role implements X6 under the user's 2026-10-28 design ruling. The un
 - the ownership paragraphs of `README.md` and `guides/capture.md`.
 
 **Claim (`prepare()`):**
-1. The request directory must stat as a directory. Otherwise the claim refuses permanently.
+1. Create the request directory with `mkdirSync(requests, { recursive: true })`, as the claim already does. It must then stat as a directory; otherwise the claim refuses permanently.
 2. Sweep `.capture-owner.<pid>.<id>.tmp` files whose pid is dead with `rmSync(force)`. This is best effort: errors are ignored, never thrown. A live pid's temporary is never touched.
 3. `writeFileSync(temp, {pid,id}, { flag: 'wx' })`. Any error refuses permanently, naming the operation and the code.
 4. `linkSync(temp, lock)`:
@@ -153,7 +153,16 @@ The record is advisory; the marker is the safety property.
 - `Survivor.ts` drives production `release()` with `terminate` returning false over a real session.
 - `DetachedSurvivor.ts` writes the advisory record by hand into the run directory that production created, because a supervised Windows child dies with its owner.
 
-**Stop line:** stop and report to the Orchestrator when any step needs a file operation not named here, or when a C1 check fails.
+**Stop line:** stop and report to the Orchestrator when a step on the marker path or the survivor-record path needs a file operation not named here, or when a C1 check fails.
+
+**Out of scope:** operations outside those two paths keep their current behavior and do not trip the stop line:
+- request publication and retraction;
+- child session management;
+- run-directory creation at the first spawn;
+- usage-refusal cleanup;
+- registry, manifest, and lookup publication.
+
+This scope was clarified on 2026-10-28 after X6's first dispatch stopped on the request-directory creation.
 
 ### X7: acceptance
 
