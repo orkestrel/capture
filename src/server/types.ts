@@ -1195,9 +1195,10 @@ export interface CapturePicture {
  * `root` is the absolute workspace and `config` the absolute wrapper path. `selection` bounds the
  * population, and `journeys` is the absolute directory of journey artifacts. `checks`, when
  * supplied, is the path of a module, absolute or relative to `root`, that exports the host's
- * `CAPTURE_CHECKS` list of frame readers. The reader loads it with a dynamic `import()` of the
- * module's file URL, so a TypeScript module needs a Node that strips types. `requests` is the
- * repository-relative directory that holds the discovery request; default: `CAPTURE_DEFAULTS.requests`.
+ * `CAPTURE_CHECKS` list of frame readers. The reader loads it through the runtime's own module
+ * loader by the module's file URL, so a TypeScript module needs a Node that strips types.
+ * `requests` is the repository-relative directory that holds the discovery request; default:
+ * `CAPTURE_DEFAULTS.requests`.
  * `deadline` bounds the discovery child in milliseconds; default: `CAPTURE_DISCOVERY.deadline`.
  * `stdout` receives the report line and `stderr` each refusal; default: the process streams.
  *

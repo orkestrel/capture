@@ -272,7 +272,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 			COMPOSED_FIRST,
 		])
 		expect(run.code).toBe(64)
-		expect(run.stderr).toContain('State declaring case disagrees')
+		expect(run.stderr).toContain('outside selector/case')
 		expect(run.stdout).not.toMatch(STAGE_LINE)
 		expect(readHeld(base)).toEqual([])
 	})

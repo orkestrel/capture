@@ -32,7 +32,7 @@ import {
 	createSourcesFixture,
 	createStampFixture,
 	createVitestFixture,
-	readFailure,
+	readThrown,
 } from './setup.js'
 
 describe('capture fixtures', () => {
@@ -45,11 +45,11 @@ describe('capture fixtures', () => {
 	it('returns what a callback throws and undefined when it returns', () => {
 		const thrown = new Error('boom')
 		expect(
-			readFailure(() => {
+			readThrown(() => {
 				throw thrown
 			}),
 		).toBe(thrown)
-		expect(readFailure(() => 'fine')).toBeUndefined()
+		expect(readThrown(() => 'fine')).toBeUndefined()
 	})
 
 	it('builds values the protocol guards accept', () => {

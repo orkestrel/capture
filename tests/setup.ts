@@ -48,7 +48,7 @@ export const REFUSED_PATHS: readonly string[] = Object.freeze([
  * @param callback - The work expected to throw
  * @returns The thrown value, or `undefined` when the callback returns
  */
-export function readFailure(callback: () => unknown): unknown {
+export function readThrown(callback: () => unknown): unknown {
 	try {
 		callback()
 		return undefined

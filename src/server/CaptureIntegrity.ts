@@ -1335,7 +1335,6 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	): readonly CaptureDestination[] {
 		if (
 			!isCaptureSelector(options.selector) ||
-			options.variants.length === 0 ||
 			!options.variants.every(isCaptureSegment) ||
 			(options.state !== undefined && !isCaptureSegment(options.state)) ||
 			(options.case !== undefined && options.case.trim() === '') ||
@@ -1353,6 +1352,10 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			throw new CaptureError(`Empty or unknown selector: ${options.selector}`, {
 				code: 'SELECTION',
 			})
+		// An omitted variant list derives from the scoped destinations, so an unknown selector reads as
+		// that before an empty list reads as an invalid one.
+		if (options.variants.length === 0)
+			throw new CaptureError('Invalid capture selection', { code: 'SELECTION' })
 		const selected = scoped.filter(
 			(entry) =>
 				options.variants.includes(producing ? this.#producing(entry, evidence) : entry.variant) &&

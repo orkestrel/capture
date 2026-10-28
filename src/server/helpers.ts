@@ -407,7 +407,12 @@ export function inflateCaptureStream(data: Buffer, length: number): Buffer {
 }
 
 /**
- * Decodes the RGB or RGBA, eight-bit, non-interlaced PNGs the capture readers consume.
+ * Decodes the eight-bit, non-interlaced PNGs the capture readers consume.
+ *
+ * @remarks
+ * It reads grayscale, grayscale with alpha, RGB, and RGBA, the colour types an encoder writes for a
+ * browser capture. A grayscale sample fills all three channels, and an alpha channel is dropped.
+ * Indexed colour, other bit depths, and interlacing are refused.
  *
  * @param bytes - The exact physical image bytes
  * @returns Image dimensions and RGB pixels
@@ -428,7 +433,9 @@ export function decodeCapturePicture(bytes: Buffer): CapturePicture {
 		throw new CaptureError('Invalid capture PNG header', { code: 'EVIDENCE' })
 	const width = bytes.readUInt32BE(16)
 	const height = bytes.readUInt32BE(20)
-	const channels = bytes[25] === 6 ? 4 : bytes[25] === 2 ? 3 : 0
+	const channels =
+		bytes[25] === 6 ? 4 : bytes[25] === 2 ? 3 : bytes[25] === 4 ? 2 : bytes[25] === 0 ? 1 : 0
+	const gray = bytes[25] === 0 || bytes[25] === 4
 	if (
 		width === 0 ||
 		height === 0 ||
@@ -465,7 +472,7 @@ export function decodeCapturePicture(bytes: Buffer): CapturePicture {
 		{ length: width * height * 3 },
 		(_, index) =>
 			rows[Math.floor(index / (width * 3))]?.[
-				Math.floor((index % (width * 3)) / 3) * channels + (index % 3)
+				Math.floor((index % (width * 3)) / 3) * channels + (gray ? 0 : index % 3)
 			] ?? 0,
 	)
 	return { width, height, pixels }

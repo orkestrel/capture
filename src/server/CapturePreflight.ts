@@ -65,9 +65,9 @@ import {
  * path the wrapper does not declare, and it imports neither Vite nor Vitest. It
  * judges each frame by the artifact the frame's own stamp names, never by a variant's latest file.
  * Rules that belong to one product, such as a page-title check or a pixel comparison, live in a
- * host module named by the `checks` option. The reader loads that module with a dynamic `import()`
- * of its file URL, reads its `CAPTURE_CHECKS` export, a list of readers from a frame to its
- * findings, and appends every finding to the report.
+ * host module named by the `checks` option. The reader loads that module through the runtime's own
+ * module loader by its file URL, reads its `CAPTURE_CHECKS` export, a list of readers from a frame to
+ * its findings, and appends every finding to the report.
  *
  * @example
  * ```ts
@@ -252,9 +252,7 @@ export class CapturePreflight implements CapturePreflightInterface {
 	async #checks(): Promise<ReadonlyArray<(frame: CaptureCheckFrame) => unknown>> {
 		const { checks, root } = this.#options
 		if (checks === undefined) return []
-		const loaded: unknown = await import(
-			/* @vite-ignore */ pathToFileURL(resolve(root, checks)).href
-		).catch((error: unknown) => {
+		const loaded: unknown = await this.#import(resolve(root, checks)).catch((error: unknown) => {
 			throw new CaptureError(`Cannot load the checks module: ${checks}`, {
 				code: 'HOST',
 				cause: error,
@@ -267,6 +265,11 @@ export class CapturePreflight implements CapturePreflightInterface {
 				{ code: 'HOST' },
 			)
 		return list
+	}
+
+	// Imports a host module by its file URL; the specifier is computed, so a bundler leaves it alone.
+	async #import(file: string): Promise<unknown> {
+		return await import(/* @vite-ignore */ pathToFileURL(file).href)
 	}
 
 	// Decodes one selected image, reporting the reason an unreadable or tiny one cannot be judged.

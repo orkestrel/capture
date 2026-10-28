@@ -176,6 +176,10 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('reads the frames of an owner as stale once a source it attributes to them changes', async () => {
+		// The refused captures above rewrote some frames without stamping them, and an unstamped frame
+		// outranks a stale one, so a clean capture comes first.
+		const capture = await fixture.run('capture', ['pages:mail'])
+		expect(capture.code === 0 ? 0 : capture.stderr).toBe(0)
 		fixture.write('src/mail/view.ts', '// edited after the capture\n')
 		const run = await fixture.run('stale', ['pages:mail'])
 		expect(run.code).toBe(1)

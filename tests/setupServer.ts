@@ -144,7 +144,7 @@ export const MAIL_IMAGE = 'tmp/captures/states/pages/mail-screen--light-390.png'
 
 /** Holds the one valid image, a single pixel, that every fixture frame reuses. */
 export const PNG = Buffer.from(
-	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jNxoAAAAASUVORK5CYII=',
+	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=',
 	'base64',
 )
 
@@ -502,6 +502,11 @@ export function writeFixtureOutputs(input: FixtureWrite): void {
 		const record = input.records[variant]
 		if (record === undefined) throw new Error('Missing fixture record path')
 		const complete = full.filter((entry) => entry.eligible).length === passed.length
+		// A capture runs only the cases that place states, so its header reads complete once every such case ran.
+		const covering =
+			request?.command === 'capture'
+				? full.filter((entry) => entry.eligible && entry.states.length > 0).length === passed.length
+				: complete
 		// The artifact mirrors the closing case's coverage header and record binding, in one file per
 		// invocation beside the per-variant copy a later run replaces.
 		const invocation =
@@ -510,7 +515,7 @@ export function writeFixtureOutputs(input: FixtureWrite): void {
 		const copy = `tmp/journey/${variant}${complete ? '' : '-scoped'}.txt`
 		const journal = [
 			`# ${variant}`,
-			`coverage=${complete ? 'complete' : request?.case === undefined ? 'scoped' : 'case-scoped'}`,
+			`coverage=${covering ? 'complete' : request?.case === undefined ? 'scoped' : 'case-scoped'}`,
 			`record=${input.journal === 'foreign' ? `${record}.foreign` : record}`,
 			...(input.journal === 'foreign' ? [] : passed.map((entry) => `case-ran=${entry.case}`)),
 			'',
@@ -1369,7 +1374,7 @@ export function createReaderWrapper(root: string, producers: readonly string[] =
 			},
 		},
 	}))
-	return `export default { test: { projects: ${JSON.stringify(projects)} } }\n`
+	return `export default ${JSON.stringify({ test: { projects } })}\n`
 }
 
 /** Names the request directory, relative to the workspace, that the composed workspace's wrapper declares. */
@@ -1440,7 +1445,7 @@ export function createComposedWrapper(root: string, first: string = COMPOSED_FIR
 			},
 		},
 	}))
-	return `export default { test: { projects: ${JSON.stringify(projects)} } }\n`
+	return `export default ${JSON.stringify({ test: { projects } })}\n`
 }
 
 /**

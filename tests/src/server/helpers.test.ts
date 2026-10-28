@@ -69,7 +69,7 @@ import {
 	createDestinationFixture,
 	createReceiptFixture,
 	createVitestFixture,
-	readFailure,
+	readThrown,
 } from '../../setup.js'
 import {
 	ALPHA_PICTURE,
@@ -246,7 +246,7 @@ describe('buildCaptureRegistry', () => {
 		['a signal', { outcome: { code: null, signal: 'SIGTERM' } }],
 		['an incomplete receipt', { receipt: createReceiptFixture({ complete: false }) }],
 	] as const)('refuses %s before importing', (_name, overrides) => {
-		const failure = readFailure(() => buildCaptureRegistry([createImportInput(overrides)]))
+		const failure = readThrown(() => buildCaptureRegistry([createImportInput(overrides)]))
 		expect(failure).toMatchObject({
 			message: 'Registry receipt requires an uncapped successful exit and unchanged report',
 			code: 'EVIDENCE',
@@ -386,7 +386,23 @@ describe('decodeCapturePicture', () => {
 		expect([...picture.pixels]).toEqual(ALPHA_PICTURE.pixels)
 	})
 
-	it('reads a real encoder-written file', () => {
+	it('fills all three channels from a grayscale sample, with or without alpha', () => {
+		const gray = decodeCapturePicture(
+			createPngBytes({ width: 2, height: 1, rows: [[0, 7, 9]], color: 0 }),
+		)
+		expect([gray.width, gray.height]).toEqual([2, 1])
+		expect([...gray.pixels]).toEqual([7, 7, 7, 9, 9, 9])
+		const alpha = decodeCapturePicture(
+			createPngBytes({ width: 2, height: 1, rows: [[0, 7, 255, 9, 128]], color: 4 }),
+		)
+		expect([...alpha.pixels]).toEqual([7, 7, 7, 9, 9, 9])
+		const filtered = decodeCapturePicture(
+			createPngBytes({ width: 2, height: 1, rows: [[1, 7, 255, 2, 1]], color: 4 }),
+		)
+		expect([...filtered.pixels]).toEqual([7, 7, 7, 9, 9, 9])
+	})
+
+	it('reads a valid single-pixel grey-and-alpha file', () => {
 		const picture = decodeCapturePicture(PNG)
 		expect([picture.width, picture.height, picture.pixels.length]).toEqual([1, 1, 3])
 	})
@@ -434,13 +450,13 @@ describe('decodeCapturePicture', () => {
 			'Capture PNG scanline length differs',
 		],
 	] as const)('refuses %s', (_name, build, message) => {
-		const failure = readFailure(() => decodeCapturePicture(build()))
+		const failure = readThrown(() => decodeCapturePicture(build()))
 		expect(failure).toMatchObject({ message, code: 'EVIDENCE' })
 	})
 
 	it('refuses a stream that inflates past the declared length or is not deflate data', () => {
 		const long = createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3, 4, 5, 6, 7]] })
-		expect(readFailure(() => decodeCapturePicture(long))).toMatchObject({
+		expect(readThrown(() => decodeCapturePicture(long))).toMatchObject({
 			message: 'Capture PNG stream is corrupt or longer than declared',
 			code: 'EVIDENCE',
 		})
@@ -450,7 +466,7 @@ describe('decodeCapturePicture', () => {
 			encodeCaptureChunk('IDAT', Buffer.from([1, 2, 3, 4])),
 			encodeCaptureChunk('IEND', Buffer.alloc(0)),
 		])
-		expect(readFailure(() => decodeCapturePicture(garbage))).toMatchObject({
+		expect(readThrown(() => decodeCapturePicture(garbage))).toMatchObject({
 			code: 'EVIDENCE',
 			cause: expect.any(Error),
 		})
@@ -501,7 +517,7 @@ describe('encodeCapturePicture', () => {
 		['a fractional width', { width: 1.5, height: 1, pixels: new Uint8Array(3) }],
 		['a pixel length that differs', { width: 2, height: 1, pixels: new Uint8Array(3) }],
 	])('refuses %s', (_name, bad) => {
-		expect(readFailure(() => encodeCapturePicture(bad))).toMatchObject({
+		expect(readThrown(() => encodeCapturePicture(bad))).toMatchObject({
 			message: 'Invalid capture picture dimensions',
 			code: 'EVIDENCE',
 		})
@@ -560,7 +576,7 @@ describe('composeCapturePictures', () => {
 	})
 
 	it('refuses an empty selection', () => {
-		expect(readFailure(() => composeCapturePictures([], false))).toMatchObject({
+		expect(readThrown(() => composeCapturePictures([], false))).toMatchObject({
 			message: 'Empty contact-sheet picture selection',
 			code: 'USAGE',
 		})
@@ -793,7 +809,7 @@ describe('readCaptureArguments', () => {
 	})
 
 	it.each(ARGUMENT_REFUSALS)('refuses $title as a usage failure', ({ command, argv, message }) => {
-		const failure = readFailure(() => readCaptureArguments(argv, command, ROOT, 'x'))
+		const failure = readThrown(() => readCaptureArguments(argv, command, ROOT, 'x'))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({ message, code: 'USAGE' })
 	})
@@ -840,7 +856,7 @@ describe('readCapturePortfolios', () => {
 
 	it('names the subject in a refusal for a missing list', () => {
 		expect(
-			readFailure(() => readCapturePortfolios(undefined, 'standalone portfolios')),
+			readThrown(() => readCapturePortfolios(undefined, 'standalone portfolios')),
 		).toMatchObject({
 			message: 'The wrapper provides no standalone portfolios',
 			code: 'HOST',
@@ -895,7 +911,7 @@ describe('readCaptureProject', () => {
 	})
 
 	it.each(PROJECT_REFUSALS)('refuses $title', ({ overrides, message, code }) => {
-		const failure = readFailure(() => readCaptureProject(createProjectFixture(overrides)))
+		const failure = readThrown(() => readCaptureProject(createProjectFixture(overrides)))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({ code })
 		expect(failure instanceof Error ? failure.message : '').toContain(message)
@@ -904,7 +920,7 @@ describe('readCaptureProject', () => {
 	it.each([undefined, null, 'journey:wide', 42, []])(
 		'refuses the non-record configuration %s',
 		(value) => {
-			expect(readFailure(() => readCaptureProject(value))).toMatchObject({
+			expect(readThrown(() => readCaptureProject(value))).toMatchObject({
 				message: expect.stringContaining('Unsupported journey project name'),
 				code: 'HOST',
 			})
@@ -937,7 +953,7 @@ describe('requireCaptureProjects', () => {
 		},
 	])('refuses $title between two projects', ({ patch }) => {
 		expect(
-			readFailure(() => requireCaptureProjects([FIRST, { ...SECOND, ...patch }])),
+			readThrown(() => requireCaptureProjects([FIRST, { ...SECOND, ...patch }])),
 		).toMatchObject({
 			message: 'Host project integrity declarations disagree',
 			code: 'HOST',
@@ -950,18 +966,18 @@ describe('requireCaptureProjects', () => {
 	})
 
 	it('refuses an empty set, a repeated label, and a repeated variant case-folded', () => {
-		expect(readFailure(() => requireCaptureProjects([]))).toMatchObject({
+		expect(readThrown(() => requireCaptureProjects([]))).toMatchObject({
 			message: 'No host project declares integrity inputs',
 			code: 'HOST',
 		})
 		expect(
-			readFailure(() => requireCaptureProjects([FIRST, { ...SECOND, name: FIRST.name }])),
+			readThrown(() => requireCaptureProjects([FIRST, { ...SECOND, name: FIRST.name }])),
 		).toMatchObject({
 			message: 'Duplicate journey projects: bench:wide, bench:wide',
 			code: 'EVIDENCE',
 		})
 		expect(
-			readFailure(() => requireCaptureProjects([FIRST, { ...SECOND, variant: 'WIDE' }])),
+			readThrown(() => requireCaptureProjects([FIRST, { ...SECOND, variant: 'WIDE' }])),
 		).toMatchObject({
 			message: 'Duplicate journey project variants: wide, WIDE',
 			code: 'EVIDENCE',
@@ -1095,7 +1111,7 @@ describe('readCaptureRequest', () => {
 				`journey-selection-${String(PPID)}.json`,
 				JSON.stringify(createWireRequest(PPID, ARGV, patch)),
 			)
-			const failure = readFailure(() =>
+			const failure = readThrown(() =>
 				readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV)),
 			)
 			expect(isCaptureError(failure)).toBe(true)
@@ -1111,7 +1127,7 @@ describe('readCaptureRequest', () => {
 		try {
 			const file = scratch.write(`journey-selection-${String(PPID)}.json`, text)
 			expect(
-				readFailure(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
+				readThrown(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
 			).toMatchObject({
 				message: `Invalid journey selection request: ${file}`,
 				code: 'HOST',
@@ -1126,7 +1142,7 @@ describe('readCaptureRequest', () => {
 		try {
 			const name = `journey-selection-${String(PPID)}.json`
 			const file = scratch.write(name, JSON.stringify(createWireRequest(PPID + 1000000, ARGV)))
-			const failure = readFailure(() =>
+			const failure = readThrown(() =>
 				readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV)),
 			)
 			expect(failure).toMatchObject({
@@ -1148,7 +1164,7 @@ describe('readCaptureRequest', () => {
 		const scratch = createScratch({ prefix: 'request-' })
 		try {
 			scratch.ensure(`journey-selection-${String(PPID)}.json`)
-			const failure = readFailure(() =>
+			const failure = readThrown(() =>
 				readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV)),
 			)
 			expect(failure).toMatchObject({ code: 'HOST' })
@@ -1172,7 +1188,7 @@ describe('readCaptureRequest', () => {
 				JSON.stringify(createWireRequest(PPID, ARGV)),
 			)
 			expect(
-				readFailure(() => readCaptureRequest(createWireOptions(scratch.path, PPID, argv))),
+				readThrown(() => readCaptureRequest(createWireOptions(scratch.path, PPID, argv))),
 			).toMatchObject({
 				message: `Journey selection request arguments differ from the process arguments: ${file}`,
 				code: 'HOST',
@@ -1192,7 +1208,7 @@ describe('readCaptureRequest', () => {
 				JSON.stringify(createWireRequest(PPID, ARGV, { args: [1, 2, 3] })),
 			)
 			expect(
-				readFailure(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
+				readThrown(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
 			).toMatchObject({
 				message: expect.stringContaining('arguments differ from the process arguments'),
 			})
@@ -1233,7 +1249,7 @@ describe('readCaptureRequest', () => {
 				JSON.stringify(createWireRequest(PPID, ARGV, { phase: 'discover' })),
 			)
 			expect(
-				readFailure(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
+				readThrown(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
 			).toMatchObject({
 				code: 'HOST',
 				message: expect.stringContaining('Invalid journey selection request'),
@@ -1359,7 +1375,7 @@ describe('readCaptureReaderArguments', () => {
 			message: 'Repeated reader option: --checks',
 		},
 	])('refuses $title as a usage failure', ({ argv, message }) => {
-		const failure = readFailure(() => readCaptureReaderArguments(argv, ROOT, DEFAULTS))
+		const failure = readThrown(() => readCaptureReaderArguments(argv, ROOT, DEFAULTS))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({ code: 'USAGE', message: expect.stringContaining(message) })
 	})
@@ -1410,7 +1426,7 @@ describe('readCaptureViewport', () => {
 			message: 'no declared producing viewport',
 		},
 	])('refuses $title as a host fault', ({ test, message }) => {
-		const failure = readFailure(() => readCaptureViewport(test))
+		const failure = readThrown(() => readCaptureViewport(test))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({ code: 'HOST', message: expect.stringContaining(message) })
 	})
@@ -1450,7 +1466,7 @@ describe('buildCaptureIntegrityOptions', () => {
 		const project = readCaptureProject(
 			createProjectFixture({ provide: { directory: resolve('/elsewhere/frames') } }),
 		)
-		const failure = readFailure(() => buildCaptureIntegrityOptions(ROOT, project))
+		const failure = readThrown(() => buildCaptureIntegrityOptions(ROOT, project))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({
 			code: 'HOST',
@@ -1694,7 +1710,7 @@ describe('readCaptureEntry', () => {
 	it.each(['./project.config.ts', 42, null, undefined])(
 		'refuses %j as a project that is not declared inline',
 		(value) => {
-			expect(readFailure(() => readCaptureEntry(value))).toMatchObject({
+			expect(readThrown(() => readCaptureEntry(value))).toMatchObject({
 				code: 'HOST',
 				message: 'The journey wrapper must declare inline projects',
 			})
@@ -1704,7 +1720,7 @@ describe('readCaptureEntry', () => {
 	it.each(PROJECT_REFUSALS)(
 		'refuses $title with the reader that owns the declaration',
 		(refusal) => {
-			const failure = readFailure(() =>
+			const failure = readThrown(() =>
 				readCaptureEntry({ test: createProjectFixture(refusal.overrides) }),
 			)
 			expect(failure).toMatchObject({ code: refusal.code })
@@ -1790,20 +1806,20 @@ describe('readCaptureDescription', () => {
 			message: 'The wrapper declares no projects',
 		},
 	])('refuses $title', ({ patch, message }) => {
-		const failure = readFailure(() => readCaptureDescription(createDescription(patch), EXPECTED))
+		const failure = readThrown(() => readCaptureDescription(createDescription(patch), EXPECTED))
 		expect(failure).toMatchObject({ code: 'HOST' })
 		expect(failure instanceof Error ? failure.message : '').toContain(message)
 	})
 
 	it.each([undefined, null, [], 'text', 42])('refuses %j as no document', (value) => {
-		expect(readFailure(() => readCaptureDescription(value, EXPECTED))).toMatchObject({
+		expect(readThrown(() => readCaptureDescription(value, EXPECTED))).toMatchObject({
 			code: 'HOST',
 			message: 'The host description is malformed',
 		})
 	})
 
 	it('refuses an expectation that names no discovery child', () => {
-		const failure = readFailure(() =>
+		const failure = readThrown(() =>
 			readCaptureDescription(createDescription(), { ...EXPECTED, pid: undefined }),
 		)
 		expect(failure).toMatchObject({
@@ -1813,7 +1829,7 @@ describe('readCaptureDescription', () => {
 	})
 
 	it('refuses a project the wrapper declares malformed, with the reader that owns it', () => {
-		const failure = readFailure(() =>
+		const failure = readThrown(() =>
 			readCaptureDescription(createDescription({ projects: [{ test: {} }] }), EXPECTED),
 		)
 		expect(failure).toMatchObject({ code: 'HOST' })
@@ -2021,13 +2037,13 @@ describe('readCaptureRegistryArguments', () => {
 	})
 
 	it.each(REGISTRY_ARGUMENT_REFUSALS)('refuses $title as a usage failure', ({ argv, reason }) => {
-		const failure = readFailure(() => readCaptureRegistryArguments(argv, ROOT, 'x'))
+		const failure = readThrown(() => readCaptureRegistryArguments(argv, ROOT, 'x'))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({ code: 'USAGE', message: expect.stringContaining(reason) })
 	})
 
 	it('names the usage line in a refusal that teaches the command', () => {
-		const failure = readFailure(() => readCaptureRegistryArguments(['pages:mail'], ROOT, 'x'))
+		const failure = readThrown(() => readCaptureRegistryArguments(['pages:mail'], ROOT, 'x'))
 		expect(failure).toMatchObject({
 			message: expect.stringContaining(
 				'Usage: capture registry [--variant <name>]... [--mode <name>] [--config <file>]',
@@ -2115,7 +2131,7 @@ describe('writeCaptureDocument', () => {
 		try {
 			const path = resolve(scratch.path, 'registry.json')
 			writeCaptureDocument(path, { value: 'earlier' })
-			const failure = readFailure(() =>
+			const failure = readThrown(() =>
 				writeCaptureDocument(path, { value: 'later' }, AbortSignal.abort(new Error('interrupted'))),
 			)
 			expect(failure).toMatchObject({ message: 'interrupted' })

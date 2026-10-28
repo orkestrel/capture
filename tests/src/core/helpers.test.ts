@@ -31,7 +31,7 @@ import {
 	createRequestFixture,
 	createRunFixture,
 	createVitestFixture,
-	readFailure,
+	readThrown,
 } from '../../setup.js'
 
 function readReport(overrides: Record<string, unknown> = {}): CaptureReport {
@@ -47,7 +47,7 @@ function checkRun(
 }
 
 function readEvidence(callback: () => unknown): unknown {
-	const failure = readFailure(callback)
+	const failure = readThrown(callback)
 	return isCaptureError(failure) ? failure : undefined
 }
 
@@ -73,8 +73,8 @@ describe('collectCaptureDuplicates and requireCaptureUnique', () => {
 	})
 
 	it('returns for a unique population and throws an evidence refusal naming the repeats', () => {
-		expect(readFailure(() => requireCaptureUnique(['mail', 'files'], 'owners'))).toBeUndefined()
-		const failure = readFailure(() => requireCaptureUnique(['mail', 'mail'], 'owners'))
+		expect(readThrown(() => requireCaptureUnique(['mail', 'files'], 'owners'))).toBeUndefined()
+		const failure = readThrown(() => requireCaptureUnique(['mail', 'mail'], 'owners'))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({
 			code: 'EVIDENCE',
@@ -383,16 +383,16 @@ describe('validateCaptureRun', () => {
 	)
 
 	it('accepts a record that agrees with its reporter', () => {
-		expect(readFailure(() => checkRun(createRunFixture()))).toBeUndefined()
+		expect(readThrown(() => checkRun(createRunFixture()))).toBeUndefined()
 	})
 
 	it('accepts a record that agrees with a capture request and a journey request', () => {
 		const identity = createIdentityFixture()
 		expect(
-			readFailure(() => checkRun(createRunFixture({ identity, request: createRequestFixture() }))),
+			readThrown(() => checkRun(createRunFixture({ identity, request: createRequestFixture() }))),
 		).toBeUndefined()
 		expect(
-			readFailure(() =>
+			readThrown(() =>
 				checkRun(
 					createRunFixture({
 						identity,
@@ -594,9 +594,7 @@ describe('validateCaptureReceipt', () => {
 	const report = readReport()
 
 	it('accepts a complete receipt that agrees with its reporter', () => {
-		expect(
-			readFailure(() => validateCaptureReceipt(createReceiptFixture(), report)),
-		).toBeUndefined()
+		expect(readThrown(() => validateCaptureReceipt(createReceiptFixture(), report))).toBeUndefined()
 	})
 
 	it.each([
@@ -693,7 +691,7 @@ describe('validateCaptureReceipt', () => {
 			message: 'Registry receipt contains an undeclared output or mixes producing projects',
 		})
 		expect(
-			readFailure(() =>
+			readThrown(() =>
 				validateCaptureReceipt(
 					createReceiptFixture({
 						declarations: [createDeclarationFixture({ states })],

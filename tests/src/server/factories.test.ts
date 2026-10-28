@@ -19,7 +19,7 @@ import { describe, expect, it } from 'vitest'
 import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import { IntegrityFixture } from '../../fixtures/capture/IntegrityFixture.js'
 import { ReaderFixture } from '../../fixtures/capture/ReaderFixture.js'
-import { readFailure } from '../../setup.js'
+import { readThrown } from '../../setup.js'
 import {
 	FIXTURE_TIMEOUT,
 	READER_CONFIG,
@@ -45,7 +45,7 @@ describe('createCaptureIntegrity', { timeout: FIXTURE_TIMEOUT }, () => {
 		const fixture = new IntegrityFixture()
 		try {
 			expect(
-				readFailure(() => createCaptureIntegrity({ ...fixture.options, root: 'relative' })),
+				readThrown(() => createCaptureIntegrity({ ...fixture.options, root: 'relative' })),
 			).toMatchObject({ message: 'Integrity root must be absolute', code: 'HOST' })
 		} finally {
 			fixture.destroy()

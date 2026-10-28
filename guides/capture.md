@@ -264,7 +264,7 @@ Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry
 | `readCaptureChunks`            | function | Reads PNG compressed-data chunks while refusing truncated or corrupt image bytes.                         |
 | `unfilterCaptureRow`           | function | Reconstructs one filtered PNG scanline from its filter byte and the row above.                            |
 | `inflateCaptureStream`         | function | Inflates a PNG's compressed stream, refusing one that is corrupt or longer than declared.                 |
-| `decodeCapturePicture`         | function | Decodes the RGB or RGBA, eight-bit, non-interlaced PNGs the capture readers consume.                      |
+| `decodeCapturePicture`         | function | Decodes the eight-bit, non-interlaced PNGs the capture readers consume.                                   |
 | `encodeCaptureWord`            | function | Encodes an unsigned 32-bit integer as four big-endian bytes.                                              |
 | `encodeCaptureChunk`           | function | Encodes one checked PNG chunk for contact-sheet output.                                                   |
 | `encodeCapturePicture`         | function | Encodes an RGB picture using the contact-sheet writer's native PNG format.                                |
@@ -354,21 +354,16 @@ The integrity engine from [`CaptureIntegrity.ts`](../src/server/CaptureIntegrity
 
 #### `CaptureInvocationInterface`
 
-| Name          | Summary                                                                                       |
-| ------------- | --------------------------------------------------------------------------------------------- |
-| `id`          | Holds the invocation identity, which names its report directory and its request records.      |
-| `request`     | Holds the absolute path of the request file this process names.                               |
-| `directory`   | Holds the absolute directory that holds this invocation's reports and logs.                   |
-| `signal`      | Holds the signal that aborts when the invocation is interrupted.                              |
-| `interrupted` | Holds whether an interrupt has arrived.                                                       |
-| `attach`      | Installs the interrupt handler on the process.                                                |
-| `release`     | Waits for any interrupt termination to finish, then removes the interrupt handler.            |
-| `prepare`     | Creates the report directory and removes request files that name a process no longer running. |
-| `holders`     | Lists the other live processes that hold a request file in the request directory.             |
-| `publish`     | Writes the stage or discovery request atomically, so no reader sees a partial file.           |
-| `retract`     | Removes this process's request file and its temporary sibling.                                |
-| `launched`    | Reports whether a child with this log path has been spawned by this invocation.               |
-| `spawn`       | Spawns the Vitest child and tees its output to the host streams and the log.                  |
+| Name       | Summary                                                                                       |
+| ---------- | --------------------------------------------------------------------------------------------- |
+| `attach`   | Installs the interrupt handler on the process.                                                |
+| `release`  | Waits for any interrupt termination to finish, then removes the interrupt handler.            |
+| `prepare`  | Creates the report directory and removes request files that name a process no longer running. |
+| `holders`  | Lists the other live processes that hold a request file in the request directory.             |
+| `publish`  | Writes the stage or discovery request atomically, so no reader sees a partial file.           |
+| `retract`  | Removes this process's request file and its temporary sibling.                                |
+| `launched` | Reports whether a child with this log path has been spawned by this invocation.               |
+| `spawn`    | Spawns the Vitest child and tees its output to the host streams and the log.                  |
 
 #### `CaptureSheetsInterface`
 
@@ -573,7 +568,7 @@ The `capture` executable is one entry that dispatches six subcommands, each a th
 - [`tests/src/server/factories.test.ts`](../tests/src/server/factories.test.ts)
 - [`tests/src/server/index.test.ts`](../tests/src/server/index.test.ts)
 - [`tests/src/bin/main.test.ts`](../tests/src/bin/main.test.ts)
-- [`tests/src/bin/discovery.test.ts`](../tests/src/bin/discovery.test.ts)
+- [`tests/src/bin/integration.test.ts`](../tests/src/bin/integration.test.ts)
 - [`tests/distribution.test.ts`](../tests/distribution.test.ts)
 - [`tests/setupServer.test.ts`](../tests/setupServer.test.ts)
 - [`tests/setup.test.ts`](../tests/setup.test.ts)

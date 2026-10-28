@@ -495,34 +495,29 @@ describe('CapturePreflight host checks', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each([
 		{
 			title: 'a module that does not exist',
-			file: 'missing-checks.mjs',
-			text: undefined,
+			file: resolve(import.meta.dirname, '../../fixtures/capture/MissingChecks.ts'),
 			message: 'Cannot load the checks module',
 		},
 		{
 			title: 'a module that exports no list',
-			file: 'scalar-checks.mjs',
-			text: 'export const CAPTURE_CHECKS = 5\n',
+			file: resolve(import.meta.dirname, '../../fixtures/capture/ScalarChecks.ts'),
 			message: 'exports no CAPTURE_CHECKS list of readers',
 		},
 		{
 			title: 'a module whose list holds a non-function',
-			file: 'mixed-checks.mjs',
-			text: 'export const CAPTURE_CHECKS = [() => [], 3]\n',
+			file: resolve(import.meta.dirname, '../../fixtures/capture/MixedChecks.ts'),
 			message: 'exports no CAPTURE_CHECKS list of readers',
 		},
 		{
 			title: 'a reader that returns something other than findings',
-			file: 'wrong-checks.mjs',
-			text: 'export const CAPTURE_CHECKS = [() => "not a list"]\n',
+			file: resolve(import.meta.dirname, '../../fixtures/capture/WrongChecks.ts'),
 			message: 'returned something other than a list of findings',
 		},
-	])('refuses $title before printing a report', async ({ file, text, message }) => {
+	])('refuses $title before printing a report', async ({ file, message }) => {
 		const fixture = new ReaderFixture()
 		try {
 			fixture.seed()
 			await fixture.capture({ selector: 'pages:mail', picture: true })
-			if (text !== undefined) fixture.write(file, text)
 			const result = await fixture.run('preflight', [
 				'pages:mail',
 				'--variant',
@@ -588,12 +583,15 @@ describe('CapturePreflight wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () =
 	it('refuses a destination whose producing project the wrapper does not declare', async () => {
 		const fixture = new ReaderFixture()
 		try {
-			fixture.seed()
+			// The wrapper is one of the bounded inputs, so each wrapper is seeded before it is read.
 			fixture.write(READER_CONFIG, createReaderWrapper(fixture.root, ['light-1280', 'dark-1280']))
+			fixture.seed()
 			const result = await fixture.run('preflight', ['pages:mail', '--variant', 'light-390'])
 			expect(result.status).toBe(64)
 			expect(result.stderr).toContain('Authenticated destination has no actual wrapper project')
 			fixture.write(READER_CONFIG, createReaderWrapper(fixture.root))
+			fixture.seed()
+			await fixture.capture({ selector: 'pages:mail', variants: ['light-390'] })
 			expect(
 				(await fixture.run('preflight', ['pages:mail', '--variant', 'light-390'])).status,
 			).toBe(1)

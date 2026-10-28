@@ -12,7 +12,7 @@ import {
 import { CaptureIntegrity, computeCaptureHash, computeRegistryDigest } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { IntegrityFixture } from '../../fixtures/capture/IntegrityFixture.js'
-import { REFUSED_PATHS, readFailure } from '../../setup.js'
+import { REFUSED_PATHS, readThrown } from '../../setup.js'
 import {
 	BOARD,
 	COLLECTION_MEMBERS,
@@ -395,6 +395,10 @@ describe(
 				await expect(
 					fixture.engine.check({ selector: 'unknown', variants: ['light-390'] }),
 				).rejects.toThrow('Empty or unknown selector')
+				// An omitted variant list derives from the selector, so an unknown selector is named as one.
+				await expect(fixture.engine.check({ selector: 'pages:absent' })).rejects.toThrow(
+					'Empty or unknown selector: pages:absent',
+				)
 			} finally {
 				fixture.destroy()
 			}
@@ -1057,10 +1061,10 @@ describe('CaptureIntegrity refusal conditions', { timeout: FIXTURE_TIMEOUT }, ()
 			try {
 				await expect(quiet.engine.read(MAIL_LIGHT)).rejects.toMatchObject({ code: 'EVIDENCE' })
 				expect(
-					readFailure(() => new CaptureIntegrity({ ...quiet.options, manifest: '../escape.json' })),
+					readThrown(() => new CaptureIntegrity({ ...quiet.options, manifest: '../escape.json' })),
 				).toMatchObject({ code: 'CONTAINMENT' })
 				expect(
-					readFailure(() => new CaptureIntegrity({ ...quiet.options, inputs: [] })),
+					readThrown(() => new CaptureIntegrity({ ...quiet.options, inputs: [] })),
 				).toMatchObject({ code: 'HOST' })
 			} finally {
 				quiet.destroy()
