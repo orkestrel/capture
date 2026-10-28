@@ -4,8 +4,8 @@ import { CapturePreflight } from './CapturePreflight.js'
 import { CaptureRegistrar } from './CaptureRegistrar.js'
 import { CaptureRunner } from './CaptureRunner.js'
 import { CaptureSheets } from './CaptureSheets.js'
-import { CAPTURE_DEFAULTS, CAPTURE_EXIT, CAPTURE_SUBCOMMANDS, CAPTURE_USAGE } from './constants.js'
-import { readCaptureReaderArguments } from './helpers.js'
+import { CAPTURE_DEFAULTS, CAPTURE_SUBCOMMANDS, CAPTURE_USAGE } from './constants.js'
+import { readCaptureReaderArguments, resolveCaptureExit } from './helpers.js'
 
 /**
  * Dispatches capture commands and maps usage and evidence refusals to their exit codes.
@@ -101,7 +101,7 @@ export class CaptureCLI implements CaptureCLIInterface {
 		} catch (error) {
 			if (!isCaptureError(error)) throw error
 			this.#stderr(`${describeCaptureError(error)}\n`)
-			return error.code === 'USAGE' ? CAPTURE_EXIT.usage : CAPTURE_EXIT.failed
+			return resolveCaptureExit(error)
 		}
 	}
 }

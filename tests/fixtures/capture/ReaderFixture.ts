@@ -34,6 +34,7 @@ export class ReaderFixture extends IntegrityFixture {
 		try {
 			this.write(READER_CONFIG, createReaderWrapper(this.root))
 			this.write('node_modules/vitest/vitest.mjs', createStandIn())
+			this.write('node_modules/vitest/package.json', JSON.stringify({ version: '4.1.12' }))
 		} catch (error) {
 			// A throwing constructor returns no instance, so no caller's finally block can destroy it.
 			this.destroy()

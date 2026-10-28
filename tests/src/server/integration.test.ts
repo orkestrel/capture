@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
 import { requireValue } from '@orkestrel/test'
@@ -8,9 +8,10 @@ import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import {
 	COMPOSED_DIRECTORY,
 	COMPOSED_FIRST,
-	COMPOSED_REQUESTS,
 	FIXTURE_FAULT_MESSAGES,
 	FIXTURE_TIMEOUT,
+	readCaptureHeld,
+	countCaptureChildren,
 	VARIANTS,
 	readFixtureManifest,
 } from '../../setupServer.js'
@@ -18,11 +19,6 @@ import {
 const LOOKUPS = `${COMPOSED_DIRECTORY}/lookups.json`
 const PREFIX = 'INTEGRITY '
 // Every child the runner spawns announces its process id, so the count tells discovery's one child from an execution child.
-const CHILD_LINE = /^pid=\d+$/gmu
-
-function countChildren(stdout: string): number {
-	return stdout.match(CHILD_LINE)?.length ?? 0
-}
 
 function readIntegrity(stdout: string): readonly unknown[] {
 	return stdout
@@ -38,12 +34,6 @@ function readStatuses(stdout: string): readonly unknown[] {
 	return report.entries.map((entry: unknown) => (isRecord(entry) ? entry.status : undefined))
 }
 
-function readHeld(fixture: ComposedFixture): readonly string[] {
-	return readdirSync(resolve(fixture.root, COMPOSED_REQUESTS)).filter((name) =>
-		name.startsWith('journey-selection'),
-	)
-}
-
 // One workspace serves the ordered cases: the registry exists before any stage can stamp, a journey
 // publishes the lookups a state selection reads, and a capture stamps the manifest the readings use.
 // Vitest runs a file's cases in order, so each case starts from what the one before it left.
@@ -54,13 +44,13 @@ afterAll(() => fixture.destroy())
 describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('refuses a stage before the registry exists, and starts no child', async () => {
 		const run = await fixture.run('journey', ['pages:mail'])
-		expect(run.code).toBe(64)
+		expect(run.code).toBe(1)
 		expect(run.stderr).toContain(
 			'Missing accepted registry; run the explicit complete-registry refresh',
 		)
-		expect(countChildren(run.stdout)).toBe(1)
+		expect(countCaptureChildren(run.stdout)).toBe(1)
 		expect(readFixtureManifest(fixture.root)).toBeUndefined()
-		expect(readHeld(fixture)).toEqual([])
+		expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 	})
 
 	it('refreshes the registry, which the engine then reads for every producing variant', async () => {
@@ -78,7 +68,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(run.stdout).toMatch(/journey:light-390: \d+ owner-bearing passed cases/u)
 		const reports = readIntegrity(run.stdout)
 		expect(reports).toHaveLength(1)
-		expect(countChildren(run.stdout)).toBe(2)
+		expect(countCaptureChildren(run.stdout)).toBe(2)
 		for (const report of reports)
 			expect(report).toMatchObject({ command: 'journey', stamps: 0, lookups: expect.any(Number) })
 		expect(readFixtureManifest(fixture.root)).toBeUndefined()
@@ -87,7 +77,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(journal.lookups.length).toBeGreaterThan(0)
 		expect(Object.keys(journal.inputs)).toHaveLength(1)
 		expect(journal.lookups.every((entry) => journal.inputs[entry.inputs] !== undefined)).toBe(true)
-		expect(readHeld(fixture)).toEqual([])
+		expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 	})
 
 	it('reads every frame of a selected owner as missing before any capture', async () => {
@@ -126,7 +116,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(run.code).toBe(1)
 			expect(run.stderr).toContain(FIXTURE_FAULT_MESSAGES[fault])
 			expect(readFixtureManifest(fixture.root)).toBe(before)
-			expect(readHeld(fixture)).toEqual([])
+			expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 		},
 	)
 
@@ -148,11 +138,11 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 			'--variant',
 			COMPOSED_FIRST,
 		])
-		expect(refused.code).toBe(64)
+		expect(refused.code).toBe(1)
 		expect(refused.stderr).toContain(
 			`Refresh explicitly with: capture journey pages:mail --variant ${COMPOSED_FIRST}`,
 		)
-		expect(countChildren(refused.stdout)).toBe(1)
+		expect(countCaptureChildren(refused.stdout)).toBe(1)
 		const run = await fixture.run('capture', [
 			'pages:mail',
 			'--state',
@@ -172,7 +162,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		})
 		expect(run.code).toBe(1)
 		expect(readFixtureManifest(fixture.root)).toBe(before)
-		expect(readHeld(fixture)).toEqual([])
+		expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 		expect(existsSync(resolve(fixture.root, 'ready.json'))).toBe(true)
 	})
 

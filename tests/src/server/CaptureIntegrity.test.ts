@@ -11,7 +11,7 @@ import {
 import { resolve } from 'node:path'
 import { parseJSON } from '@orkestrel/contract'
 import { executeSync } from '@orkestrel/process/server'
-import { createScratch, supportsFileLinks } from '@orkestrel/test/server'
+import { createScratch, supportsDirectoryLinks, supportsFileLinks } from '@orkestrel/test/server'
 import {
 	isCaptureError,
 	isCaptureLookupJournal,
@@ -47,7 +47,74 @@ const LINKED = supportsFileLinks()
 
 const MAIL_LIGHT = { selector: 'pages:mail', variants: ['light-390'] }
 
+// Directory junction support is probed independently of file-link privileges.
+it.runIf(supportsDirectoryLinks())(
+	'refuses a bounded input behind an outside directory junction before a stage runs',
+	async () => {
+		const fixture = new IntegrityFixture()
+		const outside = createScratch({ prefix: 'capture-input-junction-' })
+		try {
+			fixture.seed()
+			outside.write('source.ts', 'outside the workspace')
+			symlinkSync(outside.path, resolve(fixture.root, 'src/linked'), 'junction')
+			const stage = fixture.stage()
+			const engine = new CaptureIntegrity({ ...fixture.options, inputs: ['src/linked/source.ts'] })
+			await expect(
+				engine.stamp({
+					...stage,
+					projects: stage.projects.map((project) => ({
+						...project,
+						inputs: ['src/linked/source.ts'],
+					})),
+				}),
+			).rejects.toMatchObject({ code: 'CONTAINMENT' })
+			expect(existsSync(resolve(fixture.root, stage.report))).toBe(false)
+			expect(outside.read('source.ts')).toBe('outside the workspace')
+		} finally {
+			fixture.destroy()
+			outside.destroy()
+		}
+	},
+)
+
 describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('H1s caps actual Git stderr with an omitted-character count', () => {
+		const fixture = new IntegrityFixture()
+		try {
+			fixture.seed()
+			fixture.write('.git/config', `[core]\nrepositoryformatversion = ${'invalid'.repeat(1000)}\n`)
+			const failure = readThrown(() => fixture.engine.changed('HEAD'))
+			expect(failure).toMatchObject({ code: 'HOST' })
+			expect(failure instanceof Error ? failure.message : '').toContain('Git read failed')
+			expect(failure instanceof Error ? failure.message : '').toContain('more characters')
+			expect(failure instanceof Error ? failure.message.length : Infinity).toBeLessThan(2000)
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('H1s gives selection refusals bounded declared candidates', async () => {
+		const fixture = new IntegrityFixture()
+		try {
+			fixture.seed()
+			for (const selection of [
+				{ selector: 'pages:mail', variants: [] },
+				{ selector: 'pages:mail', variants: ['unknown-variant'] },
+				{ selector: 'pages:mail', variants: ['light-390'], state: 'missing-state' },
+				{ selector: 'pages:mail', variants: ['light-390'], portfolio: 'missing-portfolio' },
+			]) {
+				const failure: unknown = await fixture.engine
+					.read(selection)
+					.catch((error: unknown) => error)
+				expect(failure instanceof Error ? failure.message : '').toContain('valid candidates:')
+				expect(failure instanceof Error ? failure.message : '').toContain('received')
+				expect(failure instanceof Error ? failure.message : '').not.toContain(
+					'valid candidates: []',
+				)
+			}
+		} finally {
+			fixture.destroy()
+		}
+	})
 	it('keeps Unicode names intact through bounded NUL-separated Git output', () => {
 		const fixture = new IntegrityFixture()
 		try {
@@ -168,7 +235,7 @@ describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT },
 			fixture.seed()
 			expect(fixture.engine.changed('HEAD')).toEqual({ changes: [], owners: [] })
 			const error = readThrown(() => fixture.engine.changed('missing-ref'))
-			expect(isCaptureError(error) ? error.code : undefined).toBe('USAGE')
+			expect(isCaptureError(error) ? error.code : undefined).toBe('HOST')
 			expect(String(error)).toContain('fatal:')
 			const diagnostic = executeSync(
 				{
@@ -526,7 +593,7 @@ describe(
 						state: 'mail-screen',
 						variants: ['light-320'],
 					}),
-				).rejects.toThrow('Empty selection or state outside selector/case')
+				).rejects.toThrow('Unknown or unattested selected variant')
 				expect(readFixtureManifest(fixture.root)).toBe(before)
 				const resolved = await fixture.engine.lookup({
 					selector: 'examples:files',
@@ -543,10 +610,10 @@ describe(
 				])
 				await expect(
 					fixture.engine.check({ selector: 'unknown', variants: ['light-390'] }),
-				).rejects.toThrow('Empty or unknown selector')
+				).rejects.toThrow('selector: received')
 				// An omitted variant list derives from the selector, so an unknown selector is named as one.
 				await expect(fixture.engine.check({ selector: 'pages:absent' })).rejects.toThrow(
-					'Empty or unknown selector: pages:absent',
+					'selector: received "pages:absent"',
 				)
 			} finally {
 				fixture.destroy()
@@ -576,7 +643,7 @@ describe(
 				])
 				await expect(
 					fixture.engine.check({ selector: 'vue', variants: ['light-390'] }),
-				).rejects.toThrow('Empty or unknown selector')
+				).rejects.toThrow('selector: received')
 				expect(fixture.read(fixture.options.registry)).toEqual(browser)
 				expect(
 					(await fixture.engine.check(MAIL_LIGHT)).entries.every(
@@ -1333,7 +1400,7 @@ describe('CaptureIntegrity refusal conditions', { timeout: FIXTURE_TIMEOUT }, ()
 		try {
 			await expect(
 				fixture.engine.check({ selector: 'unknown', variants: ['light-390'] }),
-			).rejects.toMatchObject({ code: 'SELECTION' })
+			).rejects.toMatchObject({ code: 'USAGE' })
 			await expect(fixture.capture({ fault: 'failed-child' })).rejects.toMatchObject({
 				code: 'STAGE',
 			})
@@ -1664,7 +1731,9 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 		try {
 			fixture.seed({ variants: ['light-390', 'dark-390'] })
 			const desktop = { selector: 'examples:files', variants: ['dark-320'] }
-			await expect(fixture.engine.read(desktop)).rejects.toThrow('Empty selection')
+			await expect(fixture.engine.read(desktop)).rejects.toThrow(
+				'Unknown or unattested selected variant',
+			)
 			await fixture.capture({
 				command: 'journey',
 				selector: 'examples:files',

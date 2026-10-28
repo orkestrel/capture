@@ -87,7 +87,7 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 
 	it('refuses a freshness reading before the registry exists, with the refresh command named', () => {
 		const run = execute(['stale', 'pages:mail', '--variant', 'light-390'])
-		expect(run.status).toBe(64)
+		expect(run.status).toBe(1)
 		expect(run.stderr).toContain(
 			'Missing accepted registry; run the explicit complete-registry refresh',
 		)
@@ -127,6 +127,75 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 		])
 		expect(sheets.status === 0 ? 0 : sheets.stderr).toBe(0)
 		expect(existsSync(resolve(fixture.root, 'tmp/sheets/sheet-001.png'))).toBe(true)
+	})
+
+	it('H1r maps unknown and empty selectors to exit 64 under every command', () => {
+		for (const command of ['journey', 'frames', 'stale', 'preflight', 'sheets', 'registry']) {
+			for (const selector of ['missing', '']) {
+				const run = execute([
+					command,
+					selector,
+					...(command === 'sheets' ? ['--output', 'tmp/refused-selection'] : []),
+				])
+				expect({ command, selector, status: run.status, stderr: run.stderr }).toMatchObject({
+					command,
+					selector,
+					status: 64,
+				})
+				expect(run.stderr).not.toBe('')
+			}
+		}
+	})
+
+	it('H1r maps Git plan failures to exit 1 through the built command', () => {
+		for (const command of ['journey', 'frames']) {
+			const run = execute([command, '--changed', 'missing-ref', '--plan'])
+			expect({ command, status: run.status, stderr: run.stderr }).toMatchObject({
+				command,
+				status: 1,
+				stderr: expect.stringContaining('Git read failed'),
+			})
+		}
+	})
+	it('H1s maps an unknown variant to usage under every command before and after registry authentication', () => {
+		const isolated = new ComposedFixture({
+			config: CAPTURE_DEFAULTS.config,
+			requests: CAPTURE_DEFAULTS.requests,
+		})
+		try {
+			for (const authenticated of [false, true]) {
+				if (authenticated) {
+					const registry = spawnSync(process.execPath, [BUILT, 'registry'], {
+						cwd: isolated.root,
+						encoding: 'utf8',
+						windowsHide: true,
+						timeout: 60_000,
+					})
+					if (registry.status !== 0) throw new Error(registry.stderr || 'Registry refresh failed')
+				}
+				for (const command of ['journey', 'frames', 'stale', 'preflight', 'sheets', 'registry']) {
+					const child = spawnSync(
+						process.execPath,
+						[
+							BUILT,
+							command,
+							...(command === 'registry' ? [] : ['all']),
+							'--variant',
+							'unknown-variant',
+							...(command === 'sheets' ? ['--output', 'tmp/refused-variant'] : []),
+						],
+						{ cwd: isolated.root, encoding: 'utf8', windowsHide: true, timeout: 60_000 },
+					)
+					expect({ command, status: child.status, stderr: child.stderr }).toMatchObject({
+						command,
+						status: 64,
+						stderr: expect.stringContaining('variant'),
+					})
+				}
+			}
+		} finally {
+			isolated.destroy()
+		}
 	})
 
 	it('exits 1 for a stage whose child fails, leaving the manifest untouched', () => {

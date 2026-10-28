@@ -5,11 +5,23 @@ import type {
 	CaptureExecutionResult,
 	CaptureInvocationInterface,
 	CaptureInvocationOptions,
+	CaptureOwnership,
 } from './types.js'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import {
+	appendFileSync,
+	linkSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from 'node:fs'
 import { resolve } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
+import { attempt, isRecord, parseJSON, preview } from '@orkestrel/contract'
 import { createSession } from '@orkestrel/process/server'
 import { createTimeout } from '@orkestrel/timeout'
 import {
@@ -23,8 +35,14 @@ import {
 	CAPTURE_FLAG_VALUE,
 	CAPTURE_REQUESTS_FLAG,
 	CAPTURE_RUNS_DIRECTORY,
+	CAPTURE_OWNER_FILE,
 } from './constants.js'
-import { readCaptureRequestOwner, readCaptureRunning } from './helpers.js'
+import {
+	computeCaptureHash,
+	readCaptureRequestOwner,
+	readCaptureRunning,
+	settleCaptureShutdown,
+} from './helpers.js'
 
 /**
  * Owns one runner invocation's identity, request file, children, and interruption.
@@ -58,7 +76,9 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 	readonly #interrupt = this.#abort.bind(this)
 	readonly #request: string
 	readonly #directory: string
-	#termination: Promise<void> | undefined
+	readonly #lock: string
+	#lease: string | undefined
+	#termination: Promise<readonly unknown[]> | undefined
 
 	/**
 	 * Creates the invocation entity for one runner call.
@@ -73,6 +93,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 			`${CAPTURE_REQUEST_PREFIX}-${String(process.pid)}.json`,
 		)
 		this.#directory = resolve(options.root, options.requests, CAPTURE_RUNS_DIRECTORY, this.#id)
+		this.#lock = resolve(options.root, options.requests, CAPTURE_OWNER_FILE)
 	}
 
 	get id(): string {
@@ -101,13 +122,49 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 	}
 
 	async release(): Promise<void> {
-		await this.#termination
-		process.off('SIGINT', this.#interrupt)
-		process.off('SIGTERM', this.#interrupt)
+		const failures: unknown[] = []
+		try {
+			failures.push(
+				...(await (this.#termination ??
+					settleCaptureShutdown(
+						() => this.retract(),
+						[...this.#children].map((child) => () => child.stop()),
+					))),
+			)
+		} catch (error) {
+			failures.push(error)
+		} finally {
+			process.off('SIGINT', this.#interrupt)
+			process.off('SIGTERM', this.#interrupt)
+			if (this.#lease !== undefined) {
+				const removal = attempt(() => {
+					const marker = attempt(() => readFileSync(this.#lock, 'utf8'))
+					if (!marker.success) {
+						if (
+							marker.error instanceof Error &&
+							'code' in marker.error &&
+							marker.error.code === 'ENOENT'
+						)
+							return
+						throw marker.error
+					}
+					if (this.#owner(marker.value).id === this.id) rmSync(this.#lock, { force: true })
+				})
+				if (removal.success) this.#lease = undefined
+				else failures.push(removal.error)
+			}
+		}
+		if (failures.length > 0)
+			throw new CaptureError('Capture shutdown failed', {
+				code: 'STAGE',
+				cause: new AggregateError(failures),
+			})
 	}
 
 	prepare(): void {
 		const requests = resolve(this.#options.root, this.#options.requests)
+		mkdirSync(requests, { recursive: true })
+		this.#claim()
 		mkdirSync(this.#directory, { recursive: true })
 		for (const name of readdirSync(requests)) {
 			const pid = readCaptureRequestOwner(name)
@@ -122,20 +179,34 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 			...new Set(
 				readdirSync(requests).flatMap((name) => {
 					const pid = readCaptureRequestOwner(name)
-					return pid === undefined || pid === process.pid || !readCaptureRunning(pid) ? [] : [pid]
+					return pid === undefined ||
+						(pid === process.pid && this.#lease !== undefined) ||
+						!readCaptureRunning(pid)
+						? []
+						: [pid]
 				}),
 			),
 		]
 	}
 
 	publish(request: CaptureRequest | CaptureDiscoveryRequest): void {
+		this.#claim()
 		writeFileSync(`${this.#request}.tmp`, `${JSON.stringify(request)}\n`)
 		renameSync(`${this.#request}.tmp`, this.#request)
 	}
 
 	retract(): void {
-		rmSync(this.#request, { force: true })
-		rmSync(`${this.#request}.tmp`, { force: true })
+		if (this.#lease === undefined) return
+		const results = [
+			attempt(() => rmSync(this.#request, { force: true })),
+			attempt(() => rmSync(`${this.#request}.tmp`, { force: true })),
+		]
+		const failures = results.flatMap((result) => (result.success ? [] : [result.error]))
+		if (failures.length > 0)
+			throw new CaptureError('Capture request removal failed', {
+				code: 'STAGE',
+				cause: new AggregateError(failures),
+			})
 	}
 
 	launched(log: string): boolean {
@@ -261,9 +332,148 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 	#abort(): void {
 		if (this.signal.aborted) return
 		this.#controller.abort(new CaptureError('Runner interrupted', { code: 'STAGE' }))
-		this.retract()
-		this.#termination = Promise.all([...this.#children].map((child) => child.stop())).then(
-			() => undefined,
+		this.#termination = settleCaptureShutdown(
+			() => this.retract(),
+			[...this.#children].map((child) => () => child.stop()),
+		)
+	}
+
+	#claim(): void {
+		if (this.#lease !== undefined) return
+		const directory = attempt(() => statSync(resolve(this.#options.root, this.#options.requests)))
+		if (!directory.success || !directory.value.isDirectory())
+			throw new CaptureError(
+				`Capture request directory is unavailable: ${resolve(this.#options.root, this.#options.requests)}`,
+				{ code: 'STAGE', ...(!directory.success ? { cause: directory.error } : {}) },
+			)
+		const temporary = `${this.#lock}.${this.id}.tmp`
+		try {
+			writeFileSync(temporary, JSON.stringify({ pid: process.pid, id: this.id }), { flag: 'wx' })
+			for (let iteration = 0; iteration < 64; iteration += 1) {
+				const opened = attempt(() => linkSync(temporary, this.#lock))
+				if (opened.success) {
+					this.#lease = this.id
+					return
+				}
+				if (
+					!(opened.error instanceof Error) ||
+					!('code' in opened.error) ||
+					opened.error.code !== 'EEXIST'
+				)
+					throw opened.error
+				const marker = attempt(() => readFileSync(this.#lock, 'utf8'))
+				if (!marker.success) {
+					if (
+						marker.error instanceof Error &&
+						'code' in marker.error &&
+						marker.error.code === 'ENOENT'
+					)
+						continue
+					throw new CaptureError(`Capture ownership marker is unreadable: ${this.#lock}`, {
+						code: 'STAGE',
+						cause: marker.error,
+					})
+				}
+				const owner = this.#owner(marker.value)
+				if (readCaptureRunning(owner.pid)) this.#refuse(owner)
+				this.#reserve(marker.value, temporary)
+				const moved = `${this.#lock}.${randomUUID()}.stale`
+				const renamed = attempt(() => renameSync(this.#lock, moved))
+				if (!renamed.success) {
+					if (
+						renamed.error instanceof Error &&
+						'code' in renamed.error &&
+						renamed.error.code === 'ENOENT'
+					)
+						continue
+					throw renamed.error
+				}
+				try {
+					const actual = readFileSync(moved, 'utf8')
+					if (actual !== marker.value) {
+						const restored = attempt(() => linkSync(moved, this.#lock))
+						if (
+							!restored.success &&
+							(!(restored.error instanceof Error) ||
+								!('code' in restored.error) ||
+								restored.error.code !== 'EEXIST')
+						)
+							throw restored.error
+						continue
+					}
+					this.#options.stderr(
+						`Reclaimed stale capture ownership from process ${String(owner.pid)}; invocation ${preview(owner.id)}\n`,
+					)
+				} finally {
+					rmSync(moved, { force: true })
+				}
+			}
+			throw new CaptureError(
+				'Capture ownership changed repeatedly; retry after serializing capture commands',
+				{ code: 'STAGE' },
+			)
+		} catch (error) {
+			if (isCaptureError(error)) throw error
+			throw new CaptureError(`Cannot claim capture ownership: ${this.#lock}`, {
+				code: 'STAGE',
+				cause: error,
+			})
+		} finally {
+			rmSync(temporary, { force: true })
+		}
+	}
+
+	#owner(marker: string): CaptureOwnership {
+		if (marker === '')
+			throw new CaptureError(
+				`Capture ownership marker is empty: ${this.#lock}; its holder cannot be established`,
+				{ code: 'STAGE' },
+			)
+		const owner = attempt(() => parseJSON(marker))
+		if (
+			!owner.success ||
+			!isRecord(owner.value) ||
+			typeof owner.value.pid !== 'number' ||
+			!Number.isSafeInteger(owner.value.pid) ||
+			owner.value.pid <= 0 ||
+			typeof owner.value.id !== 'string' ||
+			owner.value.id === ''
+		)
+			throw new CaptureError(
+				`Capture ownership marker is malformed: ${this.#lock}; expected { pid: positive integer, id: nonempty string }, received ${preview(marker)}`,
+				{ code: 'STAGE' },
+			)
+		return { pid: owner.value.pid, id: owner.value.id }
+	}
+
+	#reserve(marker: string, temporary: string): void {
+		// Retain fences so a delayed reader of a stale identity cannot rename its replacement.
+		let predecessor = marker
+		for (let iteration = 0; iteration < 64; iteration += 1) {
+			const fence = `${this.#lock}.reclaim-${computeCaptureHash(predecessor)}`
+			const reserved = attempt(() => linkSync(temporary, fence))
+			if (reserved.success) return
+			if (
+				!(reserved.error instanceof Error) ||
+				!('code' in reserved.error) ||
+				reserved.error.code !== 'EEXIST'
+			)
+				throw reserved.error
+			predecessor = readFileSync(fence, 'utf8')
+			const owner = this.#owner(predecessor)
+			if (owner.id === this.id) return
+			if (readCaptureRunning(owner.pid)) this.#refuse(owner)
+		}
+		throw new CaptureError(
+			'Capture reclaim history exceeds its retry budget; inspect the request directory before retrying',
+			{ code: 'STAGE' },
+		)
+	}
+
+	#refuse(holder: CaptureOwnership): never {
+		throw new CaptureError(
+			`Another runner holds this workspace (process ${preview(holder.pid)}); invocation ${preview(holder.id)}; serialize capture commands. If this pid is not a capture run, inspect ${this.#lock} and remove the stale marker only after confirming no capture run owns this request directory`,
+			{ code: 'STAGE' },
 		)
 	}
 }

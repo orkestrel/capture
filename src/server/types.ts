@@ -52,6 +52,17 @@ export interface CapturePortfolioRoot {
 export type CaptureHashHandler = (bytes: Uint8Array) => string
 
 /**
+ * Reads a contained input through an owning operation's file snapshot memo.
+ *
+ * @returns The input digest, or undefined if the file vanished before its snapshot
+ * @example
+ * ```ts
+ * const read: CaptureInputHandler = (file) => snapshots.get(file)?.image.digest
+ * ```
+ */
+export type CaptureInputHandler = (file: string) => string | undefined
+
+/**
  * Configures the engine's workspace and separate evidence documents.
  *
  * @remarks
@@ -750,6 +761,8 @@ export interface CaptureArgumentsOptions {
 	readonly case?: string
 	readonly final: string
 	readonly mode?: string
+	/** Original reporter title segments keyed by its space-joined full name. */
+	readonly titles?: Readonly<Record<string, readonly string[]>>
 }
 
 /**
@@ -1042,6 +1055,25 @@ export interface CaptureInvocationOptions {
 }
 
 /**
+ * Removes one invocation's published request during shutdown.
+ *
+ * @example
+ * ```ts
+ * const retract: CaptureRetractionHandler = () => invocation.retract()
+ * ```
+ */
+export type CaptureRetractionHandler = () => void
+
+/**
+ * Begins one independent child termination only after request removal has been attempted.
+ * @example
+ * ```ts
+ * const terminate: CaptureTerminationHandler = () => child.stop()
+ * ```
+ */
+export type CaptureTerminationHandler = () => Promise<boolean>
+
+/**
  * Owns one runner invocation's identity, request file, children, and interruption.
  *
  * @example
@@ -1076,7 +1108,7 @@ export interface CaptureInvocationInterface {
 	attach(): void
 
 	/**
-	 * Waits for any interrupt termination to finish, then removes the interrupt handler.
+	 * Releases request ownership and removes interrupt handlers even when shutdown fails.
 	 *
 	 * @returns Nothing once the children are gone and the handler is removed
 	 *
@@ -1088,7 +1120,7 @@ export interface CaptureInvocationInterface {
 	release(): Promise<void>
 
 	/**
-	 * Creates the report directory and removes request files that name a process no longer running.
+	 * Claims invocation ownership, reclaims a dead holder, creates the report directory, and removes requests from dead processes.
 	 *
 	 * @remarks A request file under a live process id is never touched, this process's own included.
 	 *
@@ -1102,7 +1134,7 @@ export interface CaptureInvocationInterface {
 	/**
 	 * Lists the other live processes that hold a request file in the request directory.
 	 *
-	 * @returns The distinct process ids, none of them this process's own, in directory order
+	 * @returns The distinct holder process ids in directory order, excluding this invocation's own lease
 	 *
 	 * @example
 	 * ```ts
@@ -1445,14 +1477,38 @@ export interface CaptureJudgedFrame {
  *
  * @example
  * ```ts
- * const result: CaptureImageResult = { entry, picture, digest, size: 2048 }
+ * const result: CaptureDecodedImage = { entry, picture, digest, size: 2048 }
  * ```
  */
-export interface CaptureImageResult {
+export interface CaptureDecodedImage {
 	readonly entry: CaptureDestination
 	readonly picture: CapturePicture
 	readonly digest: string
 	readonly size: number
+}
+
+/**
+ * Retains source geometry and a bounded sheet thumbnail after a full frame has been judged.
+ * @example
+ * ```ts
+ * const result: CaptureImageResult = { entry, picture: { width: 2880, height: 6000 }, thumbnail, digest, size: 2048 }
+ * ```
+ */
+export interface CaptureImageResult extends Omit<CaptureDecodedImage, 'picture'> {
+	readonly picture: Pick<CapturePicture, 'width' | 'height'>
+	readonly thumbnail: CapturePicture
+}
+
+/**
+ * Identifies the process and invocation that own a request directory or a stale-reclaim fence.
+ * @example
+ * ```ts
+ * const owner: CaptureOwnership = { pid: process.pid, id: 'capture-run' }
+ * ```
+ */
+export interface CaptureOwnership {
+	readonly pid: number
+	readonly id: string
 }
 
 /**
@@ -1660,7 +1716,7 @@ export interface CaptureSheetsInterface {
 	/**
 	 * Reads selected physical images, writes complete indexed sheets, and retains all refusals.
 	 *
-	 * @returns Exit 0 for current selected images without preflight defects, 1 for any defect, or 64 for refused usage, including an output directory that is not new, contained, and outside the selected capture directories
+	 * @returns Exit 0 for current selected images without preflight defects, 1 for any defect or containment refusal, or 64 for refused usage
 	 *
 	 * @example
 	 * ```ts

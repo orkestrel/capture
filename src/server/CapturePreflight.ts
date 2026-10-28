@@ -2,7 +2,7 @@ import type { CaptureDestination, CaptureStoredManifest } from '@src/core'
 import type {
 	CaptureArtifactResult,
 	CaptureCheckFrame,
-	CaptureImageResult,
+	CaptureDecodedImage,
 	CaptureJudgedFrame,
 	CaptureJudgedRecord,
 	CaptureProducer,
@@ -13,7 +13,7 @@ import type {
 	CaptureReaderSelection,
 	CaptureWriteHandler,
 } from './types.js'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
@@ -27,9 +27,11 @@ import {
 } from '@orkestrel/contract'
 import {
 	CAPTURE_MANIFEST_FILE,
+	CAPTURE_REGISTRY_FILE,
 	CaptureError,
 	describeCaptureError,
 	isCapturePath,
+	isCaptureError,
 	isCaptureRun,
 	isCaptureStoredManifest,
 	matchesCaptureSelector,
@@ -42,6 +44,7 @@ import {
 	CAPTURE_MINIMUM_IMAGE,
 	CAPTURE_REPORT_LINES,
 	CAPTURE_RUNS_DIRECTORY,
+	CAPTURE_SHEET,
 } from './constants.js'
 import { CaptureDiscovery } from './CaptureDiscovery.js'
 import { CaptureIntegrity } from './CaptureIntegrity.js'
@@ -55,6 +58,12 @@ import {
 	decodeCapturePicture,
 	requireCaptureProjects,
 	resolveCaptureRelative,
+	requireCaptureContained,
+	resolveCaptureExit,
+	readCaptureImage,
+	requireCaptureSelection,
+	readCaptureVariants,
+	shrinkCapturePicture,
 } from './helpers.js'
 
 /**
@@ -113,9 +122,15 @@ export class CapturePreflight implements CapturePreflightInterface {
 	 */
 	async read(): Promise<CaptureReaderSelection> {
 		const { root, config, selection } = this.#options
+		requireCaptureContained(root, resolve(root, this.#options.journeys))
 		if (!isCapturePath(resolveCaptureRelative(root, config)))
 			throw new CaptureError('Reader config must be a contained repository path', { code: 'USAGE' })
 		const loaded = await this.#load(config)
+		requireCaptureSelection(
+			selection.selector,
+			[],
+			loaded.map((entry) => entry.project),
+		)
 		const primary = requireCaptureProjects(loaded.map((entry) => entry.project))
 		// A standalone root has no stamping route and is read only when a selection names it.
 		const standalone = primary.standalone.find(
@@ -125,6 +140,12 @@ export class CapturePreflight implements CapturePreflightInterface {
 				selection.selector.startsWith(`${entry.portfolio}:`),
 		)
 		const options = buildCaptureIntegrityOptions(root, primary, standalone)
+		requireCaptureSelection(
+			selection.selector,
+			selection.variants ?? [],
+			loaded.map((entry) => entry.project),
+			readCaptureVariants(root, resolve(root, options.directory, CAPTURE_REGISTRY_FILE)),
+		)
 		const integrity = new CaptureIntegrity(options)
 		const population = await integrity.read(selection)
 		// A standalone root's producers belong to another wrapper, so only the primary population is mapped.
@@ -163,9 +184,36 @@ export class CapturePreflight implements CapturePreflightInterface {
 			...this.#options.selection,
 			variants: [...new Set(source.population.entries.map((entry) => entry.variant))],
 		})
-		const results = source.population.entries.map((entry) => this.#image(entry))
+		const judged = this.#artifacts(source)
+		const checks = await this.#checks()
+		const results = judged.map(({ entry, artifact, issues }) => {
+			const result = this.#image(entry)
+			const findings = checks.flatMap((check) => {
+				const found: unknown = check({ entry, picture: result.image?.picture, artifact })
+				if (!arrayOf(isString)(found))
+					throw new CaptureError('A host check returned something other than a list of findings', {
+						code: 'HOST',
+					})
+				return found
+			})
+			return {
+				image:
+					result.image === undefined
+						? undefined
+						: {
+								...result.image,
+								picture: { width: result.image.picture.width, height: result.image.picture.height },
+								thumbnail: shrinkCapturePicture(
+									result.image.picture,
+									Math.max(1, Math.ceil(result.image.picture.width / CAPTURE_SHEET.cell)),
+									CAPTURE_SHEET.limit,
+								),
+							},
+				issues: [...issues, ...result.issues, ...findings],
+			}
+		})
 		const images = results.flatMap((result) => (result.image === undefined ? [] : [result.image]))
-		return {
+		const result: CapturePreflightResult = {
 			selection: source.population,
 			variants: source.variants,
 			directory: source.directory,
@@ -181,8 +229,9 @@ export class CapturePreflight implements CapturePreflightInterface {
 				),
 				source.variants,
 			),
-			issues: results.flatMap((result) => result.issues),
+			issues: [...new Set(results.flatMap((image) => image.issues))],
 		}
+		return result
 	}
 
 	/**
@@ -198,7 +247,7 @@ export class CapturePreflight implements CapturePreflightInterface {
 	async execute(): Promise<number> {
 		try {
 			const result = await this.check()
-			const issues = [...result.issues, ...(await this.#artifacts(result))]
+			const issues = result.issues
 			this.#stdout(
 				`${CAPTURE_REPORT_LINES.preflight} ${JSON.stringify({
 					selection: result.selection,
@@ -221,7 +270,7 @@ export class CapturePreflight implements CapturePreflightInterface {
 				: CAPTURE_EXIT.passed
 		} catch (error) {
 			this.#stderr(`${describeCaptureError(error)}\n`)
-			return CAPTURE_EXIT.usage
+			return resolveCaptureExit(error)
 		}
 	}
 
@@ -238,7 +287,7 @@ export class CapturePreflight implements CapturePreflightInterface {
 			root,
 			requests: requests ?? CAPTURE_DEFAULTS.requests,
 			stdout: () => undefined,
-			stderr: () => undefined,
+			stderr: this.#stderr,
 		})
 		invocation.attach()
 		try {
@@ -286,14 +335,14 @@ export class CapturePreflight implements CapturePreflightInterface {
 
 	// Decodes one selected image, reporting the reason an unreadable or tiny one cannot be judged.
 	#image(entry: CaptureDestination): {
-		readonly image: CaptureImageResult | undefined
+		readonly image: CaptureDecodedImage | undefined
 		readonly issues: readonly string[]
 	} {
 		const read = attempt(() => {
-			const bytes = readFileSync(resolve(this.#options.root, entry.file))
+			const bytes = readCaptureImage(resolve(this.#options.root, entry.file))
 			if (bytes.length < CAPTURE_MINIMUM_IMAGE)
 				throw new CaptureError(`Image under 4 KB: ${entry.file}`, { code: 'EVIDENCE' })
-			const image: CaptureImageResult = {
+			const image = {
 				entry,
 				picture: decodeCapturePicture(bytes),
 				digest: computeCaptureHash(bytes),
@@ -310,9 +359,9 @@ export class CapturePreflight implements CapturePreflightInterface {
 	}
 
 	// Judges each frame by the artifact its own stamp's run record names, then runs the host's checks.
-	async #artifacts(result: CapturePreflightResult): Promise<readonly string[]> {
+	#artifacts(result: CaptureReaderSelection): readonly CaptureJudgedFrame[] {
 		const stored = this.#manifest(result.directory)
-		const located = result.selection.entries.map((entry) => ({
+		const located = result.population.entries.map((entry) => ({
 			entry,
 			location: attempt(() => this.#locate(entry, stored, result.variants, result.directory)),
 		}))
@@ -333,7 +382,7 @@ export class CapturePreflight implements CapturePreflightInterface {
 			if (!outcome.success)
 				return { entry, artifact: undefined, issues: [describeCaptureError(outcome.error)] }
 			const artifact = outcome.value
-			const lines = artifact.text.split('\n')
+			const lines = artifact.text.split(/\r\n|\n/u)
 			const covered =
 				artifact.run.passed.includes(location.value.case) &&
 				artifact.run.entries.some(
@@ -363,19 +412,15 @@ export class CapturePreflight implements CapturePreflightInterface {
 		const errors = artifacts.flatMap((artifact) =>
 			collectCaptureErrors(artifact.file, artifact.text),
 		)
-		const checks = await this.#checks()
-		const findings = judged.flatMap(({ entry, artifact }) => {
-			const picture = result.images.find((image) => image.entry.file === entry.file)?.picture
-			return checks.flatMap((check) => {
-				const found: unknown = check({ entry, picture, artifact })
-				if (!arrayOf(isString)(found))
-					throw new CaptureError('A host check returned something other than a list of findings', {
-						code: 'HOST',
-					})
-				return found
-			})
-		})
-		return [...new Set([...judged.flatMap(({ issues }) => issues), ...errors, ...findings])]
+		return judged.map((frame) => ({
+			...frame,
+			issues: [
+				...frame.issues,
+				...errors.filter(
+					(error) => frame.artifact !== undefined && error.startsWith(`${frame.artifact.file}:`),
+				),
+			],
+		}))
 	}
 
 	// Reads the stamps the engine's check validated; an absent manifest holds no stamps.
@@ -414,6 +459,7 @@ export class CapturePreflight implements CapturePreflightInterface {
 	// Reads a judged record and the artifact it names, refusing changed or unbound artifact bytes.
 	#artifact(record: string): CaptureArtifactResult {
 		const { root, journeys } = this.#options
+		requireCaptureContained(root, resolve(root, journeys))
 		const run = parseJSON(readFileSync(resolve(root, record), 'utf8'))
 		if (!isCaptureRun(run))
 			throw new CaptureError(`Invalid judged run record: ${record}`, { code: 'EVIDENCE' })
@@ -423,12 +469,24 @@ export class CapturePreflight implements CapturePreflightInterface {
 			})
 		const file = run.artifact.file
 		const path = resolve(root, file)
+		const physical = attempt(() => requireCaptureContained(journeys, path))
 		const contained = relative(journeys, path)
-		if (contained === '' || contained.startsWith('..') || isAbsolute(contained))
+		if (
+			contained === '' ||
+			contained.startsWith('..') ||
+			isAbsolute(contained) ||
+			(!physical.success && isCaptureError(physical.error)) ||
+			(physical.success && physical.value === realpathSync(journeys))
+		)
 			throw new CaptureError(`Judged journey artifact is outside the journeys directory: ${file}`, {
 				code: 'CONTAINMENT',
 			})
-		const bytes = attempt(() => readFileSync(path))
+		if (!physical.success)
+			throw new CaptureError(
+				`Cannot read judged journey artifact: ${file}: ${describeCaptureError(physical.error)}`,
+				{ code: 'EVIDENCE', cause: physical.error },
+			)
+		const bytes = attempt(() => readFileSync(physical.value))
 		if (!bytes.success)
 			throw new CaptureError(
 				`Cannot read judged journey artifact: ${file}: ${describeCaptureError(bytes.error)}`,

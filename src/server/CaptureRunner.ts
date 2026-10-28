@@ -48,6 +48,11 @@ import {
 	resolveCaptureRelative,
 	resolveCaptureStages,
 	resolveCaptureVariants,
+	resolveCaptureExit,
+	readCaptureTitles,
+	describeCaptureMembers,
+	requireCaptureSelection,
+	readCaptureVariants,
 } from './helpers.js'
 
 /**
@@ -111,11 +116,19 @@ export class CaptureRunner implements CaptureRunnerInterface {
 				...(this.#options.deadline === undefined ? {} : { deadline: this.#options.deadline }),
 			}).describe()
 			const projects = description.projects.map((entry) => entry.project)
+			if (parsed.selector !== undefined) {
+				requireCaptureSelection(parsed.selector, [], projects)
+			}
+			if (command !== 'stale' && parsed.variants.length > 0)
+				resolveCaptureVariants(parsed.variants, projects)
+			if (command !== 'stale' && parsed.changed !== undefined) {
+				await invocation.release()
+				invocation.attach()
+				return await this.#changed(invocation, command, parsed, projects)
+			}
 			return command === 'stale'
 				? await this.#check(parsed, projects)
-				: parsed.changed === undefined
-					? await this.#run(invocation, command, parsed, projects)
-					: await this.#changed(invocation, command, parsed, projects)
+				: await this.#run(invocation, command, parsed, projects)
 		} catch (error) {
 			const ran = Object.values(CAPTURE_STAGES).filter((stage) =>
 				invocation.launched(resolve(invocation.directory, `${command}-${stage}.log`)),
@@ -132,11 +145,13 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			this.#stderr(
 				`${describeCaptureError(error)}\n${ran.length === 0 ? 'No execution child ran; the command was refused before execution.' : `Execution stopped after stages: ${ran.join(', ')}; no later stage ran.`}\nNEXT ${next}\n`,
 			)
-			return isCaptureError(error) && error.code === 'USAGE'
-				? CAPTURE_EXIT.usage
-				: CAPTURE_EXIT.failed
+			return resolveCaptureExit(error)
 		} finally {
-			await invocation.release()
+			await invocation
+				.release()
+				.catch((error: unknown) =>
+					this.#stderr(`Capture cleanup failed: ${describeCaptureError(error)}\n`),
+				)
 		}
 	}
 
@@ -162,7 +177,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		const variants = resolveCaptureVariants(parsed.variants, projects)
 		if (shared.length > 0) {
 			this.#stderr(
-				`Shared journey inputs cannot be narrowed because every destination reads them: ${JSON.stringify(shared.map((change) => change.path))}\n`,
+				`Shared journey inputs cannot be narrowed because every destination reads them: ${describeCaptureMembers(shared.map((change) => change.path))}\n`,
 			)
 			this.#stdout(
 				`SUMMARY ${JSON.stringify({ run: [], passed: [], failed: [], notrun: plan.owners, reason: 'shared inputs require an explicit journey selection' })}\n`,
@@ -181,7 +196,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			.map((tag) => tag.slice(CAPTURE_OWNER_PREFIX.length))
 		for (const owner of plan.owners) {
 			const fault = describeCaptureSelectorFault(owner, selectors)
-			if (fault !== undefined) throw new CaptureError(fault, { code: 'USAGE' })
+			if (fault !== undefined) throw new CaptureError(fault, { code: 'HOST' })
 			if (parsed.plan) await this.#resolve(this.#integrity(primary), parsed, owner, variants)
 		}
 		if (parsed.plan) {
@@ -211,9 +226,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 					projects,
 				).catch((error: unknown) => {
 					this.#stderr(`${describeCaptureError(error)}\n`)
-					return isCaptureError(error) && error.code === 'USAGE'
-						? CAPTURE_EXIT.usage
-						: CAPTURE_EXIT.failed
+					return resolveCaptureExit(error)
 				})
 				outcomes.push({
 					owner,
@@ -223,7 +236,11 @@ export class CaptureRunner implements CaptureRunnerInterface {
 					),
 				})
 			} finally {
-				await invocation.release()
+				await invocation
+					.release()
+					.catch((error: unknown) =>
+						this.#stderr(`Capture cleanup failed: ${describeCaptureError(error)}\n`),
+					)
 			}
 			if (outcomes.some((outcome) => outcome.code !== CAPTURE_EXIT.passed)) break
 		}
@@ -272,7 +289,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			)
 			throw new CaptureError(
 				`${describeCaptureError(error)}\nNo owner ran; changed selection was refused.\n${isCaptureError(error) && error.code === 'EVIDENCE' ? `NEXT ${registry}\n` : ''}NEXT ${command}`,
-				{ code: 'USAGE', cause: error },
+				{ code: isCaptureError(error) ? error.code : 'EVIDENCE', cause: error },
 			)
 		}
 	}
@@ -375,6 +392,11 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			projects: selected.map((project) => project.name),
 			filter: plan.filter,
 			...(plan.case === undefined ? {} : { case: plan.case }),
+			...(plan.case === undefined
+				? {}
+				: {
+						titles: readCaptureTitles(root, resolve(root, plan.directory, CAPTURE_REGISTRY_FILE)),
+					}),
 			final: plan.final,
 		})
 		const request: CaptureRequest = {
@@ -396,23 +418,18 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			this.#stdout(
 				`${plan.command} ${stage.name}: ${stage.variants.join(', ')}; ${plan.selector}${plan.case === undefined ? '' : ' (case-scoped)'}; report=${report}; records=${plan.directory}/${CAPTURE_RUNS_DIRECTORY}/${invocation.id}/${stage.name}/<variant>.json\n`,
 			)
-			const result = await integrity
-				.stamp({
-					request,
-					report: resolveCaptureRelative(root, report),
-					signal: invocation.signal,
-					projects: selected.map((project) => ({
-						name: project.name,
-						variant: project.variant,
-						inputs: project.inputs,
-						record: `${resolveCaptureRelative(root, project.directory)}/${CAPTURE_RUNS_DIRECTORY}/${request.id}/${request.stage}/${project.variant}.json`,
-					})),
-					execute: () => invocation.spawn(args, log, plan.command === 'capture'),
-				})
-				.catch((error: unknown) => {
-					if (invocation.launched(log)) throw error
-					throw new CaptureError(describeCaptureError(error), { code: 'USAGE', cause: error })
-				})
+			const result = await integrity.stamp({
+				request,
+				report: resolveCaptureRelative(root, report),
+				signal: invocation.signal,
+				projects: selected.map((project) => ({
+					name: project.name,
+					variant: project.variant,
+					inputs: project.inputs,
+					record: `${resolveCaptureRelative(root, project.directory)}/${CAPTURE_RUNS_DIRECTORY}/${request.id}/${request.stage}/${project.variant}.json`,
+				})),
+				execute: () => invocation.spawn(args, log, plan.command === 'capture'),
+			})
 			this.#stdout(
 				`INTEGRITY ${JSON.stringify({
 					command: plan.command,
@@ -453,12 +470,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 				state: parsed.state,
 				...(parsed.case === undefined ? {} : { case: parsed.case }),
 			})
-			.then(
-				(result) => result.case,
-				(error: unknown) => {
-					throw new CaptureError(describeCaptureError(error), { code: 'USAGE', cause: error })
-				},
-			)
+			.then((result) => result.case)
 	}
 
 	#integrity(
@@ -492,43 +504,52 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		parsed: CaptureRunnerArguments,
 		projects: readonly CaptureProject[],
 	): Promise<number> {
-		try {
-			const selector = parsed.selector
-			if (selector === undefined)
-				throw new CaptureError(
-					`Usage: capture ${CAPTURE_COMMAND_NAMES.stale} <selector> [--variant <output>] [--state <state>] [--case <full name>] [--portfolio <name>]`,
-					{ code: 'USAGE' },
-				)
-			const primary = requireCaptureProjects(projects)
-			// A standalone root has no stamping route and is read only when a selection names it.
-			const standalone = primary.standalone.find(
-				(root) =>
-					parsed.portfolio === root.portfolio ||
-					selector === root.portfolio ||
-					selector.startsWith(`${root.portfolio}:`),
+		const selector = parsed.selector
+		if (selector === undefined)
+			throw new CaptureError(
+				`Usage: capture ${CAPTURE_COMMAND_NAMES.stale} <selector> [--variant <output>] [--state <state>] [--case <full name>] [--portfolio <name>]`,
+				{ code: 'USAGE' },
 			)
-			// An omitted variant list reads every output variant of the selected registry destinations,
-			// and refuses a declared producing variant the registry never attested.
-			const result = await this.#integrity(primary, standalone).check({
-				selector,
-				declared: [...new Set(projects.flatMap((project) => project.variants))],
-				...(parsed.variants.length === 0 ? {} : { variants: parsed.variants }),
-				...(parsed.case === undefined ? {} : { case: parsed.case }),
-				...(parsed.state === undefined ? {} : { state: parsed.state }),
-				...(parsed.portfolio === undefined ? {} : { portfolio: parsed.portfolio }),
-			})
-			this.#stdout(`INTEGRITY ${JSON.stringify({ command: 'stale', ...result })}\n`)
-			return result.entries.every((entry) => entry.status === 'current')
-				? CAPTURE_EXIT.passed
-				: CAPTURE_EXIT.failed
-		} catch (error) {
-			throw new CaptureError(describeCaptureError(error), { code: 'USAGE', cause: error })
-		}
+		const primary = requireCaptureProjects(projects)
+		// A standalone root has no stamping route and is read only when a selection names it.
+		const standalone = primary.standalone.find(
+			(root) =>
+				parsed.portfolio === root.portfolio ||
+				selector === root.portfolio ||
+				selector.startsWith(`${root.portfolio}:`),
+		)
+		requireCaptureSelection(
+			selector,
+			parsed.variants,
+			projects,
+			readCaptureVariants(
+				this.#options.root,
+				resolve(
+					this.#options.root,
+					standalone?.directory ?? primary.directory,
+					CAPTURE_REGISTRY_FILE,
+				),
+			),
+		)
+		// An omitted variant list reads every output variant of the selected registry destinations,
+		// and refuses a declared producing variant the registry never attested.
+		const result = await this.#integrity(primary, standalone).check({
+			selector,
+			declared: [...new Set(projects.flatMap((project) => project.variants))],
+			...(parsed.variants.length === 0 ? {} : { variants: parsed.variants }),
+			...(parsed.case === undefined ? {} : { case: parsed.case }),
+			...(parsed.state === undefined ? {} : { state: parsed.state }),
+			...(parsed.portfolio === undefined ? {} : { portfolio: parsed.portfolio }),
+		})
+		this.#stdout(`INTEGRITY ${JSON.stringify({ command: 'stale', ...result })}\n`)
+		return result.entries.every((entry) => entry.status === 'current')
+			? CAPTURE_EXIT.passed
+			: CAPTURE_EXIT.failed
 	}
 
 	#usage(selectors: readonly string[]): string {
 		const { command } = this.#options
 		const state = command === 'capture' ? ' [--state <name>]' : ''
-		return `Usage: capture ${CAPTURE_COMMAND_NAMES[command]} <selector> [--variant <name>] [--case <full name>]${state} [--config <file>]\nOr: capture ${CAPTURE_COMMAND_NAMES[command]} --changed <ref> [--plan] [--variant <name>] [--case <full name>]${state} [--config <file>]\nSelectors:\n${selectors.toSorted().join('\n')}\nall (every declared scope; name it explicitly)`
+		return `Usage: capture ${CAPTURE_COMMAND_NAMES[command]} <selector> [--variant <name>] [--case <full name>]${state} [--config <file>]\nOr: capture ${CAPTURE_COMMAND_NAMES[command]} --changed <ref> [--plan] [--variant <name>] [--case <full name>]${state} [--config <file>]\nSelectors:\n${describeCaptureMembers(selectors.toSorted())}\nall (every declared scope; name it explicitly)`
 	}
 }

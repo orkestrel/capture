@@ -33,5 +33,13 @@ export function readScopedFrame(frame: CaptureCheckFrame): readonly string[] {
 		: []
 }
 
+/** Reports an incomplete decoded RGB buffer passed to a host pixel check. */
+export function readPixelFrame(frame: CaptureCheckFrame): readonly string[] {
+	return frame.picture !== undefined &&
+		frame.picture.pixels.length !== frame.picture.width * frame.picture.height * 3
+		? ['missing decoded pixels']
+		: []
+}
+
 /** Lists the host's frame readers, which the reader loads through its `checks` option. */
-export const CAPTURE_CHECKS = [readViewportFrame, readScopedFrame]
+export const CAPTURE_CHECKS = [readViewportFrame, readScopedFrame, readPixelFrame]

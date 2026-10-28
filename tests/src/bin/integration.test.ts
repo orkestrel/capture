@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createScratch } from '@orkestrel/test/server'
 import { createCaptureRunner } from '@src/server'
 import { describe, expect, it } from 'vitest'
+import { countCaptureChildren } from '../../setupServer.js'
 import { FIXTURE_TIMEOUT } from '../../setupServer.js'
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url))
@@ -97,9 +98,6 @@ async function run(root: string, argv: readonly string[]) {
 }
 
 // Every child the runner spawns announces its process id, so the count tells discovery's one child from an execution child.
-function countChildren(stdout: string): number {
-	return stdout.match(/^pid=\d+$/gmu)?.length ?? 0
-}
 
 function listFiles(root: string, directory: string): readonly string[] {
 	return existsSync(resolve(root, directory)) ? readdirSync(resolve(root, directory)) : []
@@ -117,7 +115,8 @@ describe('discovery through a real Vitest and a real wrapper', { timeout: FIXTUR
 		try {
 			const result = await run(scratch.path, [])
 			expect(result.code).toBe(64)
-			expect(result.stderr.split(/\r\n|\n/u)).toEqual(expect.arrayContaining(['app', 'app:mail']))
+			for (const owner of ['app', 'app:mail'])
+				expect(result.stderr).toContain(JSON.stringify(owner))
 			const runs = listFiles(scratch.path, `${REQUESTS}/runs`)
 			expect(runs).toHaveLength(1)
 			expect(listFiles(scratch.path, `${REQUESTS}/runs/${runs[0] ?? ''}`).toSorted()).toEqual([
@@ -134,7 +133,7 @@ describe('discovery through a real Vitest and a real wrapper', { timeout: FIXTUR
 		try {
 			const result = await run(scratch.path, ['app:mail'])
 			// A selector the wrapper declares passes discovery and meets the registry check next, so the only child is the discovery one.
-			expect(countChildren(result.stdout)).toBe(1)
+			expect(countCaptureChildren(result.stdout)).toBe(1)
 			for (const file of ['collected.txt', 'setup.txt', 'initialized.txt'])
 				expect(scratch.has(file)).toBe(false)
 			expect(scratch.has('out')).toBe(false)
@@ -173,7 +172,7 @@ describe('discovery through a real Vitest and a real wrapper', { timeout: FIXTUR
 		try {
 			const result = await run(scratch.path, ['app:mail'])
 			expect(result.code).toBe(1)
-			expect(countChildren(result.stdout)).toBe(1)
+			expect(countCaptureChildren(result.stdout)).toBe(1)
 			const runs = listFiles(scratch.path, `${REQUESTS}/runs`)
 			expect(listFiles(scratch.path, `${REQUESTS}/runs/${runs[0] ?? ''}`)).not.toContain(
 				'description.json',

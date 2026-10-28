@@ -230,6 +230,7 @@ export class IntegrityFixture {
 			record: `tmp/captures/states/runs/${id}/${stage}/${variant}.json`,
 		}))
 		const input: FixtureWrite = {
+			...(options.ending === undefined ? {} : { ending: options.ending }),
 			request,
 			variants,
 			report,

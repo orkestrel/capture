@@ -1,10 +1,18 @@
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, readdirSync, symlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseJSON } from '@orkestrel/contract'
-import { decodeCapturePicture } from '@src/server'
+import { createScratch, supportsDirectoryLinks } from '@orkestrel/test/server'
+import { CaptureSheets, decodeCapturePicture } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { ReaderFixture } from '../../fixtures/capture/ReaderFixture.js'
-import { FIXTURE_TIMEOUT, MAIL, MIXED_PICTURES, VARIANTS } from '../../setupServer.js'
+import {
+	FIXTURE_TIMEOUT,
+	MAIL,
+	MIXED_PICTURES,
+	READER_CONFIG,
+	READER_JOURNEYS,
+	VARIANTS,
+} from '../../setupServer.js'
 
 const REFUSAL = 'Contact sheets require a new contained directory'
 
@@ -15,6 +23,73 @@ function readIndex(fixture: ReaderFixture, directory: string): Record<string, un
 }
 
 describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE_TIMEOUT }, () => {
+	it.runIf(supportsDirectoryLinks())(
+		'H1r revalidates the sheet parent at directory creation',
+		async () => {
+			const fixture = new ReaderFixture()
+			const outside = createScratch({ prefix: 'capture-sheet-write-' })
+			const reads: string[] = []
+			const errors: string[] = []
+			try {
+				fixture.seed()
+				await fixture.capture({ selector: 'pages:mail', picture: true })
+				const parent = resolve(fixture.root, 'tmp/sheet-parent')
+				mkdirSync(parent)
+				const sheets = new CaptureSheets({
+					reader: {
+						root: fixture.root,
+						config: resolve(fixture.root, READER_CONFIG),
+						journeys: resolve(fixture.root, READER_JOURNEYS),
+						selection: { selector: 'pages:mail', variants: ['light-390'] },
+						stdout: () => undefined,
+						stderr: (text) => errors.push(text),
+					},
+					get output() {
+						reads.push('output')
+						if (reads.length === 2) {
+							renameSync(parent, resolve(outside.path, 'moved'))
+							symlinkSync(resolve(outside.path, 'moved'), parent, 'junction')
+						}
+						return resolve(parent, 'sheets')
+					},
+				})
+				expect(await sheets.execute()).toBe(1)
+				expect(reads).toHaveLength(2)
+				expect(errors.join('')).toContain(REFUSAL)
+				expect(readdirSync(resolve(outside.path, 'moved'))).toEqual([])
+			} finally {
+				fixture.destroy()
+				outside.destroy()
+			}
+		},
+	)
+	it.runIf(supportsDirectoryLinks())(
+		'refuses output inside a capture directory reached through an alias',
+		async () => {
+			const fixture = new ReaderFixture()
+			try {
+				fixture.seed()
+				await fixture.capture({ selector: 'pages:mail', picture: true })
+				symlinkSync(
+					resolve(fixture.root, 'tmp/captures/states/pages'),
+					resolve(fixture.root, 'tmp/alias'),
+					'junction',
+				)
+				const run = await fixture.run('contact-sheets', [
+					'pages:mail',
+					'--variant',
+					'light-390',
+					'--output',
+					'tmp/alias/sheets',
+				])
+				expect(run.status).toBe(1)
+				expect(run.stderr).toContain(REFUSAL)
+				expect(existsSync(resolve(fixture.root, 'tmp/alias/sheets'))).toBe(false)
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
 	it('writes sparse auxiliary-portfolio sheets and indexes the full source dimensions', async () => {
 		const fixture = new ReaderFixture()
 		try {
@@ -198,7 +273,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 				'--output',
 				output,
 			])
-			expect(result.status).toBe(64)
+			expect(result.status).toBe(1)
 			expect(result.stderr).toContain(REFUSAL)
 			expect(result.stdout).toBe('')
 			expect(existsSync(resolve(fixture.root, output, 'index.json'))).toBe(false)

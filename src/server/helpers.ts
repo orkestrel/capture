@@ -16,11 +16,13 @@ import type {
 	CaptureCommand,
 	CaptureDescriptionExpectation,
 	CaptureDiscoveryOptions,
+	CaptureFileSnapshot,
 	CaptureHashHandler,
 	CaptureHostDescription,
 	CaptureHostEntry,
 	CaptureImageResult,
 	CaptureIntegrityOptions,
+	CaptureInputHandler,
 	CaptureParsedArguments,
 	CapturePicture,
 	CapturePortfolioRoot,
@@ -29,6 +31,8 @@ import type {
 	CaptureReaderCommand,
 	CaptureReaderDefaults,
 	CaptureReceiptInput,
+	CaptureRetractionHandler,
+	CaptureTerminationHandler,
 	CaptureRegistryArguments,
 	CaptureRequestOptions,
 	CaptureRunnerArguments,
@@ -37,15 +41,21 @@ import type {
 import { createHash, randomUUID } from 'node:crypto'
 import {
 	existsSync,
+	closeSync,
+	fstatSync,
+	openSync,
+	readSync,
 	globSync,
+	lstatSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
 	writeFileSync,
 } from 'node:fs'
-import { dirname, matchesGlob, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, matchesGlob, relative, resolve, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 import {
@@ -57,6 +67,7 @@ import {
 	isRecord,
 	isString,
 	parseJSON,
+	preview,
 } from '@orkestrel/contract'
 import {
 	CAPTURE_LOOKUPS_FILE,
@@ -70,9 +81,11 @@ import {
 	describeCaptureDestination,
 	describeCaptureError,
 	isCaptureGeometry,
+	isCaptureError,
 	isCapturePath,
 	isCapturePattern,
 	isCaptureReceipt,
+	isCaptureRegistry,
 	isCaptureSegment,
 	isCaptureSelector,
 	matchesCaptureMembers,
@@ -81,6 +94,7 @@ import {
 	requireCaptureUnique,
 	resolveCaptureKey,
 	resolveCaptureOwner,
+	resolveLookupKey,
 	validateCaptureReceipt,
 } from '@src/core'
 import {
@@ -88,10 +102,14 @@ import {
 	CAPTURE_COMMAND_OPTIONS,
 	CAPTURE_DEFAULTS,
 	CAPTURE_DISCOVERY,
+	CAPTURE_EXIT,
 	CAPTURE_OWNER_PREFIX,
+	CAPTURE_PNG_LIMITS,
 	CAPTURE_REQUESTS_FLAG,
 	CAPTURE_RUNS_DIRECTORY,
 	CAPTURE_STAGES,
+	CAPTURE_REFUSAL_LIMIT,
+	CAPTURE_MESSAGE_LIMIT,
 	CAPTURE_TAG_OPERATORS,
 } from './constants.js'
 
@@ -218,6 +236,220 @@ export function renderCaptureCommand(
  */
 export function normalizeSlashes(path: string): string {
 	return path.replaceAll('\\', '/')
+}
+
+/**
+ * Finds the nearest existing path without following a dangling link.
+ *
+ * @example
+ * ```ts
+ * readCaptureAncestor('/workspace/missing/file') // '/workspace'
+ * ```
+ */
+export function readCaptureAncestor(path: string): string {
+	try {
+		lstatSync(path)
+		return path
+	} catch (error) {
+		if (!isError(error) || !('code' in error) || error.code !== 'ENOENT' || dirname(path) === path)
+			throw error
+		return readCaptureAncestor(dirname(path))
+	}
+}
+
+/**
+ * Resolves an existing path or its nearest existing ancestor to its physical destination.
+ *
+ * @example
+ * ```ts
+ * resolveCapturePhysical('/workspace/alias/new') // '/workspace/target/new'
+ * ```
+ */
+export function resolveCapturePhysical(path: string): string {
+	const ancestor = readCaptureAncestor(path)
+	return resolve(realpathSync(ancestor), relative(ancestor, path))
+}
+
+/**
+ * Validates a physical destination against a physical root before any read or write.
+ *
+ * @returns The physical destination, including its missing suffix
+ * @throws Thrown when the destination or an existing ancestor escapes the root.
+ * @example
+ * ```ts
+ * requireCaptureContained('/workspace', '/workspace/tmp/new') // '/workspace/tmp/new'
+ * ```
+ */
+export function requireCaptureContained(root: string, path: string): string {
+	const physical = resolveCapturePhysical(path)
+	const suffix = relative(realpathSync(root), physical)
+	if (isAbsolute(suffix) || suffix === '..' || suffix.startsWith(`..${sep}`))
+		throw new CaptureError(`Physical path resolves outside integrity root: ${path}`, {
+			code: 'CONTAINMENT',
+		})
+	return physical
+}
+
+/**
+ * Names a sheet group by portfolio, owner, and state independently of its output variant.
+ *
+ * @example
+ * ```ts
+ * resolveCaptureSheetIdentity(entry) // '["states","pages:mail","mail-screen"]'
+ * ```
+ */
+export function resolveCaptureSheetIdentity(entry: CaptureDestination): string {
+	return JSON.stringify([entry.portfolio, resolveCaptureOwner(entry), entry.state])
+}
+
+/**
+ * Splits a list into consecutive pages with at most the requested size.
+ *
+ * @example
+ * ```ts
+ * splitCapturePages([1, 2, 3], 2) // [[1, 2], [3]]
+ * ```
+ */
+export function splitCapturePages<T>(
+	entries: readonly T[],
+	size: number,
+): ReadonlyArray<readonly T[]> {
+	return Array.from({ length: Math.ceil(entries.length / size) }, (_, index) =>
+		entries.slice(index * size, index * size + size),
+	)
+}
+
+/**
+ * Compares file content, size, modification time, and change time across two snapshots.
+ *
+ * @example
+ * ```ts
+ * matchesCaptureFile(previous, undefined) // false
+ * ```
+ */
+export function matchesCaptureFile(
+	previous: CaptureFileSnapshot,
+	current: CaptureFileSnapshot | undefined,
+): boolean {
+	return (
+		current !== undefined &&
+		current.image.digest === previous.image.digest &&
+		current.image.size === previous.image.size &&
+		current.image.modified === previous.image.modified &&
+		current.changed === previous.changed
+	)
+}
+
+/**
+ * Merges unique lookup populations with incoming identities replacing inherited ones.
+ *
+ * @example
+ * ```ts
+ * mergeCaptureLookups([lookup], [lookup]) // [lookup]
+ * ```
+ */
+export function mergeCaptureLookups(
+	previous: readonly CaptureLookup[],
+	lookups: readonly CaptureLookup[],
+): readonly CaptureLookup[] {
+	requireCaptureUnique(previous.map(resolveLookupKey), 'inherited lookup identities')
+	requireCaptureUnique(lookups.map(resolveLookupKey), 'incoming lookup identities')
+	const replaced = new Set(lookups.map(resolveLookupKey))
+	return [...previous.filter((entry) => !replaced.has(resolveLookupKey(entry))), ...lookups]
+}
+
+/**
+ * Describes a refusal with its key path, bounded preview, correction, and member differences.
+ *
+ * @example
+ * ```ts
+ * describeCaptureFault('--variant[0]', 'bad/name', 'a portable segment')
+ * ```
+ */
+export function describeCaptureFault(
+	path: string,
+	value: unknown,
+	expected: string,
+	candidates: readonly string[] = [],
+	required: readonly string[] = [],
+	allowed: readonly string[] = required,
+): string {
+	const keys = isRecord(value) ? Object.keys(value) : []
+	const missing = required.filter((key) => !isRecord(value) || value[key] === undefined)
+	const unexpected = keys.filter((key) => !allowed.includes(key))
+	const population = [...new Set([...required, ...keys])]
+	const members = isRecord(value)
+		? `; members: {${population
+				.slice(0, CAPTURE_REFUSAL_LIMIT)
+				.map((key) => `${preview(`${path}.${key}`)}: ${preview(value[key])}`)
+				.join(
+					', ',
+				)}${population.length > CAPTURE_REFUSAL_LIMIT ? `, … ${String(population.length - CAPTURE_REFUSAL_LIMIT)} more` : ''}}`
+		: ''
+	return `${path.length > 80 ? preview(path) : path}: received ${preview(value)}${members}; expected ${expected}; valid candidates: ${describeCaptureMembers(candidates)}; missing: ${describeCaptureMembers(missing)}; unexpected: ${describeCaptureMembers(unexpected)}`
+}
+
+/**
+ * Describes a bounded member population and the number omitted from its preview.
+ * @example
+ * ```ts
+ * describeCaptureMembers(['wide', 'phone']) // '["wide","phone"]'
+ * ```
+ */
+export function describeCaptureMembers(members: readonly string[]): string {
+	return `[${members.slice(0, CAPTURE_REFUSAL_LIMIT).map(preview).join(',')}${members.length > CAPTURE_REFUSAL_LIMIT ? `, … ${String(members.length - CAPTURE_REFUSAL_LIMIT)} more` : ''}]`
+}
+
+/**
+ * Caps external diagnostic text and names the number of omitted characters.
+ * @example
+ * ```ts
+ * describeCaptureOutput('short diagnostic') // 'short diagnostic'
+ * ```
+ */
+export function describeCaptureOutput(output: string): string {
+	return output.length <= CAPTURE_MESSAGE_LIMIT
+		? output
+		: `${output.slice(0, CAPTURE_MESSAGE_LIMIT)}… ${String(output.length - CAPTURE_MESSAGE_LIMIT)} more characters`
+}
+
+/**
+ * Maps usage refusals to exit 64 and every other failure to exit 1.
+ *
+ * @example
+ * ```ts
+ * resolveCaptureExit(new CaptureError('Invalid flag', { code: 'USAGE' })) // 64
+ * ```
+ */
+export function resolveCaptureExit(error: unknown): number {
+	return isCaptureError(error) && error.code === 'USAGE' ? CAPTURE_EXIT.usage : CAPTURE_EXIT.failed
+}
+
+/**
+ * Settles independent request removal and child termination without hiding either failure.
+ *
+ * @returns Every removal, termination, or unconfirmed-exit failure
+ * @example
+ * ```ts
+ * await settleCaptureShutdown(() => invocation.retract(), [() => child.stop()]) // []
+ * ```
+ */
+export async function settleCaptureShutdown(
+	retract: CaptureRetractionHandler,
+	terminations: readonly CaptureTerminationHandler[],
+): Promise<readonly unknown[]> {
+	const removal = attempt(retract)
+	const results = await Promise.allSettled(terminations.map(async (terminate) => await terminate()))
+	return [
+		...(removal.success ? [] : [removal.error]),
+		...results.flatMap((result) =>
+			result.status === 'rejected'
+				? [result.reason]
+				: result.value
+					? []
+					: [new CaptureError('Capture child termination was not confirmed', { code: 'STAGE' })],
+		),
+	]
 }
 
 /**
@@ -458,24 +690,69 @@ export function predictCaptureByte(left: number, up: number, corner: number): nu
  * ```
  */
 export function readCaptureChunks(bytes: Buffer, offset = 8): readonly Buffer[] {
-	if (offset + 12 > bytes.length)
-		throw new CaptureError('Truncated capture PNG', { code: 'EVIDENCE' })
-	const length = bytes.readUInt32BE(offset)
-	const end = offset + 12 + length
-	if (end > bytes.length)
-		throw new CaptureError('Truncated capture PNG chunk', { code: 'EVIDENCE' })
-	const name = bytes.toString('latin1', offset + 4, offset + 8)
-	if (crc32(bytes.subarray(offset + 4, end - 4)) >>> 0 !== bytes.readUInt32BE(end - 4))
-		throw new CaptureError('Capture PNG checksum differs', { code: 'EVIDENCE' })
-	if (name === 'IEND') {
-		if (length !== 0 || end !== bytes.length)
-			throw new CaptureError('Invalid capture PNG closing chunk', { code: 'EVIDENCE' })
-		return []
+	requireCaptureImageSize(bytes.length)
+	// Each verified chunk names the next offset. The byte budget bounds this log, without a
+	// recursive call stack or an arbitrary cap on a valid encoder's IDAT population.
+	const positions = [offset]
+	const chunks: Buffer[] = []
+	for (const position of positions) {
+		if (!Number.isSafeInteger(position) || position < 8 || position + 12 > bytes.length)
+			throw new CaptureError('Truncated capture PNG', { code: 'EVIDENCE' })
+		const length = bytes.readUInt32BE(position)
+		const end = position + 12 + length
+		if (end > bytes.length)
+			throw new CaptureError('Truncated capture PNG chunk', { code: 'EVIDENCE' })
+		const name = bytes.toString('latin1', position + 4, position + 8)
+		if (crc32(bytes.subarray(position + 4, end - 4)) >>> 0 !== bytes.readUInt32BE(end - 4))
+			throw new CaptureError('Capture PNG checksum differs', { code: 'EVIDENCE' })
+		if (name === 'IEND') {
+			if (length !== 0 || end !== bytes.length)
+				throw new CaptureError('Invalid capture PNG closing chunk', { code: 'EVIDENCE' })
+			return chunks
+		}
+		if (name === 'IDAT' && length > 0) chunks.push(bytes.subarray(position + 8, end - 4))
+		positions.push(end)
 	}
-	return [
-		...(name === 'IDAT' ? [bytes.subarray(offset + 8, end - 4)] : []),
-		...readCaptureChunks(bytes, end),
-	]
+	throw new CaptureError('Missing capture PNG closing chunk', { code: 'EVIDENCE' })
+}
+
+/**
+ * Reads an image only after its opened file's size is inside the compressed-byte budget.
+ * @throws Thrown when the file is oversized, unreadable, or changes size during the read.
+ * @example
+ * ```ts
+ * const bytes = readCaptureImage('/workspace/tmp/captures/mail.png')
+ * ```
+ */
+export function readCaptureImage(file: string): Buffer {
+	const descriptor = openSync(file, 'r')
+	try {
+		const size = fstatSync(descriptor).size
+		requireCaptureImageSize(size)
+		const bytes = Buffer.alloc(size)
+		if (
+			readSync(descriptor, bytes, 0, size, 0) !== size ||
+			readSync(descriptor, Buffer.alloc(1), 0, 1, size) !== 0
+		)
+			throw new CaptureError('Capture PNG read is incomplete or its size changed', {
+				code: 'EVIDENCE',
+			})
+		return bytes
+	} finally {
+		closeSync(descriptor)
+	}
+}
+
+/**
+ * Refuses compressed image bytes before file reads or chunk-buffer allocation.
+ * @example
+ * ```ts
+ * requireCaptureImageSize(4096) // undefined
+ * ```
+ */
+export function requireCaptureImageSize(size: number): void {
+	if (!Number.isSafeInteger(size) || size < 0 || size > CAPTURE_PNG_LIMITS.bytes)
+		throw new CaptureError('Capture PNG exceeds the file budget', { code: 'EVIDENCE' })
 }
 
 /**
@@ -587,6 +864,10 @@ export function decodeCapturePicture(bytes: Buffer): CapturePicture {
 	const length = (stride + 1) * height
 	if (!Number.isSafeInteger(length))
 		throw new CaptureError('Invalid capture PNG dimensions', { code: 'EVIDENCE' })
+	if (width * height > CAPTURE_PNG_LIMITS.pixels)
+		throw new CaptureError('Capture PNG exceeds the pixel budget', { code: 'EVIDENCE' })
+	if (width > CAPTURE_PNG_LIMITS.side || height > CAPTURE_PNG_LIMITS.side)
+		throw new CaptureError('Capture PNG exceeds the dimension budget', { code: 'EVIDENCE' })
 	const raw = inflateCaptureStream(Buffer.concat(readCaptureChunks(bytes)), length)
 	if (raw.length !== length)
 		throw new CaptureError('Capture PNG scanline length differs', { code: 'EVIDENCE' })
@@ -916,7 +1197,10 @@ export function resolveCaptureVariants(
 	const declared = [...new Set(projects.flatMap((project) => project.variants))]
 	for (const variant of selected) {
 		if (!declared.includes(variant))
-			throw new CaptureError(`Unknown variant: ${variant}`, { code: 'USAGE', context: { variant } })
+			throw new CaptureError(
+				`Unknown variant; ${describeCaptureFault('--variant', variant, 'a variant declared by the wrapper', declared)}`,
+				{ code: 'USAGE', context: { variant } },
+			)
 	}
 	const variants = declared.filter((variant) => selected.length === 0 || selected.includes(variant))
 	if (variants.length === 0)
@@ -929,6 +1213,60 @@ export function resolveCaptureVariants(
 			})
 	}
 	return variants
+}
+
+/**
+ * Refuses unknown command selections from the wrapper before authenticating disk evidence.
+ * @example
+ * ```ts
+ * requireCaptureSelection('all', [], projects) // undefined for declared wrapper projects
+ * ```
+ */
+export function requireCaptureSelection(
+	selector: string,
+	variants: readonly string[],
+	projects: readonly CaptureProject[],
+	outputs: readonly string[] = [],
+): void {
+	const selectors = [
+		...new Set(
+			projects.flatMap((project) => [
+				...project.tags
+					.filter((tag) => tag.startsWith(CAPTURE_OWNER_PREFIX))
+					.map((tag) => tag.slice(CAPTURE_OWNER_PREFIX.length)),
+				...project.standalone.map((entry) => entry.portfolio),
+			]),
+		),
+	]
+	const fault = describeCaptureSelectorFault(selector, selectors)
+	if (fault !== undefined) throw new CaptureError(fault, { code: 'USAGE' })
+	const declared = [...new Set([...projects.flatMap((project) => project.variants), ...outputs])]
+	for (const variant of variants)
+		if (!declared.includes(variant))
+			throw new CaptureError(
+				describeCaptureFault(
+					'--variant',
+					variant,
+					'a variant declared by the wrapper or registry output population',
+					declared,
+				),
+				{ code: 'USAGE' },
+			)
+}
+
+/**
+ * Reads output variant candidates without authenticating or accepting registry evidence.
+ * @remarks Missing, unreadable, or malformed registries supply no candidate hints; the integrity engine still authenticates every accepted read.
+ * @example
+ * ```ts
+ * readCaptureVariants('/workspace', '/workspace/tmp/captures/states/registry.json') // [] when absent
+ * ```
+ */
+export function readCaptureVariants(root: string, file: string): readonly string[] {
+	const read = attempt(() => parseJSON(readFileSync(requireCaptureContained(root, file), 'utf8')))
+	return read.success && isCaptureRegistry(read.value)
+		? [...new Set(read.value.entries.map((entry) => entry.variant))]
+		: []
 }
 
 /**
@@ -956,6 +1294,7 @@ export function resolveCaptureVariants(
  * ```
  */
 export function buildCaptureArguments(options: CaptureArgumentsOptions): readonly string[] {
+	const separator = options.case === undefined ? ' ' : readCaptureSeparator(options.entry)
 	return [
 		options.entry,
 		'run',
@@ -976,9 +1315,86 @@ export function buildCaptureArguments(options: CaptureArgumentsOptions): readonl
 			? []
 			: [
 					'-t',
-					`^(?:${[options.case, options.final].map((name) => escapeCapturePattern(name)).join('|')})$`,
+					`^(?:${[options.case, options.final].map((name) => escapeCapturePattern((options.titles?.[name] ?? [name]).join(separator))).join('|')})$`,
 				]),
 	]
+}
+
+/**
+ * Reads the installed workspace Vitest's exact title separator, refusing unsupported majors.
+ * @example
+ * ```ts
+ * readCaptureSeparator('/workspace/node_modules/vitest/vitest.mjs') // ' ' on Vitest 4
+ * ```
+ */
+export function readCaptureSeparator(entry: string): string {
+	const file = resolve(dirname(entry), 'package.json')
+	const loaded = attempt(() => parseJSON(readFileSync(file, 'utf8')))
+	if (!loaded.success)
+		throw new CaptureError(`Cannot read installed Vitest manifest: ${file}`, {
+			code: 'HOST',
+			cause: loaded.error,
+		})
+	const manifest: unknown = loaded.value
+	const version = isRecord(manifest) ? manifest.version : undefined
+	if (typeof version === 'string' && version.split('.')[0] === '4') return ' '
+	if (typeof version === 'string' && version.split('.')[0] === '5') return ' > '
+	throw new CaptureError(
+		describeCaptureFault('vitest.version', version, 'a supported installed Vitest major', [
+			'4',
+			'5',
+		]),
+		{ code: 'HOST' },
+	)
+}
+
+/**
+ * Reads original title segments from the accepted registry's authenticated JSON reporter files.
+ * @example
+ * ```ts
+ * const titles = readCaptureTitles('/workspace', '/workspace/tmp/captures/states/registry.json')
+ * ```
+ */
+export function readCaptureTitles(
+	root: string,
+	file: string,
+): Readonly<Record<string, readonly string[]>> {
+	const registry: unknown = parseJSON(readFileSync(requireCaptureContained(root, file), 'utf8'))
+	if (!isCaptureRegistry(registry))
+		throw new CaptureError('Invalid accepted registry for case titles', { code: 'EVIDENCE' })
+	return Object.fromEntries(
+		registry.receipts.flatMap((receipt) => {
+			const text = readFileSync(
+				requireCaptureContained(root, resolve(root, receipt.report.file)),
+				'utf8',
+			)
+			if (computeCaptureHash(text) !== receipt.report.digest)
+				throw new CaptureError('Registry reporter digest differs for case titles', {
+					code: 'EVIDENCE',
+				})
+			const report: unknown = parseJSON(text)
+			if (!isRecord(report) || !arrayOf(isRecord)(report.testResults))
+				throw new CaptureError('Invalid registry reporter for case titles', { code: 'EVIDENCE' })
+			return report.testResults.flatMap((result) =>
+				!arrayOf(isRecord)(result.assertionResults)
+					? []
+					: result.assertionResults.flatMap((assertion) => {
+							if (
+								!isString(assertion.fullName) ||
+								!isString(assertion.title) ||
+								!arrayOf(isString)(assertion.ancestorTitles)
+							)
+								return []
+							const titles = [...assertion.ancestorTitles, assertion.title]
+							if (titles.join(' ') !== assertion.fullName)
+								throw new CaptureError('Registry reporter title segments differ from its case', {
+									code: 'EVIDENCE',
+								})
+							return [[assertion.fullName, titles] as const]
+						}),
+			)
+		}),
+	)
 }
 
 /**
@@ -1071,11 +1487,18 @@ export function readCaptureArguments(
 	const variants = values.variant ?? []
 	if (new Set(variants).size !== variants.length)
 		throw new CaptureError('Repeated variant', { code: 'USAGE' })
-	if (variants.some((variant) => !isCaptureSegment(variant)))
-		throw new CaptureError('Invalid variant identity', { code: 'USAGE' })
+	const invalid = variants.findIndex((variant) => !isCaptureSegment(variant))
+	if (invalid !== -1)
+		throw new CaptureError(
+			`Invalid variant identity; ${describeCaptureFault(`--variant[${String(invalid)}]`, variants[invalid], "a portable nonempty identity segment; valid values come from the wrapper's variant declarations")}`,
+			{ code: 'USAGE' },
+		)
 	const state = 'state' in values && typeof values.state === 'string' ? values.state : undefined
 	if (state !== undefined && !isCaptureSegment(state))
-		throw new CaptureError('Invalid state identity', { code: 'USAGE' })
+		throw new CaptureError(
+			`Invalid state identity; ${describeCaptureFault('--state', state, "a portable nonempty state identity; valid values come from the selected case's state declarations")}`,
+			{ code: 'USAGE' },
+		)
 	const name = values.case
 	if (name !== undefined && name.trim() === '')
 		throw new CaptureError('Empty case name', { code: 'USAGE' })
@@ -1123,15 +1546,23 @@ export function readCapturePortfolios(
 	subject: string,
 ): readonly CapturePortfolioRoot[] {
 	if (!isArray(value))
-		throw new CaptureError(`The wrapper provides no ${subject}`, { code: 'HOST' })
-	const roots = value.map((root): CapturePortfolioRoot => {
+		throw new CaptureError(
+			`The wrapper provides no ${subject}; ${describeCaptureFault(subject, value, 'a list of portfolio roots', ['portfolio', 'directory', 'scoped'])}`,
+			{ code: 'HOST' },
+		)
+	const roots = value.map((root, index): CapturePortfolioRoot => {
+		const keys = ['portfolio', 'directory', 'scoped']
 		if (
 			!isRecord(root) ||
 			!isCaptureSegment(root.portfolio) ||
 			!isCapturePath(root.directory) ||
-			typeof root.scoped !== 'boolean'
+			typeof root.scoped !== 'boolean' ||
+			Object.keys(root).some((key) => !keys.includes(key))
 		)
-			throw new CaptureError(`The wrapper provides an invalid ${subject} root`, { code: 'HOST' })
+			throw new CaptureError(
+				`The wrapper provides an invalid ${subject} root; ${describeCaptureFault(`${subject}[${String(index)}]`, root, '{ portfolio: portable segment, directory: contained portable path, scoped: boolean }', keys, keys)}`,
+				{ code: 'HOST' },
+			)
 		return { portfolio: root.portfolio, directory: root.directory, scoped: root.scoped }
 	})
 	requireCaptureUnique(
@@ -1211,11 +1642,18 @@ export function readCaptureProject(test: unknown): CaptureProject {
 		!isString(provided.record) ||
 		!arrayOf(isCapturePattern)(provided.inputs)
 	)
-		throw new CaptureError('The wrapper provides no bounded integrity host declaration', {
-			code: 'HOST',
-		})
-	if (!variants.every((variant) => isCaptureSegment(variant)))
-		throw new CaptureError('A journey variant has an invalid identity', { code: 'HOST' })
+		throw new CaptureError(
+			`The wrapper provides no bounded integrity host declaration; ${describeCaptureFault('test.provide', provided, '{ directory: string workspace path, record: string run path, inputs: portable glob[] }', ['directory', 'record', 'inputs'], ['directory', 'record', 'inputs'], isRecord(provided) ? Object.keys(provided) : [])}`,
+			{
+				code: 'HOST',
+			},
+		)
+	const invalid = variants.findIndex((variant) => !isCaptureSegment(variant))
+	if (invalid !== -1)
+		throw new CaptureError(
+			`A journey variant has an invalid identity; ${describeCaptureFault(`test.provide.variants[${String(invalid)}].name`, variants[invalid], 'a portable nonempty variant identity segment', variants.some(isCaptureSegment) ? variants.filter(isCaptureSegment) : ['<portable variant name>'])}`,
+			{ code: 'HOST' },
+		)
 	requireCaptureUnique(variants, 'journey variants', true)
 	const variant = provided.variant
 	if (!isString(variant) || !variants.includes(variant))
@@ -1356,8 +1794,7 @@ export function requireCaptureProjects(projects: readonly CaptureProject[]): Cap
  * @example
  * ```ts
  * describeCaptureSelectorFault('pages:mail', ['pages', 'pages:mail']) // undefined
- * describeCaptureSelectorFault('pages:none', ['pages', 'pages:mail'])
- * // 'Unknown owner: none (selector pages:none; obsolete owner paths are not aliases)'
+ * describeCaptureSelectorFault('pages:none', ['pages', 'pages:mail'])?.includes('selector: received "pages:none"') // true
  * ```
  */
 export function describeCaptureSelectorFault(
@@ -1369,7 +1806,7 @@ export function describeCaptureSelectorFault(
 	const missing = parts.findIndex(
 		(_part, index) => !selectors.includes(parts.slice(0, index + 1).join(':')),
 	)
-	return `Unknown ${missing === 0 ? 'scope' : 'owner'}: ${parts[missing] ?? selector} (selector ${selector}; obsolete owner paths are not aliases)`
+	return `Unknown ${missing === 0 ? 'scope' : 'owner'}: ${preview(parts[missing] ?? selector)}; ${describeCaptureFault('selector', selector, 'all or a declared colon-separated owner selector; obsolete owner paths are not aliases', ['all', ...selectors])}`
 }
 
 /**
@@ -1726,7 +2163,7 @@ export function collectCaptureIdentical(
  */
 export function collectCaptureErrors(file: string, text: string): readonly string[] {
 	return text
-		.split('\n')
+		.split(/\r\n|\n/u)
 		.filter((line) => /\b(uncaught|unhandled|error:)/iu.test(line))
 		.map((line) => `${file}: ${line}`)
 }
@@ -1869,26 +2306,54 @@ export function readCaptureDescription(
 	value: unknown,
 	expected: CaptureDescriptionExpectation,
 ): CaptureHostDescription {
-	if (!isRecord(value) || value.version !== CAPTURE_VERSION || !isArray(value.projects))
-		throw new CaptureError('The host description is malformed', { code: 'HOST' })
+	const keys = ['version', 'id', 'nonce', 'config', 'parent', 'pid', 'projects']
+	if (
+		!isRecord(value) ||
+		value.version !== CAPTURE_VERSION ||
+		!isArray(value.projects) ||
+		keys.some((key) => value[key] === undefined) ||
+		Object.keys(value).some((key) => !keys.includes(key))
+	)
+		throw new CaptureError(
+			`The host description is malformed; ${describeCaptureFault('description', value, '{ version: 1, id: invocation id, nonce: challenge, config: wrapper path, parent: parent pid, pid: discovery child pid, projects: project[] }', keys, keys)}`,
+			{ code: 'HOST' },
+		)
 	if (value.id !== expected.id)
-		throw new CaptureError('The host description answers another invocation', { code: 'HOST' })
+		throw new CaptureError(
+			`The host description answers another invocation; ${describeCaptureFault('description.id', value.id, 'the active invocation id', [expected.id])}`,
+			{ code: 'HOST' },
+		)
 	if (value.nonce !== expected.nonce)
-		throw new CaptureError('The host description answers another challenge (a replay)', {
-			code: 'HOST',
-		})
+		throw new CaptureError(
+			`The host description answers another challenge (a replay); ${describeCaptureFault('description.nonce', value.nonce, 'the active discovery challenge', [expected.nonce])}`,
+			{
+				code: 'HOST',
+			},
+		)
 	if (value.config !== expected.config)
-		throw new CaptureError('The host description names another wrapper', { code: 'HOST' })
+		throw new CaptureError(
+			`The host description names another wrapper; ${describeCaptureFault('description.config', value.config, 'the requested wrapper path', [expected.config])}`,
+			{ code: 'HOST' },
+		)
 	if (value.parent !== expected.parent)
-		throw new CaptureError('The host description was written for another parent process', {
-			code: 'HOST',
-		})
+		throw new CaptureError(
+			`The host description was written for another parent process; ${describeCaptureFault('description.parent', value.parent, 'the parent process id', [String(expected.parent)])}`,
+			{
+				code: 'HOST',
+			},
+		)
 	if (expected.pid === undefined || value.pid !== expected.pid)
-		throw new CaptureError('The host description was not written by the discovery child', {
-			code: 'HOST',
-		})
+		throw new CaptureError(
+			`The host description was not written by the discovery child; ${describeCaptureFault('description.pid', value.pid, 'the spawned discovery child process id', expected.pid === undefined ? [] : [String(expected.pid)])}`,
+			{
+				code: 'HOST',
+			},
+		)
 	if (value.projects.length === 0)
-		throw new CaptureError('The wrapper declares no projects', { code: 'HOST' })
+		throw new CaptureError(
+			`The wrapper declares no projects; ${describeCaptureFault('description.projects', value.projects, 'a nonempty list of wrapper projects', ['{ test: project configuration }'])}`,
+			{ code: 'HOST' },
+		)
 	return {
 		version: CAPTURE_VERSION,
 		id: expected.id,
@@ -2022,8 +2487,12 @@ export function readCaptureRegistryArguments(
 	const variants = values.variant ?? []
 	if (new Set(variants).size !== variants.length)
 		throw new CaptureError('Repeated variant', { code: 'USAGE' })
-	if (variants.some((variant) => !isCaptureSegment(variant)))
-		throw new CaptureError('Invalid variant identity', { code: 'USAGE' })
+	const invalid = variants.findIndex((variant) => !isCaptureSegment(variant))
+	if (invalid !== -1)
+		throw new CaptureError(
+			`Invalid variant identity; ${describeCaptureFault(`--variant[${String(invalid)}]`, variants[invalid], "a portable nonempty identity segment; valid values come from the wrapper's variant declarations")}`,
+			{ code: 'USAGE' },
+		)
 	const mode = values.mode
 	return {
 		config: resolve(root, values.config ?? fallback),
@@ -2043,6 +2512,7 @@ export function readCaptureRegistryArguments(
  * @param root - The absolute workspace path
  * @param patterns - The project's native input patterns
  * @param hash - Digests each file's exact bytes. Default: `computeCaptureHash`
+ * @param read - Reads a contained input through the owning operation's snapshot memo, when supplied
  * @returns The workspace-relative path of every matched file and its digest
  * @throws Thrown as a `CONTAINMENT` capture error for a matched path the evidence cannot hold, and as
  * an `EVIDENCE` capture error for a path that matches under two spellings.
@@ -2056,6 +2526,7 @@ export function readCaptureInputs(
 	root: string,
 	patterns: readonly string[],
 	hash: CaptureHashHandler = computeCaptureHash,
+	read?: CaptureInputHandler,
 ): Readonly<Record<string, string>> {
 	const files = [...new Set(globSync([...patterns], { cwd: root }).map(normalizeSlashes))]
 		.filter((file) => {
@@ -2063,11 +2534,19 @@ export function readCaptureInputs(
 				throw new CaptureError(`Input path cannot be held as evidence: ${JSON.stringify(file)}`, {
 					code: 'CONTAINMENT',
 				})
-			return statSync(resolve(root, file)).isFile()
+			return statSync(requireCaptureContained(root, resolve(root, file))).isFile()
 		})
 		.toSorted()
 	requireCaptureUnique(files, 'input paths', true)
-	return Object.fromEntries(files.map((file) => [file, hash(readFileSync(resolve(root, file)))]))
+	return Object.fromEntries(
+		files.flatMap((file) => {
+			const digest =
+				read === undefined
+					? hash(readFileSync(requireCaptureContained(root, resolve(root, file))))
+					: read(file)
+			return digest === undefined ? [] : [[file, digest]]
+		}),
+	)
 }
 
 /**

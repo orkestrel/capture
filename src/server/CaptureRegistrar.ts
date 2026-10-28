@@ -11,14 +11,13 @@ import type {
 } from './types.js'
 import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { parseJSON } from '@orkestrel/contract'
+import { attempt, parseJSON } from '@orkestrel/contract'
 import {
 	CAPTURE_REGISTRY_FILE,
 	CAPTURE_VERSION,
 	CaptureError,
 	describeCaptureError,
 	describeCaptureRequest,
-	isCaptureError,
 	isCapturePath,
 	isCaptureRegistry,
 	isCaptureRun,
@@ -38,6 +37,8 @@ import {
 } from './constants.js'
 import {
 	buildCaptureArguments,
+	requireCaptureContained,
+	describeCaptureFault,
 	buildCaptureFilter,
 	buildCaptureIntegrityOptions,
 	buildCaptureRegistry,
@@ -47,6 +48,7 @@ import {
 	requireCaptureProjects,
 	resolveCaptureRelative,
 	writeCaptureDocument,
+	resolveCaptureExit,
 } from './helpers.js'
 
 /**
@@ -117,9 +119,7 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 			)
 		} catch (error) {
 			this.#stderr(`${describeCaptureError(error)}\n`)
-			return isCaptureError(error) && error.code === 'USAGE'
-				? CAPTURE_EXIT.usage
-				: CAPTURE_EXIT.failed
+			return resolveCaptureExit(error)
 		} finally {
 			await invocation.release()
 		}
@@ -136,7 +136,7 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		for (const variant of parsed.variants) {
 			if (!declared.includes(variant))
 				throw new CaptureError(
-					`Unknown variant: ${JSON.stringify(variant)}; the wrapper declares ${declared.join(', ')}`,
+					`Unknown variant; ${describeCaptureFault('--variant', variant, 'a producing variant declared by the wrapper', declared)}`,
 					{ code: 'USAGE', context: { variant } },
 				)
 		}
@@ -152,6 +152,12 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		}
 		const directory = resolveCaptureRelative(root, primary.directory)
 		const target = `${directory}/${CAPTURE_REGISTRY_FILE}`
+		const candidate = `${target}.${invocation.id}.candidate`
+		// Validate the physical publication roots before a stage can write a run or a candidate.
+		const integrity = new CaptureIntegrity({
+			...buildCaptureIntegrityOptions(root, primary),
+			registry: candidate,
+		})
 		const holders = invocation.holders()
 		if (holders.length > 0)
 			throw new CaptureError(
@@ -168,19 +174,18 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		}
 		if (invocation.interrupted) return CAPTURE_EXIT.failed
 		const registry = buildCaptureRegistry([...retained, ...imports])
-		const candidate = `${target}.${invocation.id}.candidate`
 		const path = resolve(root, candidate)
+		requireCaptureContained(root, path)
 		try {
 			writeCaptureDocument(path, registry, invocation.signal)
 			// The engine reads the candidate exactly as it will read the registry, before anything is replaced.
-			await new CaptureIntegrity({
-				...buildCaptureIntegrityOptions(root, primary),
-				registry: candidate,
-			}).read({ selector: 'all' })
+			await integrity.read({ selector: 'all' })
 			invocation.signal.throwIfAborted()
+			requireCaptureContained(root, path)
+			requireCaptureContained(root, resolve(root, target))
 			renameSync(path, resolve(root, target))
 		} finally {
-			rmSync(path, { force: true })
+			if (attempt(() => requireCaptureContained(root, path)).success) rmSync(path, { force: true })
 		}
 		this.#stdout(
 			`${CAPTURE_REGISTRY_LINE} ${JSON.stringify({

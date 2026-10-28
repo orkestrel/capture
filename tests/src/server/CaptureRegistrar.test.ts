@@ -1,10 +1,10 @@
 import type { CaptureReceipt, CaptureRegistry } from '@src/core'
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, symlinkSync, watch } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
-import { requireValue, waitForCondition } from '@orkestrel/test'
-import { isRunning } from '@orkestrel/test/server'
+import { requireValue, waitForCondition, waitForDelay } from '@orkestrel/test'
+import { createScratch, isRunning, supportsDirectoryLinks } from '@orkestrel/test/server'
 import { isCaptureRegistry } from '@src/core'
 import { CaptureRegistrar } from '@src/server'
 import { describe, expect, it } from 'vitest'
@@ -18,12 +18,42 @@ import {
 	COMPOSED_DIRECTORY,
 	COMPOSED_REQUESTS,
 	FIXTURE_TIMEOUT,
+	readCaptureHeld,
 	REGISTRY_REFUSALS,
 	VARIANTS,
 } from '../../setupServer.js'
 
 const REGISTRY = `${COMPOSED_DIRECTORY}/registry.json`
 const SUMMARY = 'REGISTRY '
+
+it.runIf(supportsDirectoryLinks())(
+	'H1r rechecks registry containment after stage children redirect its root',
+	async () => {
+		const fixture = new ComposedFixture()
+		const outside = createScratch({ prefix: 'capture-registry-redirect-' })
+		const events: string[] = []
+		const watcher = watch(outside.path, { recursive: true }, (_event, name) =>
+			events.push(String(name)),
+		)
+		try {
+			fixture.write(
+				'node_modules/vitest/vitest.mjs',
+				`${fixture.read('node_modules/vitest/vitest.mjs').toString('utf8')}\nimport { existsSync, renameSync, symlinkSync } from 'node:fs'\nif (process.argv.includes('journey:dark-390') && existsSync(${JSON.stringify(resolve(fixture.root, COMPOSED_DIRECTORY))}) && !existsSync(${JSON.stringify(resolve(outside.path, 'moved'))})) { renameSync(${JSON.stringify(resolve(fixture.root, COMPOSED_DIRECTORY))}, ${JSON.stringify(resolve(outside.path, 'moved'))}); symlinkSync(${JSON.stringify(resolve(outside.path, 'moved'))}, ${JSON.stringify(resolve(fixture.root, COMPOSED_DIRECTORY))}, 'junction') }\n`,
+			)
+			const run = await fixture.refresh()
+			await waitForDelay(20)
+			expect(fixture.stages).toHaveLength(4)
+			expect(run.code).toBe(1)
+			expect(run.stderr).toContain('outside')
+			expect(events.filter((name) => name.includes('.candidate'))).toEqual([])
+		} finally {
+			watcher.close()
+			fixture.destroy()
+			outside.destroy()
+		}
+	},
+	FIXTURE_TIMEOUT,
+)
 
 function readRegistry(fixture: ComposedFixture): CaptureRegistry {
 	const registry: unknown = parseJSON(fixture.read(REGISTRY).toString('utf8'))
@@ -46,14 +76,52 @@ function readSummary(stdout: string): unknown {
 	return parseJSON(line.slice(SUMMARY.length))
 }
 
-function readHeld(fixture: ComposedFixture): readonly string[] {
-	return readdirSync(resolve(fixture.root, COMPOSED_REQUESTS)).filter((name) =>
-		name.startsWith('journey-selection'),
-	)
-}
-
 // Each case spawns a Git repository and one Node producer per variant, which the default budget leaves thin.
 describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('refuses an outside publication root before a producer writes', async () => {
+		const fixture = new ComposedFixture()
+		const outside = createScratch({ prefix: 'capture-publication-' })
+		try {
+			fixture.write(
+				fixture.config,
+				fixture
+					.read(fixture.config)
+					.toString('utf8')
+					.replaceAll(
+						JSON.stringify(resolve(fixture.root, COMPOSED_DIRECTORY)),
+						JSON.stringify(resolve(outside.path, 'new-root')),
+					),
+			)
+			const run = await fixture.refresh([], {
+				environment: { CAPTURE_PRODUCER_DIRECTORY: resolve(outside.path, 'new-root') },
+			})
+			expect(run.code).toBe(1)
+			expect(fixture.stages).toEqual([])
+			expect(readdirSync(outside.path)).toEqual([])
+		} finally {
+			fixture.destroy()
+			outside.destroy()
+		}
+	})
+
+	it.runIf(supportsDirectoryLinks())(
+		'refuses a redirected publication ancestor before a producer writes',
+		async () => {
+			const fixture = new ComposedFixture()
+			const outside = createScratch({ prefix: 'capture-publication-link-' })
+			try {
+				fixture.write('tmp/keep.txt', 'inside')
+				symlinkSync(outside.path, resolve(fixture.root, 'tmp/captures'), 'junction')
+				const run = await fixture.refresh()
+				expect(run.code).toBe(1)
+				expect(fixture.stages).toEqual([])
+				expect(readdirSync(outside.path)).toEqual([])
+			} finally {
+				fixture.destroy()
+				outside.destroy()
+			}
+		},
+	)
 	it('publishes one receipt per producing variant from a complete capture-free journey each', async () => {
 		const fixture = new ComposedFixture()
 		try {
@@ -92,7 +160,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 			const directory = resolve(fixture.root, COMPOSED_DIRECTORY)
 			expect(readdirSync(directory).toSorted()).toEqual(['registry.json', 'runs'])
 			expect(existsSync(resolve(directory, 'pages'))).toBe(false)
-			expect(readHeld(fixture)).toEqual([])
+			expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 		} finally {
 			fixture.destroy()
 		}
@@ -120,7 +188,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 				expect(run.code).toBe(1)
 				expect(run.stderr).toContain(reason)
 				expect(existsSync(resolve(fixture.root, REGISTRY))).toBe(false)
-				expect(readHeld(fixture)).toEqual([])
+				expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 			} finally {
 				fixture.destroy()
 			}
@@ -242,7 +310,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 				pids.every((pid) => !isRunning(pid)),
 			)
 			expect(existsSync(resolve(fixture.root, REGISTRY))).toBe(false)
-			expect(readHeld(fixture)).toEqual([])
+			expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 			expect(process.listenerCount('SIGINT')).toBe(before)
 		} finally {
 			fixture.destroy()
@@ -284,7 +352,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 		try {
 			const unknown = await fixture.refresh(['--variant', 'nope'])
 			expect(unknown.code).toBe(64)
-			expect(unknown.stderr).toContain('Unknown variant: "nope"')
+			expect(unknown.stderr).toContain('--variant: received "nope"')
 			const selector = await fixture.refresh(['pages:mail'])
 			expect(selector.code).toBe(64)
 			expect(selector.stderr).toContain('the registry command takes no selector')

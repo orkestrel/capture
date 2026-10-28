@@ -54,6 +54,7 @@ export class ComposedFixture extends IntegrityFixture {
 		try {
 			this.write(this.config, createComposedWrapper(this.root, options.first))
 			this.write('node_modules/vitest/vitest.mjs', createStandIn())
+			this.write('node_modules/vitest/package.json', JSON.stringify({ version: '4.1.12' }))
 			if (options.committed) {
 				execFileSync('git', ['add', '--', this.config], { cwd: this.root, windowsHide: true })
 				execFileSync(

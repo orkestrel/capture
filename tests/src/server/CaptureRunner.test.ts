@@ -1,8 +1,9 @@
-import { readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
 import { isRunning } from '@orkestrel/test/server'
 import { isCaptureRun } from '@src/core'
+import { CAPTURE_OWNER_FILE, CAPTURE_REFUSAL_LIMIT, createCaptureRunner } from '@src/server'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import {
@@ -16,6 +17,7 @@ import {
 	COMPOSED_FIRST,
 	COMPOSED_OWNERS,
 	FIXTURE_TIMEOUT,
+	readCaptureHeld,
 	MAIL,
 	QUOTED,
 	READER_FINAL,
@@ -30,6 +32,46 @@ import {
 const STAGE_LINE = /^(?:journey|capture) (?:selected|narrow|rest):/mu
 const INTEGRITY = 'INTEGRITY '
 
+it('keeps a stale evidence refusal at exit 1', async () => {
+	const fixture = new ComposedFixture()
+	try {
+		const run = await fixture.run('stale', ['all'])
+		expect(run.code).toBe(1)
+		expect(run.stderr).toContain('Missing accepted registry')
+	} finally {
+		fixture.destroy()
+	}
+})
+
+it(
+	'H1r maps selector errors to usage in every runner command and Git failures to exit 1',
+	async () => {
+		const fixture = new ComposedFixture()
+		try {
+			expect((await fixture.refresh()).code).toBe(0)
+			for (const command of ['stale', 'journey', 'capture'] as const) {
+				const run = await fixture.run(command, ['missing'])
+				expect({ command, code: run.code, stderr: run.stderr }).toMatchObject({
+					command,
+					code: 64,
+					stderr: expect.stringContaining('selector: received "missing"'),
+				})
+			}
+			for (const command of ['journey', 'capture'] as const) {
+				const run = await fixture.run(command, ['--changed', 'missing-ref', '--plan'])
+				expect({ command, code: run.code, stderr: run.stderr }).toMatchObject({
+					command,
+					code: 1,
+					stderr: expect.stringContaining('Git read failed'),
+				})
+			}
+		} finally {
+			fixture.destroy()
+		}
+	},
+	FIXTURE_TIMEOUT,
+)
+
 function readInvocation(stdout: string): string {
 	return /runs[\\/]([0-9a-f-]{36})[\\/]/u.exec(stdout)?.[1] ?? ''
 }
@@ -41,12 +83,6 @@ function readRequest(fixture: ComposedFixture, stdout: string, stage: string, va
 			.toString('utf8'),
 	)
 	return isCaptureRun(record) ? record.request : undefined
-}
-
-function readHeld(fixture: ComposedFixture): readonly string[] {
-	return readdirSync(resolve(fixture.root, fixture.requests)).filter((name) =>
-		name.startsWith('journey-selection'),
-	)
 }
 
 function readFilter(args: readonly string[] = []): string | undefined {
@@ -91,14 +127,14 @@ describe.each(RUNNER_COMMANDS)(
 				expect(run.code).toBe(64)
 				expect(run.stdout + run.stderr).toContain(refusal.message)
 				expect(run.stdout).not.toMatch(STAGE_LINE)
-				expect(readHeld(base)).toEqual([])
+				expect(readCaptureHeld(base.root, base.requests)).toEqual([])
 			},
 		)
 
 		it('lists every declared owner, ancestors included, when no selector is given', async () => {
 			const run = await base.run(command, [])
 			expect(run.code).toBe(64)
-			expect(run.stderr.split(/\r\n|\n/u)).toEqual(expect.arrayContaining([...COMPOSED_OWNERS]))
+			for (const owner of COMPOSED_OWNERS) expect(run.stderr).toContain(JSON.stringify(owner))
 			expect(run.stderr).toContain(command === 'capture' ? 'capture frames' : 'capture journey')
 		})
 
@@ -138,7 +174,7 @@ describe.each(RUNNER_COMMANDS)(
 			expect(
 				base.read(`${base.requests}/runs/${readInvocation(run.stdout)}/${command}-${stage}.log`),
 			).toBeDefined()
-			expect(readHeld(base)).toEqual([])
+			expect(readCaptureHeld(base.root, base.requests)).toEqual([])
 			expect(readReceipt(base)).toMatchObject({ requests: resolve(base.root, base.requests) })
 		})
 
@@ -203,7 +239,7 @@ describe.each(RUNNER_COMMANDS)(
 			expect(run.code).toBe(1)
 			expect(run.stdout).toContain(`${command} ${stage}:`)
 			expect(run.stdout).not.toContain(`${command} rest:`)
-			expect(readHeld(base)).toEqual([])
+			expect(readCaptureHeld(base.root, base.requests)).toEqual([])
 		})
 
 		it('exits 1 when no requested project held applicable work', async () => {
@@ -216,7 +252,7 @@ describe.each(RUNNER_COMMANDS)(
 			])
 			expect(run.code).toBe(1)
 			expect(run.stderr).toContain('Empty selected workload')
-			expect(readHeld(base)).toEqual([])
+			expect(readCaptureHeld(base.root, base.requests)).toEqual([])
 		})
 
 		it('keeps applicable variants when the first variant held no work', async () => {
@@ -246,11 +282,106 @@ describe.each(RUNNER_COMMANDS)(
 )
 
 describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('H1s retains a declared focused output variant through stale', async () => {
+		const fixture = new ComposedFixture()
+		try {
+			fixture.seed()
+			await fixture.capture({ variants: [...VARIANTS] })
+			const result = await fixture.run('stale', ['examples:files', '--variant', 'light-320'])
+			expect(result.code === 0 ? 0 : result.stderr).toBe(0)
+			expect(result.stdout).toContain('files-reading--light-320.png')
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('H1s keeps the decided usage exit when release fails', async () => {
+		const fixture = new ComposedFixture()
+		const errors: string[] = []
+		try {
+			const code = await createCaptureRunner({
+				command: 'journey',
+				root: fixture.root,
+				requests: fixture.requests,
+				config: fixture.config,
+				argv: ['missing'],
+				stdout: () => undefined,
+				stderr: (text) => {
+					errors.push(text)
+					if (text.includes('selector: received')) {
+						const marker = resolve(fixture.root, fixture.requests, CAPTURE_OWNER_FILE)
+						rmSync(marker)
+						mkdirSync(marker)
+					}
+				},
+			}).execute()
+			expect(code).toBe(64)
+			expect(errors.join('')).toContain('Capture cleanup failed')
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('H1s treats a plan-derived owner missing from wrapper tags as HOST', async () => {
+		const fixture = new ComposedFixture({ committed: true, config: 'outside.config.ts' })
+		try {
+			fixture.seed()
+			fixture.write(
+				fixture.config,
+				fixture
+					.read(fixture.config)
+					.toString('utf8')
+					.replaceAll('owner:pages:mail', 'owner:pages:other'),
+			)
+			fixture.write('src/mail/view.ts', '// changed own input\n')
+			const result = await fixture.run('journey', ['--changed', 'HEAD', '--plan'])
+			expect(result.stderr).toContain('Unknown owner')
+			expect(result.code).toBe(1)
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('H1s caps the usage selector list with a remainder count', async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			const owners = Array.from(
+				{ length: CAPTURE_REFUSAL_LIMIT + 3 },
+				(_, index) => `owner:pages:item-${String(index)}`,
+			)
+			fixture.write(
+				fixture.config,
+				fixture
+					.read(fixture.config)
+					.toString('utf8')
+					.replaceAll(
+						'"tags":[',
+						`"tags":[${owners.map((name) => JSON.stringify({ name })).join(',')},`,
+					),
+			)
+			const usage = await fixture.run('journey', [])
+			expect(usage.code).toBe(64)
+			expect(usage.stderr).toContain('more')
+			expect(usage.stderr).not.toContain('pages:item-9')
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('H1s caps shared-input paths with a remainder count', async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			fixture.seed()
+			for (const index of Array.from({ length: CAPTURE_REFUSAL_LIMIT + 3 }, (_, value) => value))
+				fixture.write(`src/shared/input-${String(index)}.ts`, '// shared\n')
+			const shared = await fixture.run('journey', ['--changed', 'HEAD', '--plan'])
+			expect(shared.stderr).toContain('more')
+			expect(shared.stderr).not.toContain('src/shared/input-9.ts')
+		} finally {
+			fixture.destroy()
+		}
+	})
 	it('refuses a changed plan without an accepted registry and prints the exact refresh command', async () => {
 		const fixture = new ComposedFixture({ committed: true })
 		try {
 			const run = await fixture.run('journey', ['--changed', 'HEAD', '--plan'])
-			expect(run.code).toBe(64)
+			expect(run.code).toBe(1)
 			expect(run.stderr).toContain(
 				'Missing accepted registry; run the explicit complete-registry refresh',
 			)
@@ -346,7 +477,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 		try {
 			fixture.seed()
 			const unknown = await fixture.run('journey', ['--changed', 'missing-ref', '--plan'])
-			expect(unknown.code).toBe(64)
+			expect(unknown.code).toBe(1)
 			expect(unknown.stderr).toContain('fatal:')
 			const mixed = await fixture.run('journey', ['pages:mail', '--changed', 'HEAD'])
 			expect(mixed.code).toBe(64)
@@ -371,7 +502,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 				'--variant',
 				COMPOSED_FIRST,
 			])
-			expect(run.code).toBe(64)
+			expect(run.code).toBe(1)
 			expect(run.stdout).toContain('"classification":"own"')
 			expect(run.stdout).toContain('COMMAND capture frames pages:mail')
 			expect(fixture.stages).toEqual([])
@@ -468,7 +599,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(fixture.stages.map((request) => request.selector)).toEqual(['examples:board'])
 			expect(fixture.readReady().filter((pid) => isRunning(pid))).toEqual([])
 			expect(run.stdout).toContain('"notrun":["pages:mail"],"reason":"interrupted"')
-			expect(readHeld(fixture)).toEqual([])
+			expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 		} finally {
 			fixture.destroy()
 		}
@@ -526,10 +657,10 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 			'--variant',
 			COMPOSED_FIRST,
 		])
-		expect(run.code).toBe(64)
+		expect(run.code).toBe(1)
 		expect(run.stderr).toContain('outside selector/case')
 		expect(run.stdout).not.toMatch(STAGE_LINE)
-		expect(readHeld(base)).toEqual([])
+		expect(readCaptureHeld(base.root, base.requests)).toEqual([])
 	})
 
 	it('preserves a live runner request, prunes a dead one and its temporary file, and removes its own', async () => {
@@ -571,7 +702,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 		const pids = base.readReady()
 		expect(pids).toHaveLength(2)
 		expect(pids.filter((pid) => isRunning(pid))).toEqual([])
-		expect(readHeld(base)).toEqual([])
+		expect(readCaptureHeld(base.root, base.requests)).toEqual([])
 		expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]).toEqual(before)
 		expect(readFixtureManifest(base.root)).toBe(manifest)
 	})
@@ -589,7 +720,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 			})
 			expect(run.code).toBe(1)
 			expect(base.readReady().filter((pid) => isRunning(pid))).toEqual([])
-			expect(readHeld(base)).toEqual([])
+			expect(readCaptureHeld(base.root, base.requests)).toEqual([])
 		},
 	)
 })
@@ -614,7 +745,7 @@ describe('CaptureRunner wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () => {
 				'Unsupported journey project name: expected a string or an object with a string label',
 			)
 			expect(run.stdout).not.toMatch(STAGE_LINE)
-			expect(readHeld(fixture)).toEqual([])
+			expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 		} finally {
 			fixture.destroy()
 		}
@@ -662,7 +793,7 @@ describe('CaptureRunner wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(run.code).toBe(1)
 		expect(run.stderr).toContain('answered no discovery request')
 		expect(run.stdout).not.toMatch(STAGE_LINE)
-		expect(readHeld(base)).toEqual([])
+		expect(readCaptureHeld(base.root, base.requests)).toEqual([])
 	})
 
 	it('refuses a wrapper whose answer is a replay of another exchange, and starts no execution child', async () => {
@@ -682,7 +813,7 @@ describe('CaptureRunner wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(run.code).toBe(1)
 		expect(run.stderr).toContain('did not finish within')
 		expect(run.stdout).not.toMatch(STAGE_LINE)
-		expect(readHeld(base)).toEqual([])
+		expect(readCaptureHeld(base.root, base.requests)).toEqual([])
 	})
 })
 
@@ -706,10 +837,10 @@ describe('CaptureRunner stale command', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 
-	it('refuses an invalid reading with exit 64 and a missing selector with the usage', async () => {
+	it('refuses an invalid selector with exit 64 and a missing selector with the usage', async () => {
 		const invalid = await base.run('stale', ['pages:unknown'])
 		expect(invalid.code).toBe(64)
-		expect(invalid.stderr).toContain('Empty or unknown selector')
+		expect(invalid.stderr).toContain('selector: received')
 		const bare = await base.run('stale', [])
 		expect(bare.code).toBe(64)
 		expect(bare.stderr).toContain('capture stale <selector>')
@@ -738,7 +869,7 @@ describe('CaptureRunner stale command', { timeout: FIXTURE_TIMEOUT }, () => {
 				const refused = await fixture.run('stale', args)
 				expect({ args, code: refused.code, reported: refused.stdout.includes(INTEGRITY) }).toEqual({
 					args,
-					code: 64,
+					code: 1,
 					reported: false,
 				})
 				expect(refused.stderr).toContain('Unattested declared variant: light-1280')

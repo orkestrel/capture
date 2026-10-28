@@ -20,6 +20,9 @@ import { describe, expect, it } from 'vitest'
 import { IntegrityFixture } from './fixtures/capture/IntegrityFixture.js'
 import { createDeclarationFixture, createRequestFixture, readThrown } from './setup.js'
 import {
+	readCaptureHeld,
+	runCaptureOwnershipRace,
+	countCaptureChildren,
 	BEHAVIOR,
 	BIN_REFUSALS,
 	BOARD,
@@ -73,6 +76,44 @@ import {
 	withEnvironment,
 	writeFixtureDescription,
 } from './setupServer.js'
+
+describe('H1 shared infrastructure', () => {
+	it(
+		'H1s collects every claim and waits for all real contenders to exit',
+		async () => {
+			const scratch = createScratch({ prefix: 'capture-race-helper-' })
+			try {
+				scratch.ensure('requests')
+				const outcomes = await runCaptureOwnershipRace(scratch.path, 'requests')
+				expect(outcomes).toHaveLength(12)
+				expect(outcomes.filter((outcome) => outcome === 'owner')).toHaveLength(1)
+				expect(outcomes.every((outcome) => typeof outcome === 'string')).toBe(true)
+			} finally {
+				scratch.destroy()
+			}
+		},
+		FIXTURE_TIMEOUT,
+	)
+	it('reads request holders from the explicit request directory without changing them', () => {
+		const scratch = createScratch({ prefix: 'capture-held-' })
+		try {
+			scratch.write('requests/journey-selection-42.json', 'held')
+			scratch.write('requests/journey-selection-42.json.tmp', 'pending')
+			scratch.write('requests/unrelated.txt', 'other')
+			expect(readCaptureHeld(scratch.path, 'requests').toSorted()).toEqual([
+				'journey-selection-42.json',
+				'journey-selection-42.json.tmp',
+			])
+			expect(scratch.read('requests/journey-selection-42.json')).toBe('held')
+		} finally {
+			scratch.destroy()
+		}
+	})
+	it('counts only complete child announcements across LF and CRLF', () => {
+		expect(countCaptureChildren('pid=42\r\npid=43\nprefix pid=44\npid=bad\n')).toBe(2)
+		expect(countCaptureChildren('')).toBe(0)
+	})
+})
 
 const TRANSPORT: FixtureWrite = {
 	variants: ['light-390'],
@@ -180,6 +221,7 @@ describe('isFixtureWrite', () => {
 				fault: 'identity',
 				population: 'partial',
 				journal: 'foreign',
+				ending: '\r\n',
 				vue: true,
 				duplicate: false,
 			}),
@@ -193,6 +235,7 @@ describe('isFixtureWrite', () => {
 		['an unknown fault', { ...TRANSPORT, fault: 'unknown' }],
 		['an unknown population', { ...TRANSPORT, population: 'everything' }],
 		['an unknown journal', { ...TRANSPORT, journal: 'missing' }],
+		['an unknown artifact terminator', { ...TRANSPORT, ending: '\r' }],
 		[
 			'a request without a selector',
 			{ ...TRANSPORT, request: { ...createRequestFixture(), selector: 1 } },

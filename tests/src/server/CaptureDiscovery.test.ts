@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { waitForCondition } from '@orkestrel/test'
 import { isRunning } from '@orkestrel/test/server'
@@ -11,6 +11,7 @@ import {
 	FIXTURE_DISCOVERY_FAULTS,
 	FIXTURE_DISCOVERY_MESSAGES,
 	FIXTURE_TIMEOUT,
+	readCaptureHeld,
 	INPUTS,
 	READER_FINAL,
 	VARIANTS,
@@ -75,12 +76,6 @@ async function discover(
 	}
 }
 
-function readHeld(fixture: ComposedFixture): readonly string[] {
-	return readdirSync(resolve(fixture.root, fixture.requests)).filter((name) =>
-		name.startsWith('journey-selection'),
-	)
-}
-
 describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('describes every wrapper project in declaration order, with the host data and viewport it declares', async () => {
 		const fixture = new ComposedFixture()
@@ -111,7 +106,7 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 			// The exchange leaves the answer beside the invocation's logs and the request withdrawn.
 			expect(existsSync(resolve(invocation.directory, 'description.json'))).toBe(true)
 			expect(existsSync(resolve(invocation.directory, 'discovery.log'))).toBe(true)
-			expect(readHeld(fixture)).toEqual([])
+			expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 			expect(output).toMatch(/^pid=\d+\n/u)
 		} finally {
 			fixture.destroy()
@@ -155,7 +150,7 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 					expect(error instanceof Error ? error.message : '').toContain(
 						FIXTURE_DISCOVERY_MESSAGES[fault],
 					)
-					expect(readHeld(fixture)).toEqual([])
+					expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 				} finally {
 					fixture.destroy()
 				}
@@ -180,7 +175,7 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 			await waitForCondition('the hung child has exited', () =>
 				pids.every((pid) => !isRunning(pid)),
 			)
-			expect(readHeld(fixture)).toEqual([])
+			expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 		} finally {
 			fixture.destroy()
 		}
@@ -201,7 +196,7 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 			await waitForCondition('the interrupted child has exited', () =>
 				pids.every((pid) => !isRunning(pid)),
 			)
-			expect(readHeld(fixture)).toEqual([])
+			expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 		} finally {
 			fixture.destroy()
 		}

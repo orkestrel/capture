@@ -1,7 +1,9 @@
 import type { CaptureDeclaration, CaptureDestination, CaptureRequest, CaptureRun } from '@src/core'
 import type { CaptureReadOptions, CaptureRequestOptions } from '@src/server'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
+import { fork } from 'node:child_process'
+import { once } from 'node:events'
+import { mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs'
 import { basename, dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { crc32, deflateSync } from 'node:zlib'
@@ -22,6 +24,55 @@ import {
 
 /** Bounds, in milliseconds, a case that creates a Git workspace and spawns producer children. */
 export const FIXTURE_TIMEOUT = 60_000
+
+/** Races real children from a common ready barrier, retaining every winner until all claims settle. */
+export async function runCaptureOwnershipRace(
+	root: string,
+	requests: string,
+): Promise<readonly unknown[]> {
+	const children = Array.from({ length: 12 }, () =>
+		fork(resolve(import.meta.dirname, 'fixtures/capture/Ownership.ts'), [root, requests], {
+			windowsHide: true,
+			stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+		}),
+	)
+	try {
+		await Promise.all(
+			children.map(async (child) => {
+				const [ready] = await once(child, 'message', { signal: AbortSignal.timeout(20_000) })
+				if (ready !== 'ready') throw new Error('Ownership child did not reach its ready barrier')
+			}),
+		)
+		return await Promise.all(
+			children.map(async (child) => {
+				const result = once(child, 'message', { signal: AbortSignal.timeout(20_000) })
+				child.send('claim')
+				const [message] = await result
+				return message
+			}),
+		)
+	} finally {
+		await Promise.all(
+			children.map(async (child) => {
+				if (child.exitCode !== null || child.signalCode !== null) return
+				const closed = once(child, 'exit', { signal: AbortSignal.timeout(20_000) })
+				if (child.connected) child.send('release')
+				else child.kill()
+				await closed
+			}),
+		)
+	}
+}
+
+/** Lists the published request files held in one workspace request directory. */
+export function readCaptureHeld(root: string, requests = COMPOSED_REQUESTS): readonly string[] {
+	return readdirSync(resolve(root, requests)).filter((name) => name.startsWith('journey-selection'))
+}
+
+/** Counts the children whose process ids the invocation announced. */
+export function countCaptureChildren(stdout: string): number {
+	return stdout.match(/^pid=\d+$/gmu)?.length ?? 0
+}
 
 /** Lists the producer faults a fixture child can inject, one per refusal the engine owns. */
 export const FIXTURE_FAULTS = Object.freeze([
@@ -63,6 +114,7 @@ export type FixtureJournal = (typeof FIXTURE_JOURNALS)[number]
 
 /** Supplies inert declarations and output locations to the real external writer child. */
 export interface FixtureWrite {
+	readonly ending?: '\n' | '\r\n'
 	readonly picture?: FixturePicture
 	readonly population?: FixturePopulation
 	readonly journal?: FixtureJournal
@@ -78,6 +130,7 @@ export interface FixtureWrite {
 
 /** Selects a scratch stage while retaining the normal transaction and child boundary. */
 export interface FixtureStage {
+	readonly ending?: '\n' | '\r\n'
 	readonly picture?: FixturePicture
 	readonly population?: FixturePopulation
 	readonly journal?: FixtureJournal
@@ -203,10 +256,13 @@ export const FIXTURE_FAULT_MESSAGES: Readonly<Record<FixtureFault, string>> = Ob
 export const READ_REFUSALS: readonly FixtureReadRefusal[] = Object.freeze([
 	{
 		selection: { selector: 'pages:absent', variants: ['light-390'] },
-		reason: 'Empty or unknown selector',
+		reason: 'selector: received',
 	},
 	{ selection: { selector: 'pages:mail', variants: [] }, reason: 'Invalid capture selection' },
-	{ selection: { selector: 'pages:mail', variants: ['absent'] }, reason: 'Empty selection' },
+	{
+		selection: { selector: 'pages:mail', variants: ['absent'] },
+		reason: 'Unknown or unattested selected variant',
+	},
 	{
 		selection: { selector: 'pages:mail', variants: ['light-390'], state: 'board-screen' },
 		reason: 'Empty selection',
@@ -217,9 +273,9 @@ export const READ_REFUSALS: readonly FixtureReadRefusal[] = Object.freeze([
 	},
 	{
 		selection: { selector: 'pages:mail', variants: ['light-390'], portfolio: 'files-focused' },
-		reason: 'Empty or unknown selector',
+		reason: 'selector: received',
 	},
-	{ selection: { selector: 'vue', portfolio: 'vue' }, reason: 'Invalid capture selection' },
+	{ selection: { selector: 'vue', portfolio: 'vue' }, reason: 'selector: received' },
 ])
 
 /** Pairs published inputs with their SHA-256 digests, from a source other than the code under test. */
@@ -303,6 +359,7 @@ export function isFixtureWrite(value: unknown): value is FixtureWrite {
 			(value.population === undefined ||
 				FIXTURE_POPULATIONS.some((name) => name === value.population)) &&
 			(value.journal === undefined || FIXTURE_JOURNALS.some((name) => name === value.journal)) &&
+			(value.ending === undefined || READER_ENDINGS.some((ending) => ending === value.ending)) &&
 			(value.vue === undefined || typeof value.vue === 'boolean') &&
 			(value.duplicate === undefined || typeof value.duplicate === 'boolean') &&
 			(value.fault === undefined || FIXTURE_FAULTS.some((name) => name === value.fault)),
@@ -524,7 +581,7 @@ export function writeFixtureOutputs(input: FixtureWrite): void {
 			`record=${input.journal === 'foreign' ? `${record}.foreign` : record}`,
 			...(input.journal === 'foreign' ? [] : passed.map((entry) => `case-ran=${entry.case}`)),
 			'',
-		].join('\n')
+		].join(input.ending ?? '\n')
 		for (const file of [artifact, copy]) {
 			mkdirSync(dirname(resolve(file)), { recursive: true })
 			writeFileSync(file, journal)
@@ -674,13 +731,13 @@ export interface RunnerRefusal {
 /** Lists the command-line refusals both Vitest commands make, each read through exit 64. */
 export const RUNNER_REFUSALS: readonly RunnerRefusal[] = Object.freeze([
 	{ title: 'bare invocation', args: [], message: 'Selectors:' },
-	{ title: 'unknown scope', args: ['missing'], message: 'Unknown scope: missing' },
-	{ title: 'unknown owner', args: ['pages:missing'], message: 'Unknown owner: missing' },
-	{ title: 'unknown deep owner', args: ['pages:mail:deep'], message: 'Unknown owner: deep' },
+	{ title: 'unknown scope', args: ['missing'], message: 'Unknown scope: "missing"' },
+	{ title: 'unknown owner', args: ['pages:missing'], message: 'Unknown owner: "missing"' },
+	{ title: 'unknown deep owner', args: ['pages:mail:deep'], message: 'Unknown owner: "deep"' },
 	{
 		title: 'unknown variant',
 		args: ['pages:mail', '--variant', 'missing'],
-		message: 'Unknown variant: missing',
+		message: '--variant: received "missing"',
 	},
 	{
 		title: 'repeated variant',
@@ -1269,6 +1326,33 @@ export const FIXTURE_GEOMETRY: FixtureGeometry = Object.freeze({ width: 128, hei
 /** Lists the readers the reader proofs drive, each against the same selection. */
 export const READER_COMMANDS = Object.freeze(['preflight', 'contact-sheets'] as const)
 
+/** Lists the artifact terminators the readers must treat identically. */
+export const READER_ENDINGS = Object.freeze(['\n', '\r\n'] as const)
+
+/** Lists malformed host-check modules and their expected refusal subjects. */
+export const READER_CHECK_REFUSALS = Object.freeze([
+	{
+		title: 'a module that does not exist',
+		file: resolve(import.meta.dirname, 'fixtures/capture/MissingChecks.ts'),
+		message: 'Cannot load the checks module',
+	},
+	{
+		title: 'a module that exports no list',
+		file: resolve(import.meta.dirname, 'fixtures/capture/ScalarChecks.ts'),
+		message: 'exports no CAPTURE_CHECKS list of readers',
+	},
+	{
+		title: 'a module whose list holds a non-function',
+		file: resolve(import.meta.dirname, 'fixtures/capture/MixedChecks.ts'),
+		message: 'exports no CAPTURE_CHECKS list of readers',
+	},
+	{
+		title: 'a reader that returns something other than findings',
+		file: resolve(import.meta.dirname, 'fixtures/capture/WrongChecks.ts'),
+		message: 'returned something other than a list of findings',
+	},
+])
+
 /** Names one reader the reader proofs drive. */
 export type ReaderCommand = (typeof READER_COMMANDS)[number]
 
@@ -1444,6 +1528,7 @@ export function createReaderWrapper(
 	const projects = producers.map((variant) => ({
 		test: {
 			name: { label: `journey:${variant}`, color: 'green' },
+			tags: COMPOSED_OWNERS.map((owner) => ({ name: `owner:${owner}` })),
 			provide: {
 				directory: resolve(root, 'tmp/captures/states'),
 				record: `tmp/captures/states/runs/reader/${variant}.json`,
@@ -1634,12 +1719,12 @@ export const BIN_REFUSALS: readonly BinRefusal[] = Object.freeze([
 	{
 		title: 'an unknown scope',
 		argv: ['journey', 'nope'],
-		reason: 'Unknown scope: nope',
+		reason: 'Unknown scope: "nope"',
 	},
 	{
 		title: 'an unknown owner',
 		argv: ['frames', 'pages:none'],
-		reason: 'Unknown owner: none',
+		reason: 'Unknown owner: "none"',
 	},
 	{ title: 'a bare preflight', argv: ['preflight'], reason: 'Usage: capture preflight <selector>' },
 	{

@@ -1,11 +1,18 @@
 import type { CaptureDestination } from '@src/core'
 import type { CaptureImageResult, CaptureProducer } from '@src/server'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync, readdirSync, symlinkSync, truncateSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { deflateSync, inflateSync } from 'node:zlib'
-import { parseJSON } from '@orkestrel/contract'
-import { createScratch } from '@orkestrel/test/server'
-import { isCaptureError, isCaptureLookupJournal } from '@src/core'
+import { parseJSON, preview } from '@orkestrel/contract'
+import { createScratch, supportsDirectoryLinks } from '@orkestrel/test/server'
+import {
+	CAPTURE_ERROR_CODES,
+	CaptureError,
+	isCaptureError,
+	isCaptureLookupJournal,
+} from '@src/core'
 import {
 	CAPTURE_DEFAULTS,
 	answerCaptureDiscovery,
@@ -61,6 +68,25 @@ import {
 	shrinkCapturePicture,
 	unfilterCaptureRow,
 	writeCaptureDocument,
+	resolveCaptureSheetIdentity,
+	splitCapturePages,
+	matchesCaptureFile,
+	mergeCaptureLookups,
+	requireCaptureContained,
+	resolveCapturePhysical,
+	readCaptureAncestor,
+	resolveCaptureExit,
+	describeCaptureFault,
+	CAPTURE_PNG_LIMITS,
+	readCaptureImage,
+	requireCaptureImageSize,
+	readCaptureSeparator,
+	readCaptureTitles,
+	readCaptureVariants,
+	describeCaptureMembers,
+	describeCaptureOutput,
+	requireCaptureSelection,
+	CAPTURE_MESSAGE_LIMIT,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { createPngBytes } from '../../fixtures/capture/createPngBytes.js'
@@ -74,6 +100,7 @@ import {
 	createDestinationFixture,
 	createLookupFixture,
 	createReceiptFixture,
+	createRegistryFixture,
 	createVitestFixture,
 	readThrown,
 } from '../../setup.js'
@@ -100,6 +127,216 @@ import {
 function createSolid(width: number, height: number, value: number) {
 	return { width, height, pixels: new Uint8Array(width * height * 3).fill(value) }
 }
+
+describe('H1 extracted pure leaves', () => {
+	it('maps usage to 64 and every other refusal to 1', () => {
+		for (const code of CAPTURE_ERROR_CODES)
+			expect(resolveCaptureExit(new CaptureError('refused', { code }))).toBe(
+				code === 'USAGE' ? 64 : 1,
+			)
+		expect(resolveCaptureExit(new Error('I/O failed'))).toBe(1)
+	})
+	it('describes member differences and bounded values directly', () => {
+		const fault = describeCaptureFault(
+			'root',
+			{ unexpected: 'x'.repeat(200) },
+			'{ required: string }',
+			['required'],
+			['required'],
+		)
+		expect(fault).toContain('root: received object')
+		expect(fault).toContain(preview('x'.repeat(200)))
+		expect(fault).toContain('missing: ["required"]')
+		expect(fault).toContain('unexpected: ["unexpected"]')
+	})
+	it('groups sheet identity by portfolio, owner and state independently of variant', () => {
+		const entry = createDestinationFixture()
+		expect(resolveCaptureSheetIdentity(entry)).toBe('["states","pages:mail","inbox"]')
+		expect(resolveCaptureSheetIdentity({ ...entry, variant: 'other' })).toBe(
+			resolveCaptureSheetIdentity(entry),
+		)
+		expect(resolveCaptureSheetIdentity({ ...entry, state: 'other' })).not.toBe(
+			resolveCaptureSheetIdentity(entry),
+		)
+	})
+	it('partitions consecutive sheet pages without losing their order or members', () => {
+		expect(splitCapturePages([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]])
+		expect(splitCapturePages([], 2)).toEqual([])
+	})
+	it('merges lookup identities with incoming entries replacing the previous identity', () => {
+		const previous = createLookupFixture()
+		const incoming = { ...previous, time: '2026-10-28T00:00:00.000Z' }
+		expect(mergeCaptureLookups([previous], [incoming])).toEqual([incoming])
+		expect(mergeCaptureLookups([previous], [])).toEqual([previous])
+		expect(() => mergeCaptureLookups([previous, previous], [])).toThrow(
+			'inherited lookup identities',
+		)
+		expect(() => mergeCaptureLookups([], [incoming, incoming])).toThrow(
+			'incoming lookup identities',
+		)
+	})
+	it('compares every physical snapshot fact and refuses a missing current snapshot', () => {
+		const previous = {
+			file: 'a.png',
+			image: { digest: FIXTURE_HASH, size: 10, modified: 20 },
+			changed: 30,
+		}
+		expect(matchesCaptureFile(previous, previous)).toBe(true)
+		expect(matchesCaptureFile(previous, undefined)).toBe(false)
+		for (const image of [
+			{ ...previous.image, digest: 'different' },
+			{ ...previous.image, size: 11 },
+			{ ...previous.image, modified: 21 },
+		])
+			expect(matchesCaptureFile(previous, { ...previous, image })).toBe(false)
+		expect(matchesCaptureFile(previous, { ...previous, changed: 31 })).toBe(false)
+	})
+	it('resolves physical ancestors and refuses an escaped destination before any creation', () => {
+		const scratch = createScratch({ prefix: 'capture-physical-' })
+		try {
+			const path = resolve(scratch.path, 'missing/new')
+			expect(readCaptureAncestor(path)).toBe(scratch.path)
+			expect(resolveCapturePhysical(path)).toBe(path)
+			expect(requireCaptureContained(scratch.path, path)).toBe(path)
+			expect(() =>
+				requireCaptureContained(scratch.path, resolve(scratch.path, '../outside/new')),
+			).toThrow('outside')
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('H1 agent-facing refusals', () => {
+	it('H1r caps every listed population and gives the declared variant candidates', () => {
+		const members = Object.fromEntries(
+			Array.from({ length: 2000 }, (_, index) => [`key${String(index)}`, 'x'.repeat(200)]),
+		)
+		const fault = describeCaptureFault(
+			'root',
+			members,
+			'a bounded record',
+			Object.keys(members),
+			Object.keys(members),
+			[],
+		)
+		expect(fault.length).toBeLessThan(10_000)
+		expect(fault).toContain('1984 more')
+		const project = readCaptureProject(createProjectFixture())
+		const unknown = readThrown(() => resolveCaptureVariants(['absent'], [project]))
+		expect(unknown).toMatchObject({
+			message: expect.stringContaining(
+				`valid candidates: [${project.variants.map(preview).join(',')}]`,
+			),
+		})
+	})
+	it('H1r caps member lists directly at, below, and past their display limit', () => {
+		expect(describeCaptureMembers([])).toBe('[]')
+		expect(describeCaptureMembers(Array.from({ length: 15 }, () => 'a'))).not.toContain('more')
+		expect(describeCaptureMembers(Array.from({ length: 16 }, () => 'a'))).not.toContain('more')
+		expect(describeCaptureMembers(Array.from({ length: 17 }, () => 'a'))).toContain('1 more')
+	})
+	it('H1r gives every same-class refusal a key, preview, shape, and candidates', () => {
+		const variant = 'bad/name'
+		const state = 'bad/state'
+		const registry = readThrown(() =>
+			readCaptureRegistryArguments(['--variant', variant], process.cwd(), 'vite.config.ts'),
+		)
+		const selected = readThrown(() =>
+			readCaptureArguments(['all', '--state', state], 'capture', process.cwd(), 'vite.config.ts'),
+		)
+		const project = readThrown(() =>
+			readCaptureProject(createProjectFixture({ provide: { variants: [{ name: variant }] } })),
+		)
+		for (const [error, key, value] of [
+			[registry, '--variant[0]', variant],
+			[selected, '--state', state],
+			[project, 'test.provide.variants[0].name', variant],
+		] as const) {
+			expect(error).toMatchObject({
+				message: expect.stringContaining(`${key}: received ${preview(value)}`),
+			})
+			expect(error).toMatchObject({ message: expect.stringContaining('expected ') })
+			expect(error).toMatchObject({
+				message: expect.stringMatching(/valid candidates: \["|valid values come from/u),
+			})
+		}
+	})
+	it('names and caps the invalid variant value at its argument key', () => {
+		const value = 'bad\n' + 'x'.repeat(200)
+		const fault = readThrown(() =>
+			readCaptureArguments(['all', '--variant', value], 'journey', process.cwd(), 'vite.config.ts'),
+		)
+		expect(fault).toMatchObject({ code: 'USAGE' })
+		if (!(fault instanceof Error)) throw new Error('Missing refusal')
+		expect(fault.message).toContain('--variant[0]')
+		expect(fault.message).toContain(preview(value))
+		expect(fault.message).toContain('expected')
+		expect(fault.message).toContain('valid candidates')
+		expect(fault.message).not.toContain(value)
+	})
+	it('reports every missing and unexpected root member with the indexed key path', () => {
+		const fault = readThrown(() => readCapturePortfolios([{ typo: true, extra: 42 }], 'portfolios'))
+		if (!(fault instanceof Error)) throw new Error('Missing refusal')
+		for (const text of [
+			'portfolios[0]',
+			'received object',
+			'expected',
+			'valid candidates',
+			'missing: ["portfolio","directory","scoped"]',
+			'unexpected: ["typo","extra"]',
+		])
+			expect(fault.message).toContain(text)
+	})
+	it('reports all absent bounded host fields in one refusal', () => {
+		const fault = readThrown(() =>
+			readCaptureProject(
+				createProjectFixture({
+					provide: { directory: undefined, record: undefined, inputs: undefined },
+				}),
+			),
+		)
+		if (!(fault instanceof Error)) throw new Error('Missing refusal')
+		for (const text of [
+			'test.provide',
+			'directory',
+			'record',
+			'inputs',
+			'received',
+			'expected',
+			'valid candidates',
+			'missing:',
+			'unexpected:',
+		])
+			expect(fault.message).toContain(text)
+	})
+	it('reports every missing and unexpected description field', () => {
+		const fault = readThrown(() =>
+			readCaptureDescription(
+				{ extra: true, typo: 42 },
+				{ id: 'a', nonce: 'b', config: 'vite.config.ts', parent: 1, pid: 2 },
+			),
+		)
+		if (!(fault instanceof Error)) throw new Error('Missing refusal')
+		for (const text of [
+			'description',
+			'received object',
+			'expected',
+			'valid candidates',
+			'missing: ["version","id","nonce","config","parent","pid","projects"]',
+			'unexpected: ["extra","typo"]',
+		])
+			expect(fault.message).toContain(text)
+	})
+	it('caps unknown selectors and names every declared candidate', () => {
+		const selector = 'pages:' + 'bad\n'.repeat(100)
+		const fault = describeCaptureSelectorFault(selector, ['pages', 'pages:mail']) ?? ''
+		expect(fault).toContain('selector')
+		expect(fault).toContain(preview(selector))
+		expect(fault).toContain('valid candidates: ["all","pages","pages:mail"]')
+		expect(fault).not.toContain(selector)
+	})
+})
 
 function createImportInput(
 	overrides: Partial<Parameters<typeof buildCaptureRegistry>[0][number]> = {},
@@ -455,6 +692,116 @@ describe('readCaptureChunks', () => {
 })
 
 describe('decodeCapturePicture', () => {
+	it('H1s admits the pixel boundary and refuses a frame one pixel over', () => {
+		expect(() =>
+			decodeCapturePicture(createPngBytes({ width: 32768, height: 640, rows: [[0, 1, 2, 3]] })),
+		).toThrow('scanline length differs')
+		expect(() =>
+			decodeCapturePicture(createPngBytes({ width: 2781, height: 7541, rows: [[0, 1, 2, 3]] })),
+		).toThrow('pixel budget')
+	})
+	it('H1s refuses the high-ratio full RGBA stream before inflation', () => {
+		const width = 11585
+		const height = 11585
+		const png = Buffer.concat([
+			Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+			encodeCaptureChunk(
+				'IHDR',
+				Buffer.concat([
+					encodeCaptureWord(width),
+					encodeCaptureWord(height),
+					Buffer.from([8, 6, 0, 0, 0]),
+				]),
+			),
+			encodeCaptureChunk('IDAT', deflateSync(Buffer.alloc((width * 4 + 1) * height))),
+			encodeCaptureChunk('IEND', Buffer.alloc(0)),
+		])
+		expect(png.length).toBeLessThan(1024 * 1024)
+		const started = performance.now()
+		expect(() => decodeCapturePicture(png)).toThrow('pixel budget')
+		expect(performance.now() - started).toBeLessThan(1000)
+	}, 60_000)
+	it('H1r admits high-density full-page frames and many data chunks', () => {
+		for (const [width, height] of [
+			[2880, 6000],
+			[1170, 15000],
+		] as const) {
+			const raw = Buffer.alloc((width * 4 + 1) * height)
+			const png = Buffer.concat([
+				Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+				encodeCaptureChunk(
+					'IHDR',
+					Buffer.concat([
+						encodeCaptureWord(width),
+						encodeCaptureWord(height),
+						Buffer.from([8, 6, 0, 0, 0]),
+					]),
+				),
+				encodeCaptureChunk('IDAT', deflateSync(raw)),
+				encodeCaptureChunk('IEND', Buffer.alloc(0)),
+			])
+			expect(decodeCapturePicture(png)).toMatchObject({ width, height })
+		}
+	}, 60_000)
+	it('H1r admits a valid encoder stream split across many nonempty data chunks', () => {
+		const png = encodeCapturePicture(createSolid(128, 128, 42), false)
+		const payload = png.subarray(41, png.length - 16)
+		const chunks = Array.from({ length: Math.ceil(payload.length / 16) }, (_, index) =>
+			encodeCaptureChunk('IDAT', payload.subarray(index * 16, (index + 1) * 16)),
+		)
+		expect(chunks.length).toBeGreaterThan(1024)
+		expect(
+			decodeCapturePicture(
+				Buffer.concat([
+					png.subarray(0, 33),
+					...chunks,
+					encodeCaptureChunk('IEND', Buffer.alloc(0)),
+				]),
+			),
+		).toEqual(createSolid(128, 128, 42))
+	})
+	it('refuses dimensions above the independent pixel budget before inflation', () => {
+		const png = createPngBytes({ width: 32768, height: 641, rows: [[0, 1, 2, 3]] })
+		expect(() => decodeCapturePicture(png)).toThrow('pixel budget')
+		for (const height of [639, 640])
+			expect(() =>
+				decodeCapturePicture(createPngBytes({ width: 32768, height, rows: [[0, 1, 2, 3]] })),
+			).toThrow('scanline length differs')
+		const narrow = createPngBytes({ width: 1, height: 131_073, rows: [[0, 1, 2, 3]] })
+		expect(() => decodeCapturePicture(narrow)).toThrow('dimension budget')
+		for (const height of [131_071, 131_072])
+			expect(() =>
+				decodeCapturePicture(createPngBytes({ width: 1, height, rows: [[0, 1, 2, 3]] })),
+			).toThrow('scanline length differs')
+	})
+
+	it('admits valid PNGs with many ancillary chunks', () => {
+		const png = createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3]] })
+		const chunks = Array.from({ length: 1024 }, () => encodeCaptureChunk('tEXt', Buffer.alloc(0)))
+		expect([
+			...decodeCapturePicture(Buffer.concat([png.subarray(0, 33), ...chunks, png.subarray(33)]))
+				.pixels,
+		]).toEqual([1, 2, 3])
+		const bounded = Buffer.concat([png.subarray(0, 33), ...chunks.slice(0, 1021), png.subarray(33)])
+		expect([...decodeCapturePicture(bounded).pixels]).toEqual([1, 2, 3])
+	})
+	it('H1r bounds file bytes before reading a sparse oversized image', () => {
+		for (const size of [CAPTURE_PNG_LIMITS.bytes - 1, CAPTURE_PNG_LIMITS.bytes])
+			expect(() => requireCaptureImageSize(size)).not.toThrow()
+		expect(() => requireCaptureImageSize(CAPTURE_PNG_LIMITS.bytes + 1)).toThrow('file budget')
+		const scratch = createScratch({ prefix: 'capture-image-bound-' })
+		try {
+			scratch.write('huge.png', '')
+			truncateSync(resolve(scratch.path, 'huge.png'), CAPTURE_PNG_LIMITS.bytes + 1)
+			expect(() => readCaptureImage(resolve(scratch.path, 'huge.png'))).toThrow('file budget')
+			scratch.write('small.png', 'small physical image bytes')
+			expect(readCaptureImage(resolve(scratch.path, 'small.png')).toString('utf8')).toBe(
+				'small physical image bytes',
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
 	it('reconstructs every filter type to the hand-worked pixels', () => {
 		const picture = decodeCapturePicture(createPngBytes(FILTERED_PICTURE))
 		expect([picture.width, picture.height]).toEqual([2, 4])
@@ -788,6 +1135,49 @@ describe('resolveCaptureStages', () => {
 })
 
 describe('resolveCaptureVariants', () => {
+	it('H1s validates wrapper selections before evidence is needed', () => {
+		const project = readCaptureProject(createProjectFixture())
+		expect(() => requireCaptureSelection('app', [project.variant], [project])).not.toThrow()
+		expect(() => requireCaptureSelection('all', [], [project])).not.toThrow()
+		for (const selector of ['', 'missing'])
+			expect(() => requireCaptureSelection(selector, [], [project])).toThrow(
+				expect.objectContaining({ code: 'USAGE' }),
+			)
+		expect(() => requireCaptureSelection('app', ['missing'], [project])).toThrow(
+			expect.objectContaining({ code: 'USAGE' }),
+		)
+		expect(() =>
+			requireCaptureSelection('app', ['focused-output'], [project], ['focused-output']),
+		).not.toThrow()
+	})
+	it('H1s reads only contained schema-valid output variant candidate hints', () => {
+		const scratch = createScratch({ prefix: 'capture-variant-hints-' })
+		try {
+			const file = resolve(scratch.path, 'registry.json')
+			expect(readCaptureVariants(scratch.path, file)).toEqual([])
+			scratch.write('registry.json', 'invalid json')
+			expect(readCaptureVariants(scratch.path, file)).toEqual([])
+			scratch.write(
+				'registry.json',
+				JSON.stringify(
+					createRegistryFixture({
+						entries: [createDestinationFixture({ variant: 'focused-output' })],
+					}),
+				),
+			)
+			expect(readCaptureVariants(scratch.path, file)).toEqual(['focused-output'])
+			expect(readCaptureVariants(resolve(scratch.path, 'child'), file)).toEqual([])
+		} finally {
+			scratch.destroy()
+		}
+	})
+	it('H1s caps external output at its boundary and counts omitted characters', () => {
+		for (const size of [CAPTURE_MESSAGE_LIMIT - 1, CAPTURE_MESSAGE_LIMIT])
+			expect(describeCaptureOutput('x'.repeat(size))).toBe('x'.repeat(size))
+		expect(describeCaptureOutput('x'.repeat(CAPTURE_MESSAGE_LIMIT + 1))).toBe(
+			`${'x'.repeat(CAPTURE_MESSAGE_LIMIT)}… 1 more characters`,
+		)
+	})
 	it('keeps declaration order, narrows explicitly, and refuses unknown or unbacked variants', () => {
 		const project = readCaptureProject(
 			createProjectFixture({ provide: { variants: [{ name: 'wide' }], first: 'wide' } }),
@@ -967,7 +1357,7 @@ describe('readCaptureArguments changed selection', () => {
 
 describe('buildCaptureArguments', () => {
 	const BASE = {
-		entry: '/workspace/node_modules/vitest/vitest.mjs',
+		entry: resolve('node_modules/vitest/vitest.mjs'),
 		config: '/workspace/fixture with spaces.config.ts',
 		report: '/workspace/var/requests/runs/a/journey-selected.json',
 		projects: ['bench:compact', 'bench:wide'],
@@ -977,7 +1367,7 @@ describe('buildCaptureArguments', () => {
 
 	it('builds the exact argument array, one element per value, with every project in order', () => {
 		expect(buildCaptureArguments(BASE)).toEqual([
-			'/workspace/node_modules/vitest/vitest.mjs',
+			resolve('node_modules/vitest/vitest.mjs'),
 			'run',
 			'--config',
 			'/workspace/fixture with spaces.config.ts',
@@ -1007,6 +1397,163 @@ describe('buildCaptureArguments', () => {
 		expect(pattern.test(`${exact} too`)).toBe(false)
 		expect(pattern.test('retains mail reader quotes')).toBe(false)
 		expect(args.filter((argument) => argument === '-t')).toHaveLength(1)
+	})
+	it('H1r uses only the installed major separator without broadening literal spaces', () => {
+		const args = buildCaptureArguments({
+			...BASE,
+			entry: resolve('node_modules/vitest/vitest.mjs'),
+			case: 'outer inner',
+		})
+		const pattern = new RegExp(args[args.indexOf('-t') + 1] ?? '', 'u')
+		expect(pattern.test('outer inner')).toBe(true)
+		expect(pattern.test('outer > inner')).toBe(false)
+	})
+	it('H1s wraps an unreadable Vitest manifest as a HOST refusal', () => {
+		const scratch = createScratch({ prefix: 'capture-manifest-refusal-' })
+		try {
+			expect(() => readCaptureSeparator(resolve(scratch.path, 'vitest.mjs'))).toThrow(
+				expect.objectContaining({ code: 'HOST' }),
+			)
+			scratch.write('package.json', '{')
+			expect(() => readCaptureSeparator(resolve(scratch.path, 'vitest.mjs'))).toThrow(
+				expect.objectContaining({ code: 'HOST' }),
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
+	it('H1s names the source of candidates before discovery instead of placeholders', () => {
+		for (const run of [
+			() =>
+				readCaptureArguments(
+					['all', '--variant', 'bad/name'],
+					'journey',
+					'/repo',
+					'vite.config.ts',
+				),
+			() =>
+				readCaptureArguments(['all', '--state', 'bad/name'], 'capture', '/repo', 'vite.config.ts'),
+			() => readCaptureRegistryArguments(['--variant', 'bad/name'], '/repo', 'vite.config.ts'),
+		]) {
+			const error = readThrown(run)
+			expect(error instanceof Error ? error.message : '').not.toMatch(
+				/<wrapper-declared|<case-declared/u,
+			)
+			expect(error instanceof Error ? error.message : '').toContain('valid values come from')
+		}
+	})
+	it('H1r reads each supported installed major and refuses an unsupported manifest', () => {
+		const scratch = createScratch({ prefix: 'capture-vitest-major-' })
+		try {
+			const entry = resolve(scratch.path, 'node_modules/vitest/vitest.mjs')
+			scratch.write('node_modules/vitest/package.json', JSON.stringify({ version: '4.1.12' }))
+			expect(readCaptureSeparator(entry)).toBe(' ')
+			scratch.write('node_modules/vitest/package.json', JSON.stringify({ version: '5.0.5' }))
+			expect(readCaptureSeparator(entry)).toBe(' > ')
+			const args = buildCaptureArguments({
+				...BASE,
+				entry,
+				case: 'outer suite inner case',
+				titles: { 'outer suite inner case': ['outer suite', 'inner case'] },
+			})
+			const pattern = new RegExp(args[args.indexOf('-t') + 1] ?? '', 'u')
+			expect(pattern.test('outer suite > inner case')).toBe(true)
+			expect(pattern.test('outer suite inner case')).toBe(false)
+			scratch.write('node_modules/vitest/package.json', JSON.stringify({ version: '6.0.0' }))
+			expect(() => readCaptureSeparator(entry)).toThrow('vitest.version: received "6.0.0"')
+		} finally {
+			scratch.destroy()
+		}
+	})
+	it('H1r reads original suite titles only from digest-authenticated reporter bytes', () => {
+		const scratch = createScratch({ prefix: 'capture-case-titles-' })
+		try {
+			const report = JSON.stringify({
+				testResults: [
+					{
+						assertionResults: [
+							{
+								fullName: 'outer suite inner case',
+								ancestorTitles: ['outer suite'],
+								title: 'inner case',
+							},
+						],
+					},
+				],
+			})
+			scratch.write('report.json', report)
+			const receipt = createReceiptFixture({
+				report: { file: 'report.json', digest: computeCaptureHash(report) },
+			})
+			scratch.write('registry.json', JSON.stringify(createRegistryFixture({ receipts: [receipt] })))
+			expect(readCaptureTitles(scratch.path, resolve(scratch.path, 'registry.json'))).toEqual({
+				'outer suite inner case': ['outer suite', 'inner case'],
+			})
+			scratch.write('report.json', `${report}\n`)
+			expect(() => readCaptureTitles(scratch.path, resolve(scratch.path, 'registry.json'))).toThrow(
+				'digest differs',
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('selects an exact nested case and final case through a real nested Vitest run', () => {
+		const scratch = createScratch({ prefix: 'capture-selection-' })
+		try {
+			const entry = resolve(process.env.CAPTURE_VITEST_ENTRY ?? 'node_modules/vitest/vitest.mjs')
+			const testModule = pathToFileURL(resolve(dirname(entry), 'dist/index.js')).href
+			const decoy = ['outer suite', 'inner [group]', 'exact (case)'].join(
+				readCaptureSeparator(entry) === ' ' ? ' > ' : ' ',
+			)
+			scratch.write(
+				'nested.test.ts',
+				`import { describe, it, expect } from ${JSON.stringify(testModule)}\nit(${JSON.stringify(decoy)}, () => { throw new Error('selected the other major separator') }); describe('outer suite', () => { describe('inner [group]', () => { it('exact (case)', () => expect(true).toBe(true)); it('exact (case) extra', () => { throw new Error('selected an inexact case') }); it('final case', () => expect(true).toBe(true)); it('other', () => { throw new Error('broadened selection') }) }) })\n`,
+			)
+			scratch.write(
+				'vite.config.ts',
+				`export default { root: ${JSON.stringify(scratch.path)}, test: { include: ['nested.test.ts'] } }\n`,
+			)
+			const args = buildCaptureArguments({
+				...BASE,
+				entry,
+				case: 'outer suite inner [group] exact (case)',
+				final: 'outer suite inner [group] final case',
+				titles: {
+					'outer suite inner [group] exact (case)': [
+						'outer suite',
+						'inner [group]',
+						'exact (case)',
+					],
+					'outer suite inner [group] final case': ['outer suite', 'inner [group]', 'final case'],
+				},
+			})
+			const pattern = args[args.indexOf('-t') + 1]
+			if (pattern === undefined) throw new Error('No exact-case pattern')
+			const run = spawnSync(
+				process.execPath,
+				[
+					entry,
+					'run',
+					'--config',
+					resolve(scratch.path, 'vite.config.ts'),
+					'--configLoader',
+					'runner',
+					'-t',
+					pattern,
+					'--reporter=json',
+					`--outputFile.json=${resolve(scratch.path, 'report.json')}`,
+				],
+				{ encoding: 'utf8', windowsHide: true, timeout: 30_000 },
+			)
+			expect({ code: run.status, stderr: run.stderr }).toEqual({ code: 0, stderr: '' })
+			expect(parseJSON(scratch.read('report.json') ?? '')).toMatchObject({
+				numPassedTests: 2,
+				numPendingTests: 3,
+			})
+		} finally {
+			scratch.destroy()
+		}
 	})
 
 	it('adds no projects and no pattern when none are given', () => {
@@ -1099,9 +1646,11 @@ describe('describeCaptureSelectorFault', () => {
 		{ selector: 'app:mail:deep', label: 'owner', segment: 'deep' },
 		{ selector: 'tools:search', label: 'owner', segment: 'search' },
 	])('names the first unknown segment of $selector', ({ selector, label, segment }) => {
-		expect(describeCaptureSelectorFault(selector, SELECTORS)).toBe(
-			`Unknown ${label}: ${segment} (selector ${selector}; obsolete owner paths are not aliases)`,
-		)
+		const fault = describeCaptureSelectorFault(selector, SELECTORS)
+		expect(fault).toContain(`Unknown ${label}: ${JSON.stringify(segment)}`)
+		expect(fault).toContain(`selector: received ${JSON.stringify(selector)}`)
+		expect(fault).toContain('obsolete owner paths are not aliases')
+		expect(fault).toContain('valid candidates: ["all","app","app:mail","tools"]')
 	})
 })
 
@@ -1115,20 +1664,20 @@ describe('readCapturePortfolios', () => {
 		expect(readCapturePortfolios([], 'portfolios')).toEqual([])
 	})
 
-	it('drops every field a root does not declare', () => {
-		expect(
+	it('refuses every field a root does not declare', () => {
+		expect(() =>
 			readCapturePortfolios(
 				[{ portfolio: 'frames', directory: 'out/frames', scoped: true, extra: 1 }],
 				'portfolios',
 			),
-		).toEqual([{ portfolio: 'frames', directory: 'out/frames', scoped: true }])
+		).toThrow('unexpected: ["extra"]')
 	})
 
 	it('names the subject in a refusal for a missing list', () => {
 		expect(
 			readThrown(() => readCapturePortfolios(undefined, 'standalone portfolios')),
 		).toMatchObject({
-			message: 'The wrapper provides no standalone portfolios',
+			message: expect.stringContaining('The wrapper provides no standalone portfolios'),
 			code: 'HOST',
 		})
 	})
@@ -1824,7 +2373,13 @@ describe('scanCaptureFrames', () => {
 			file: `tmp/captures/states/pages/${state}--${overrides.variant ?? 'light-390'}.png`,
 			...overrides,
 		})
-		return { entry, picture: createSolid(width, height, 0), digest: state, size: 4096 }
+		return {
+			entry,
+			picture: { width, height },
+			thumbnail: createSolid(width, height, 0),
+			digest: state,
+			size: 4096,
+		}
 	}
 
 	it('names the kinds a group mixes, in the order the frames arrive', () => {
@@ -1931,7 +2486,8 @@ describe('collectCaptureIdentical', () => {
 	function createImage(file: string, digest: string): CaptureImageResult {
 		return {
 			entry: createDestinationFixture({ file }),
-			picture: createSolid(1, 1, 0),
+			picture: { width: 1, height: 1 },
+			thumbnail: createSolid(1, 1, 0),
 			digest,
 			size: 4096,
 		}
@@ -2131,7 +2687,7 @@ describe('readCaptureDescription', () => {
 		{
 			title: 'no writer',
 			patch: { pid: undefined },
-			message: 'not written by the discovery child',
+			message: 'missing: ["pid"]',
 		},
 		{
 			title: 'another version',
@@ -2153,7 +2709,7 @@ describe('readCaptureDescription', () => {
 	it.each([undefined, null, [], 'text', 42])('refuses %j as no document', (value) => {
 		expect(readThrown(() => readCaptureDescription(value, EXPECTED))).toMatchObject({
 			code: 'HOST',
-			message: 'The host description is malformed',
+			message: expect.stringContaining('The host description is malformed'),
 		})
 	})
 
@@ -2163,7 +2719,9 @@ describe('readCaptureDescription', () => {
 		)
 		expect(failure).toMatchObject({
 			code: 'HOST',
-			message: 'The host description was not written by the discovery child',
+			message: expect.stringContaining(
+				'The host description was not written by the discovery child',
+			),
 		})
 	})
 
@@ -2410,6 +2968,18 @@ describe('readCaptureRegistryArguments', () => {
 })
 
 describe('readCaptureInputs', () => {
+	it.runIf(supportsDirectoryLinks())('refuses an input read through an outside junction', () => {
+		const scratch = createScratch({ prefix: 'capture-inputs-' })
+		const outside = createScratch({ prefix: 'capture-inputs-outside-' })
+		try {
+			outside.write('source.ts', 'outside')
+			symlinkSync(outside.path, resolve(scratch.path, 'src'), 'junction')
+			expect(() => readCaptureInputs(scratch.path, ['src/source.ts'])).toThrow('outside')
+		} finally {
+			scratch.destroy()
+			outside.destroy()
+		}
+	})
 	it('expands the patterns to regular files only, sorted, each with its content hash', () => {
 		const scratch = createScratch({ prefix: 'inputs-' })
 		try {

@@ -33,8 +33,6 @@ import type {
 import { randomUUID } from 'node:crypto'
 import {
 	existsSync,
-	globSync,
-	lstatSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
@@ -45,7 +43,7 @@ import {
 	writeFileSync,
 } from 'node:fs'
 import { dirname, isAbsolute, matchesGlob, relative, resolve, sep } from 'node:path'
-import { isObject, isRecord, parseJSON } from '@orkestrel/contract'
+import { isRecord, parseJSON } from '@orkestrel/contract'
 import { executeSync } from '@orkestrel/process/server'
 import {
 	CAPTURE_VERSION,
@@ -75,7 +73,6 @@ import {
 	resolveCaptureKey,
 	resolveCaptureOwner,
 	resolveCaptureStatus,
-	resolveLookupKey,
 	validateCaptureReceipt,
 	validateCaptureRun,
 } from '@src/core'
@@ -88,6 +85,15 @@ import {
 	matchesCaptureSignature,
 	normalizeSlashes,
 	readCaptureLookups,
+	readCaptureInputs,
+	matchesCaptureFile,
+	mergeCaptureLookups,
+	readCaptureAncestor,
+	resolveCapturePhysical,
+	describeCaptureSelectorFault,
+	describeCaptureFault,
+	readCaptureImage,
+	describeCaptureOutput,
 } from './helpers.js'
 
 /**
@@ -189,7 +195,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				registry.entries,
 			)
 		} catch (error) {
-			throw new CaptureError(describeCaptureError(error), { code: 'USAGE', cause: error })
+			throw new CaptureError(describeCaptureError(error), { code: 'HOST', cause: error })
 		}
 	}
 
@@ -370,7 +376,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			}
 		})
 		const collections = this.#mergeCollections(evidence.collections, collected)
-		const merged = this.#mergeLookups(evidence.lookups, lookups)
+		const merged = mergeCaptureLookups(evidence.lookups, lookups)
 		const finalSnapshots = new Map<string, CaptureFileSnapshot | undefined>()
 		const redigests = new Map<string, CaptureDigest>()
 		const restable = new Map<string, true>()
@@ -407,7 +413,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 					this.#file(record.artifact.file, finalSnapshots)?.image.digest !==
 						record.artifact.image.digest,
 			) ||
-			images.some((image) => !this.#sameFile(image, this.#file(image.file, finalSnapshots)))
+			images.some((image) => !matchesCaptureFile(image, this.#file(image.file, finalSnapshots)))
 		)
 			throw new CaptureError('Stage output changed before commit', { code: 'STAGE' })
 		options.signal?.throwIfAborted()
@@ -861,7 +867,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			throw new CaptureError(`Invalid serialized path: ${file}`, { code: 'CONTAINMENT' })
 		const path = resolve(this.#root, ...file.split('/'))
 		this.#contained(path)
-		const ancestor = this.#ancestor(path)
+		const ancestor = readCaptureAncestor(path)
 		this.#contained(realpathSync(ancestor))
 		return path
 	}
@@ -873,7 +879,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		const path = this.#resolve(file)
 		for (const [directory, authorized] of this.#roots) {
 			if (file !== directory && !file.startsWith(`${directory}/`)) continue
-			const suffix = relative(authorized, this.#physicalPath(path))
+			const suffix = relative(authorized, resolveCapturePhysical(path))
 			if (isAbsolute(suffix) || suffix === '..' || suffix.startsWith(`..${sep}`))
 				throw new CaptureError(`Physical path resolves outside authorized capture root: ${file}`, {
 					code: 'CONTAINMENT',
@@ -883,33 +889,12 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		return path
 	}
 
-	#physicalPath(path: string): string {
-		const ancestor = this.#ancestor(path)
-		return resolve(realpathSync(ancestor), relative(ancestor, path))
-	}
-
 	#contained(path: string): void {
 		const suffix = relative(this.#root, path)
 		if (isAbsolute(suffix) || suffix === '..' || suffix.startsWith(`..${sep}`))
 			throw new CaptureError(`Physical path resolves outside integrity root: ${path}`, {
 				code: 'CONTAINMENT',
 			})
-	}
-
-	#ancestor(path: string): string {
-		try {
-			lstatSync(path)
-			return path
-		} catch (error) {
-			if (
-				!isObject(error) ||
-				!('code' in error) ||
-				error.code !== 'ENOENT' ||
-				dirname(path) === path
-			)
-				throw error
-			return this.#ancestor(dirname(path))
-		}
 	}
 
 	// Reads each path once per pass; the pass owns the memo and discards it when it ends.
@@ -933,7 +918,9 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		return {
 			file,
 			image: {
-				digest: this.#hash(readFileSync(path)),
+				digest: this.#hash(
+					file.toLowerCase().endsWith('.png') ? readCaptureImage(path) : readFileSync(path),
+				),
 				size: stat.size,
 				modified: stat.mtimeMs,
 			},
@@ -948,19 +935,6 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		return document
 	}
 
-	#hashes(
-		files: readonly string[],
-		snapshots: Map<string, CaptureFileSnapshot | undefined>,
-	): Readonly<Record<string, string>> {
-		requireCaptureUnique(files, 'input paths', true)
-		return Object.fromEntries(
-			files.flatMap((file) => {
-				const snapshot = this.#file(file, snapshots)
-				return snapshot === undefined ? [] : [[file, snapshot.image.digest]]
-			}),
-		)
-	}
-
 	// Expands each pattern list once per pass; the digest sorts its patterns, so sorted lists share a key.
 	#digest(
 		patterns: readonly string[],
@@ -973,28 +947,17 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		const key = JSON.stringify(patterns.toSorted())
 		const known = digests.get(key)
 		if (known !== undefined) return known
-		const digest = this.#computeDigest(patterns, snapshots)
+		const digest = buildCaptureDigest(
+			patterns,
+			readCaptureInputs(
+				this.#root,
+				patterns,
+				this.#hash,
+				(file) => this.#file(file, snapshots)?.image.digest,
+			),
+		)
 		digests.set(key, digest)
 		return digest
-	}
-
-	#computeDigest(
-		patterns: readonly string[],
-		snapshots: Map<string, CaptureFileSnapshot | undefined>,
-	): CaptureDigest {
-		if (patterns.length === 0) return buildCaptureDigest([], {})
-		const files = [
-			...new Set(
-				globSync([...patterns], { cwd: this.#root }).map((file) => {
-					const normalized: string = normalizeSlashes(file)
-					this.#path(normalized)
-					return normalized
-				}),
-			),
-		]
-			.filter((file) => statSync(this.#path(file)).isFile())
-			.toSorted()
-		return buildCaptureDigest(patterns, this.#hashes(files, snapshots))
 	}
 
 	#images(): readonly string[] {
@@ -1050,16 +1013,6 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		}
 	}
 
-	#sameFile(previous: CaptureFileSnapshot, current: CaptureFileSnapshot | undefined): boolean {
-		return (
-			current !== undefined &&
-			current.image.digest === previous.image.digest &&
-			current.image.size === previous.image.size &&
-			current.image.modified === previous.image.modified &&
-			current.changed === previous.changed
-		)
-	}
-
 	#fresh(
 		file: string,
 		before: CaptureSnapshot,
@@ -1072,10 +1025,10 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			current === undefined ||
 			current.image.modified < before.time ||
 			current.changed < before.time ||
-			(previous !== undefined && this.#sameFile(previous, current))
+			(previous !== undefined && matchesCaptureFile(previous, current))
 		)
 			throw new CaptureError(`Missing or stale execution output: ${file}`, { code: 'STAGE' })
-		if (image && !matchesCaptureSignature(readFileSync(this.#path(file))))
+		if (image && !matchesCaptureSignature(readCaptureImage(this.#path(file))))
 			throw new CaptureError(`Capture output is not a PNG: ${file}`, { code: 'EVIDENCE' })
 		return current
 	}
@@ -1230,7 +1183,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			separate !== undefined && separate.manifest === manifestDigest
 				? readCaptureLookups(separate)
 				: []
-		const lookups = this.#mergeLookups(manifest?.lookups ?? [], current).filter(
+		const lookups = mergeCaptureLookups(manifest?.lookups ?? [], current).filter(
 			(entry) => entry.registry === registry.digest,
 		)
 		const populations = new Map<Readonly<Record<string, string>>, true>()
@@ -1306,16 +1259,6 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		return { registry, ...(manifest === undefined ? {} : { manifest }), lookups, runs, collections }
 	}
 
-	#mergeLookups(
-		previous: readonly CaptureLookup[],
-		lookups: readonly CaptureLookup[],
-	): readonly CaptureLookup[] {
-		requireCaptureUnique(previous.map(resolveLookupKey), 'inherited lookup identities')
-		requireCaptureUnique(lookups.map(resolveLookupKey), 'incoming lookup identities')
-		const replaced = new Set(lookups.map(resolveLookupKey))
-		return [...previous.filter((entry) => !replaced.has(resolveLookupKey(entry))), ...lookups]
-	}
-
 	#attest(
 		run: CaptureRun,
 		evidence: CaptureEvidence,
@@ -1386,6 +1329,16 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		options: CaptureCheckOptions | CaptureLookupOptions,
 		attributed: boolean,
 	): readonly CaptureDestination[] {
+		const selectors = [
+			...new Set(
+				entries.flatMap((entry) => {
+					const parts = resolveCaptureOwner(entry).split(':')
+					return parts.map((_part, index) => parts.slice(0, index + 1).join(':'))
+				}),
+			),
+		]
+		const fault = describeCaptureSelectorFault(options.selector, selectors)
+		if (fault !== undefined) throw new CaptureError(fault, { code: 'USAGE' })
 		if (
 			!isCaptureSelector(options.selector) ||
 			!options.variants.every(isCaptureSegment) ||
@@ -1394,7 +1347,15 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			(options.portfolio !== undefined &&
 				!this.#options.portfolios.some((entry) => entry.portfolio === options.portfolio))
 		)
-			throw new CaptureError('Invalid capture selection', { code: 'SELECTION' })
+			throw new CaptureError(
+				`Invalid capture selection; ${describeCaptureFault('selection', options, 'portable variants and state, a nonempty case, and an authorized portfolio; valid values come from the selected registry destinations', ['selector', 'variants', 'state', 'case', 'portfolio'], ['selector', 'variants'], ['selector', 'variants', 'state', 'case', 'portfolio'])}; ${describeCaptureFault(
+					'selection.portfolio',
+					options.portfolio,
+					'an authorized portfolio when supplied',
+					this.#options.portfolios.map((entry) => entry.portfolio),
+				)}`,
+				{ code: 'SELECTION' },
+			)
 		requireCaptureUnique(options.variants, 'selected variants', true)
 		const scoped = entries.filter(
 			(entry) =>
@@ -1402,13 +1363,32 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				(options.portfolio === undefined || entry.portfolio === options.portfolio),
 		)
 		if (scoped.length === 0)
-			throw new CaptureError(`Empty or unknown selector: ${options.selector}`, {
-				code: 'SELECTION',
-			})
+			throw new CaptureError(
+				`Empty selector; ${describeCaptureFault('selector', options.selector, 'a declared selector with destinations in the selected portfolio', ['all', ...selectors])}`,
+				{
+					code: 'USAGE',
+				},
+			)
 		// An omitted variant list derives from the scoped destinations, so an unknown selector reads as
 		// that before an empty list reads as an invalid one.
 		if (options.variants.length === 0)
-			throw new CaptureError('Invalid capture selection', { code: 'SELECTION' })
+			throw new CaptureError(
+				`Invalid capture selection; ${describeCaptureFault('selection.variants', options.variants, 'a nonempty selected variant list', [...new Set(scoped.map((entry) => entry.variant))])}`,
+				{ code: 'SELECTION' },
+			)
+		const variants = [
+			...new Set(
+				attributed
+					? entries.map((entry) => this.#producer(entry, evidence))
+					: entries.map((entry) => entry.variant),
+			),
+		]
+		const unknown = options.variants.find((variant) => !variants.includes(variant))
+		if (unknown !== undefined)
+			throw new CaptureError(
+				`Unknown or unattested selected variant; ${describeCaptureFault('selection.variants', unknown, 'an attested registry variant', variants)}`,
+				{ code: 'USAGE' },
+			)
 		const selected = scoped.filter(
 			(entry) =>
 				options.variants.includes(attributed ? this.#producer(entry, evidence) : entry.variant) &&
@@ -1416,14 +1396,12 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				(options.case === undefined || entry.case === options.case),
 		)
 		if (selected.length === 0)
-			throw new CaptureError('Empty selection or state outside selector/case', {
-				code: 'SELECTION',
-			})
-		const variants = attributed
-			? entries.map((entry) => this.#producer(entry, evidence))
-			: entries.map((entry) => entry.variant)
-		if (options.variants.some((variant) => !variants.includes(variant)))
-			throw new CaptureError('Unknown or unattested selected variant', { code: 'SELECTION' })
+			throw new CaptureError(
+				`Empty selection or state outside selector/case; ${describeCaptureFault('selection.state', options.state, 'a state in the selected selector/case', [...new Set(scoped.map((entry) => entry.state))])}; ${describeCaptureFault('selection.case', options.case, 'a case in the selected selector', [...new Set(scoped.map((entry) => entry.case))])}`,
+				{
+					code: 'SELECTION',
+				},
+			)
 		return selected
 	}
 
@@ -1511,7 +1489,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		)
 		if (result.failed || result.truncated)
 			throw new CaptureError(
-				`Git read failed${result.expired ? ' (deadline expired)' : ''}${result.truncated ? ' (output truncated)' : ''}: ${result.stderr.trim() || String(result.code ?? result.signal)}`,
+				`Git read failed${result.expired ? ' (deadline expired)' : ''}${result.truncated ? ' (output truncated)' : ''}: ${describeCaptureOutput(result.stderr.trim() || String(result.code ?? result.signal))}`,
 				{ code: 'HOST' },
 			)
 		return result.stdout

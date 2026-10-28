@@ -344,6 +344,25 @@ export function distribution(override?: UserConfig): UserConfig {
 	return mergeOverride(project, override)
 }
 
+export function studies(override?: UserConfig): UserConfig {
+	return mergeOverride(
+		{
+			resolve,
+			test: {
+				name: { label: 'studies', color: 'cyan' },
+				include: ['tests/studies/**/*.test.ts'],
+				setupFiles: ['./tests/setup.ts'],
+				environment: 'node',
+				browser: { enabled: false },
+				testTimeout: 300_000,
+				hookTimeout: 30_000,
+				fileParallelism: false,
+			},
+		},
+		override,
+	)
+}
+
 // A workbench, not a proof. No gate selects this project. Run in test mode by the
 // `test:probe` script, it collects `tmp/probes/**/*.test.ts`. Run in benchmark mode by the
 // `test:bench` script, the same workbench also collects `tests/**/*.test.ts` for a `bench` block,
@@ -370,6 +389,17 @@ export function probe(override?: UserConfig): UserConfig {
 export default defineConfig({
 	resolve,
 	test: {
-		projects: [srcCore, srcServer, srcBin, policy, config, setup, guides, distribution, probe],
+		projects: [
+			srcCore,
+			srcServer,
+			srcBin,
+			policy,
+			config,
+			setup,
+			guides,
+			distribution,
+			studies,
+			probe,
+		],
 	},
 })

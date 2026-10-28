@@ -9,7 +9,6 @@ import type {
 	CaptureSheetsInterface,
 	CaptureWriteHandler,
 } from './types.js'
-import type { CaptureDestination } from '@src/core'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { attempt } from '@orkestrel/contract'
@@ -25,7 +24,10 @@ import {
 	composeCapturePictures,
 	encodeCapturePicture,
 	normalizeSlashes,
-	shrinkCapturePicture,
+	resolveCapturePhysical,
+	resolveCaptureSheetIdentity,
+	splitCapturePages,
+	resolveCaptureExit,
 } from './helpers.js'
 
 /**
@@ -64,7 +66,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 	/**
 	 * Reads selected physical images, writes complete indexed sheets, and retains all refusals.
 	 *
-	 * @returns Exit 0 for current selected images without preflight defects, 1 for any defect, or 64 for refused usage, including an output directory that is not new, contained, and outside the selected capture directories
+	 * @returns Exit 0 for current selected images without preflight defects, 1 for any defect or containment refusal, or 64 for refused usage
 	 *
 	 * @example
 	 * ```ts
@@ -75,9 +77,9 @@ export class CaptureSheets implements CaptureSheetsInterface {
 		try {
 			const { reader } = this.#options
 			const result = await new CapturePreflight(reader).check()
-			const output = this.#output(result)
+			this.#output(result)
 			const groups = this.#groups(result)
-			const rows = this.#pages(groups, CAPTURE_SHEET.pairs).map((pair): CaptureSheetRow => ({
+			const rows = splitCapturePages(groups, CAPTURE_SHEET.pairs).map((pair): CaptureSheetRow => ({
 				groups: pair,
 				picture: composeCapturePictures(
 					pair.map((entry) => entry.picture),
@@ -85,15 +87,18 @@ export class CaptureSheets implements CaptureSheetsInterface {
 					CAPTURE_SHEET.gap,
 				),
 			}))
-			const sheets = this.#pages(rows, CAPTURE_SHEET.rows).map((page, index): CaptureSheetPage => ({
-				file: `${CAPTURE_SHEET_FILES.prefix}${String(index + 1).padStart(CAPTURE_SHEET_FILES.digits, '0')}.png`,
-				rows: page,
-				picture: composeCapturePictures(
-					page.map((row) => row.picture),
-					true,
-					CAPTURE_SHEET.gap,
-				),
-			}))
+			const sheets = splitCapturePages(rows, CAPTURE_SHEET.rows).map(
+				(page, index): CaptureSheetPage => ({
+					file: `${CAPTURE_SHEET_FILES.prefix}${String(index + 1).padStart(CAPTURE_SHEET_FILES.digits, '0')}.png`,
+					rows: page,
+					picture: composeCapturePictures(
+						page.map((row) => row.picture),
+						true,
+						CAPTURE_SHEET.gap,
+					),
+				}),
+			)
+			const output = this.#output(result)
 			mkdirSync(output)
 			for (const sheet of sheets)
 				writeFileSync(resolve(output, sheet.file), encodeCapturePicture(sheet.picture))
@@ -119,7 +124,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 				})),
 			}
 			writeFileSync(
-				resolve(output, CAPTURE_SHEET_FILES.data),
+				resolve(output, CAPTURE_SHEET_FILES.index),
 				`${JSON.stringify(index, undefined, 2)}\n`,
 			)
 			writeFileSync(
@@ -133,7 +138,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 				: CAPTURE_EXIT.passed
 		} catch (error) {
 			this.#stderr(`${describeCaptureError(error)}\n`)
-			return CAPTURE_EXIT.usage
+			return resolveCaptureExit(error)
 		}
 	}
 
@@ -149,9 +154,15 @@ export class CaptureSheets implements CaptureSheetsInterface {
 			!isCapturePath(local) ||
 			!parent.success ||
 			(parent.value !== '' && !isCapturePath(parent.value)) ||
-			result.selection.entries.some((entry) =>
-				local.startsWith(`${normalizeSlashes(dirname(entry.file))}/`),
-			) ||
+			result.selection.entries.some((entry) => {
+				const suffix = normalizeSlashes(
+					relative(
+						resolveCapturePhysical(resolve(root, dirname(entry.file))),
+						resolveCapturePhysical(output),
+					),
+				)
+				return suffix === '' || isCapturePath(suffix)
+			}) ||
 			existsSync(output)
 		)
 			throw new CaptureError(
@@ -163,10 +174,12 @@ export class CaptureSheets implements CaptureSheetsInterface {
 
 	// Gathers the selected destinations by portfolio, owner, and state, each as a row of shrunk cells.
 	#groups(result: CapturePreflightResult): readonly CaptureSheetGroup[] {
-		const identities = [...new Set(result.selection.entries.map((entry) => this.#identity(entry)))]
+		const identities = [
+			...new Set(result.selection.entries.map((entry) => resolveCaptureSheetIdentity(entry))),
+		]
 		return identities.map((identity): CaptureSheetGroup => {
 			const cells = result.selection.entries
-				.filter((entry) => this.#identity(entry) === identity)
+				.filter((entry) => resolveCaptureSheetIdentity(entry) === identity)
 				.map((entry): CaptureSheetCell => {
 					const image = result.images.find((candidate) => candidate.entry.file === entry.file)
 					const factor =
@@ -184,7 +197,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 											index % 3 === 0 ? CAPTURE_SHEET.mark.present : CAPTURE_SHEET.mark.absent,
 									),
 								}
-							: shrinkCapturePicture(image.picture, factor, CAPTURE_SHEET.limit)
+							: image.thumbnail
 					return {
 						entry,
 						picture,
@@ -208,18 +221,6 @@ export class CaptureSheets implements CaptureSheetsInterface {
 				),
 			}
 		})
-	}
-
-	// Names the portfolio, owner, and state a cell row holds, independent of its variants.
-	#identity(entry: CaptureDestination): string {
-		return JSON.stringify([entry.portfolio, resolveCaptureOwner(entry), entry.state])
-	}
-
-	// Splits a list into consecutive runs of at most `size` members.
-	#pages<T>(items: readonly T[], size: number): ReadonlyArray<readonly T[]> {
-		return Array.from({ length: Math.ceil(items.length / size) }, (_, index) =>
-			items.slice(index * size, index * size + size),
-		)
 	}
 
 	// Writes the notes document: the mixed observations, then each sheet with its cells described.

@@ -30,6 +30,33 @@ export const CAPTURE_COMMAND_NAMES = Object.freeze({
 export const CAPTURE_EXIT = Object.freeze({ passed: 0, failed: 1, usage: 64 } as const)
 
 /**
+ * Names the exclusive workspace invocation marker.
+ * @example
+ * ```ts
+ * CAPTURE_OWNER_FILE // '.capture-owner'
+ * ```
+ */
+export const CAPTURE_OWNER_FILE = '.capture-owner'
+
+/**
+ * Caps each refusal population so hostile records cannot flood a terminal or agent context.
+ * @example
+ * ```ts
+ * CAPTURE_REFUSAL_LIMIT // 16
+ * ```
+ */
+export const CAPTURE_REFUSAL_LIMIT = 16
+
+/**
+ * Bounds external diagnostic text while retaining the number of omitted characters.
+ * @example
+ * ```ts
+ * CAPTURE_MESSAGE_LIMIT // 1024
+ * ```
+ */
+export const CAPTURE_MESSAGE_LIMIT = 1024
+
+/**
  * Names the selected journey stage and the narrow and remaining frame stages.
  *
  * @example
@@ -171,6 +198,28 @@ export const CAPTURE_RUNS_DIRECTORY = 'runs'
 export const CAPTURE_MINIMUM_IMAGE = 4000
 
 /**
+ * Bounds decoded image memory, row metadata, and PNG input bytes independently of untrusted headers.
+ *
+ * @remarks The pixel budget admits the fleet's 2880 × 6000 and 1170 × 15000 Chromium full-page
+ * frames with 19.5% margin over 17,550,000 pixels. An isolated Node RGBA decode at the budget
+ * peaked at 434 MiB process RSS on Windows on 2026-10-28; the fleet sizes peaked at 325–333 MiB.
+ * The side limit bounds row metadata for narrow images. The byte limit bounds disk reads,
+ * compressed buffers, and chunk metadata; it admits an uncompressed RGBA image at the pixel limit.
+ * @example
+ * ```ts
+ * CAPTURE_PNG_LIMITS.pixels // 20971520
+ * ```
+ */
+export const CAPTURE_PNG_LIMITS = Object.freeze({
+	// Bounds inflated RGB/RGBA storage independently of the PNG's declared scanline length.
+	pixels: 20 * 1024 * 1024,
+	// Bounds row metadata for very narrow full-page images.
+	side: 131_072,
+	// Bounds physical reads and compressed/chunk storage; admits uncompressed RGBA at the pixel limit.
+	bytes: 600 * 1024 * 1024,
+} as const)
+
+/**
  * Names the first word of the line a reader prints, followed by its JSON report.
  *
  * @example
@@ -213,7 +262,7 @@ export const CAPTURE_SHEET = Object.freeze({
 export const CAPTURE_SHEET_FILES = Object.freeze({
 	prefix: 'sheet-',
 	digits: 3,
-	data: 'index.json',
+	index: 'index.json',
 	notes: 'index.md',
 } as const)
 
