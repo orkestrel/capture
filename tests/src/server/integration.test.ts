@@ -2,6 +2,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
 import { requireValue } from '@orkestrel/test'
+import { isCaptureLookupJournal } from '@src/core'
 import { afterAll, describe, expect, it } from 'vitest'
 import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import {
@@ -83,9 +84,10 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(reading).toMatchObject({ command: 'journey', stamps: 0, lookups: expect.any(Number) })
 		expect(readFixtureManifest(fixture.root)).toBeUndefined()
 		const journal: unknown = parseJSON(fixture.read(LOOKUPS).toString('utf8'))
-		expect(
-			isRecord(journal) && Array.isArray(journal.lookups) ? journal.lookups.length : 0,
-		).toBeGreaterThan(0)
+		if (!isCaptureLookupJournal(journal)) throw new Error('Invalid journey lookup journal')
+		expect(journal.lookups.length).toBeGreaterThan(0)
+		expect(Object.keys(journal.inputs)).toHaveLength(1)
+		expect(journal.lookups.every((entry) => journal.inputs[entry.inputs] !== undefined)).toBe(true)
 		expect(readHeld(fixture)).toEqual([])
 	})
 

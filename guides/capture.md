@@ -257,6 +257,8 @@ Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry
 | `readFlag`                     | function | Reads the value that follows a flag.                                                                      |
 | `readFlags`                    | function | Reads every value that follows a repeatable flag.                                                         |
 | `buildCaptureDigest`           | function | Computes the digest of both pattern declarations and expanded path and hash membership.                   |
+| `buildCaptureLookupJournal`    | function | Stores each distinct lookup input population once in a manifest-bound journal.                            |
+| `readCaptureLookups`           | function | Resolves journal lookup references after verifying each stored input population's digest.                 |
 | `computeRegistryDigest`        | function | Computes the registry identity from its authenticated receipts and exact output population.               |
 | `buildCaptureRegistry`         | function | Imports complete receipts only after their actual exits and exact report bytes validate.                  |
 | `matchesCaptureSignature`      | function | Checks whether bytes open with the eight-byte PNG signature.                                              |
@@ -405,7 +407,9 @@ result.entries.map((entry) => entry.status) // one classification per selected f
 
 Every refusal is a `CaptureError`. A selector, variant, case, state, or portfolio the host does not declare is `SELECTION`; a wrapper or option fault is `HOST`; a stage that did not complete or whose inputs moved is `STAGE`; a record, report, registry, or manifest that fails its protocol is `EVIDENCE`; and a path that leaves the integrity root or an authorized portfolio root is `CONTAINMENT`.
 
-The engine reads each file once per pass through a memo it discards when the pass ends, so a source hashed before the child, in the record pass, and in the final check costs three readings, never one per destination. The final check rereads disk with a fresh memo, so a file changed between passes refuses the stage.
+The engine reads each file once per pass through a memo it discards when the pass ends, so a source hashed before the child, in the record pass, and in the final check costs three readings, never one per destination. Evidence reading also memoizes validated physical paths for that pass. The record pass and final check each validate an identical own/shared/tests pattern triple once against its pre-stage input population. Physical-image comparisons read each path's identity once per pass. The final check rereads disk with fresh memos, so a file changed between passes refuses the stage.
+
+**Lookup journal.** `lookups.json` holds `version`, an optional predecessor `manifest` digest, an `inputs` table, `lookups`, and optional `collections`. Each table key is the digest from `buildCaptureDigest([], files)`, where `files` is the stored path-to-hash map. Each lookup's `inputs` field names a table key, so lookups that share the same input population store that map once. The engine verifies each table map's digest before expanding the active journal. A missing reference refuses with `Lookup names an unknown inputs digest` and the digest; an altered map refuses with `Lookup input digest differs from its map`. Malformed schemas, duplicate lookup identities, missing or changed run records, unauthorized runner records, registry declaration disagreements, and mismatches with passing declarations retain their refusals. Stale input hashes still refuse state resolution. Journal publication uses the same atomic rename, and the predecessor manifest digest still determines whether the journal applies. Image manifests and returned lookup results retain expanded input maps.
 
 ### Runner
 

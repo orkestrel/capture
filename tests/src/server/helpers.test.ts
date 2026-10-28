@@ -5,12 +5,13 @@ import { resolve } from 'node:path'
 import { deflateSync, inflateSync } from 'node:zlib'
 import { parseJSON } from '@orkestrel/contract'
 import { createScratch } from '@orkestrel/test/server'
-import { isCaptureError } from '@src/core'
+import { isCaptureError, isCaptureLookupJournal } from '@src/core'
 import {
 	CAPTURE_DEFAULTS,
 	answerCaptureDiscovery,
 	buildCaptureArguments,
 	buildCaptureDigest,
+	buildCaptureLookupJournal,
 	buildCaptureDiscoveryConfig,
 	buildCaptureFilter,
 	buildCaptureIntegrityOptions,
@@ -38,6 +39,7 @@ import {
 	readCaptureDescription,
 	readCaptureEntry,
 	readCaptureInputs,
+	readCaptureLookups,
 	readCapturePortfolios,
 	readCaptureProject,
 	readCaptureReaderArguments,
@@ -67,6 +69,7 @@ import {
 import {
 	FIXTURE_HASH,
 	createDestinationFixture,
+	createLookupFixture,
 	createReceiptFixture,
 	createVitestFixture,
 	readThrown,
@@ -188,6 +191,74 @@ describe('buildCaptureDigest', () => {
 
 	it('digests an empty population', () => {
 		expect(buildCaptureDigest([], {})).toMatchObject({ patterns: [], files: {} })
+	})
+})
+
+describe('buildCaptureLookupJournal and readCaptureLookups', () => {
+	it('stores a shared input map once and reads every lookup back from serialized bytes', () => {
+		const inputs = Object.fromEntries(
+			Array.from({ length: 309 }, (_, index) => [`src/input-${index}.ts`, FIXTURE_HASH]),
+		)
+		const lookups = Array.from({ length: 1400 }, (_, index) =>
+			createLookupFixture({ case: `case ${index}`, inputs }),
+		)
+		const journal = buildCaptureLookupJournal(lookups, [], FIXTURE_HASH)
+		const text = JSON.stringify(journal)
+		const decoded: unknown = parseJSON(text)
+		if (!isCaptureLookupJournal(decoded)) throw new Error('Invalid serialized lookup journal')
+		expect(Object.values(decoded.inputs)).toEqual([inputs])
+		expect(text.match(/"src\/input-0.ts"/gu)).toHaveLength(1)
+		expect(decoded.lookups).toHaveLength(lookups.length)
+		expect(new Set(decoded.lookups.map((entry) => entry.inputs)).size).toBe(1)
+		expect(decoded.manifest).toBe(FIXTURE_HASH)
+		const expanded = readCaptureLookups(decoded)
+		expect(expanded).toEqual(lookups)
+		expect(expanded.every((entry) => entry.inputs === expanded[0]?.inputs)).toBe(true)
+	})
+
+	it('deduplicates equal maps in different orders and retains genuinely different populations', () => {
+		const inputs = { 'src/a.ts': FIXTURE_HASH, 'src/b.ts': 'b'.repeat(64) }
+		const lookups = [
+			createLookupFixture({ case: 'first', inputs }),
+			createLookupFixture({
+				case: 'second',
+				inputs: Object.fromEntries(Object.entries(inputs).reverse()),
+			}),
+			createLookupFixture({ case: 'changed', inputs: { ...inputs, 'src/a.ts': 'c'.repeat(64) } }),
+			createLookupFixture({ case: 'removed', inputs: { 'src/a.ts': FIXTURE_HASH } }),
+		]
+		const journal = buildCaptureLookupJournal(lookups, [])
+		expect(Object.keys(journal.inputs)).toHaveLength(3)
+		expect(readCaptureLookups(journal)).toEqual(lookups)
+		expect(journal.manifest).toBeUndefined()
+	})
+
+	it('preserves empty lookup collections without inventing an input population', () => {
+		const journal = buildCaptureLookupJournal([], [])
+		expect(journal).toEqual({ version: 1, inputs: {}, lookups: [], collections: [] })
+		expect(isCaptureLookupJournal(journal)).toBe(true)
+		expect(readCaptureLookups(journal)).toEqual([])
+	})
+
+	it('refuses an unknown input reference with its digest named', () => {
+		const journal = buildCaptureLookupJournal([createLookupFixture()], [])
+		const unknown = { ...journal, inputs: {} }
+		expect(isCaptureLookupJournal(unknown)).toBe(true)
+		expect(() => readCaptureLookups(unknown)).toThrow(
+			`Lookup names an unknown inputs digest: ${journal.lookups[0]?.inputs}`,
+		)
+	})
+
+	it('refuses a stored map whose bytes no longer match its digest', () => {
+		const journal = buildCaptureLookupJournal([createLookupFixture()], [])
+		const altered = {
+			...journal,
+			inputs: Object.fromEntries(
+				Object.keys(journal.inputs).map((digest) => [digest, { 'src/altered.ts': FIXTURE_HASH }]),
+			),
+		}
+		expect(isCaptureLookupJournal(altered)).toBe(true)
+		expect(() => readCaptureLookups(altered)).toThrow('Lookup input digest differs from its map')
 	})
 })
 

@@ -1,4 +1,12 @@
-import type { CaptureDigest, CaptureRegistry, CaptureRequest, CaptureViewport } from '@src/core'
+import type {
+	CaptureCollectionReceipt,
+	CaptureDigest,
+	CaptureLookup,
+	CaptureLookupJournal,
+	CaptureRegistry,
+	CaptureRequest,
+	CaptureViewport,
+} from '@src/core'
 import type {
 	CaptureArgumentsOptions,
 	CaptureCommand,
@@ -175,6 +183,74 @@ export function buildCaptureDigest(
 		files: Object.fromEntries(ordered),
 		digest: computeCaptureHash(JSON.stringify([patterns.toSorted(), ordered])),
 	}
+}
+
+/**
+ * Stores each distinct lookup input population once in a manifest-bound journal.
+ *
+ * @param lookups - The expanded passing case evidence to publish
+ * @param collections - The independently authenticated collection receipts
+ * @param manifest - The predecessor manifest digest, absent before the first capture
+ * @returns The journal with content-addressed input maps and ordered lookup references
+ *
+ * @example
+ * ```ts
+ * buildCaptureLookupJournal([], []).inputs // {}
+ * ```
+ */
+export function buildCaptureLookupJournal(
+	lookups: readonly CaptureLookup[],
+	collections: readonly CaptureCollectionReceipt[],
+	manifest?: string,
+): CaptureLookupJournal {
+	const populations = new Map<Readonly<Record<string, string>>, CaptureDigest>()
+	const references = lookups.map((lookup) => {
+		const known = populations.get(lookup.inputs)
+		const population = known ?? buildCaptureDigest([], lookup.inputs)
+		if (known === undefined) populations.set(lookup.inputs, population)
+		return { ...lookup, inputs: population.digest }
+	})
+	return {
+		version: CAPTURE_VERSION,
+		...(manifest === undefined ? {} : { manifest }),
+		inputs: Object.fromEntries(
+			[...populations.values()].map((population) => [population.digest, population.files]),
+		),
+		lookups: references,
+		collections,
+	}
+}
+
+/**
+ * Resolves journal lookup references after verifying each stored input population's digest.
+ *
+ * @param journal - A structurally validated lookup journal
+ * @returns Every expanded lookup in its stored order, sharing the verified input maps
+ * @throws Thrown when an input digest differs from its map or a lookup names an unknown digest.
+ *
+ * @example
+ * ```ts
+ * readCaptureLookups(buildCaptureLookupJournal([], [])) // []
+ * ```
+ */
+export function readCaptureLookups(journal: CaptureLookupJournal): readonly CaptureLookup[] {
+	const populations = new Map(
+		Object.entries(journal.inputs).map(([digest, inputs]) => {
+			if (buildCaptureDigest([], inputs).digest !== digest)
+				throw new CaptureError(`Lookup input digest differs from its map: ${digest}`, {
+					code: 'EVIDENCE',
+				})
+			return [digest, inputs] as const
+		}),
+	)
+	return journal.lookups.map((lookup) => {
+		const inputs = populations.get(lookup.inputs)
+		if (inputs === undefined)
+			throw new CaptureError(`Lookup names an unknown inputs digest: ${lookup.inputs}`, {
+				code: 'EVIDENCE',
+			})
+		return { ...lookup, inputs }
+	})
 }
 
 /**

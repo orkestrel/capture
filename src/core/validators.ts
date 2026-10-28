@@ -471,11 +471,12 @@ export function isCaptureLookup(value: unknown): value is CaptureLookup {
  *
  * @param value - The decoded journal
  * @returns True if the journal has its supported shape; false otherwise
+ * @remarks Input-map digests and reference existence are verified when the journal is read.
  *
  * @example
  * ```ts
- * isCaptureLookupJournal({ version: 1, lookups: [] }) // true
- * isCaptureLookupJournal({ version: 2, lookups: [] }) // false
+ * isCaptureLookupJournal({ version: 1, inputs: {}, lookups: [] }) // true
+ * isCaptureLookupJournal({ version: 2, inputs: {}, lookups: [] }) // false
  * ```
  */
 export function isCaptureLookupJournal(value: unknown): value is CaptureLookupJournal {
@@ -485,7 +486,16 @@ export function isCaptureLookupJournal(value: unknown): value is CaptureLookupJo
 			(value.collections === undefined || arrayOf(isCaptureCollection)(value.collections)) &&
 			value.version === 1 &&
 			(value.manifest === undefined || isCaptureHash(value.manifest)) &&
-			arrayOf(isCaptureLookup)(value.lookups),
+			isRecord(value.inputs) &&
+			Object.entries(value.inputs).every(
+				([digest, inputs]) => isCaptureHash(digest) && isCaptureHashes(inputs),
+			) &&
+			arrayOf(
+				(entry) =>
+					isRecord(entry) &&
+					isCaptureHash(entry.inputs) &&
+					isCaptureLookup({ ...entry, inputs: {} }),
+			)(value.lookups),
 	)
 }
 

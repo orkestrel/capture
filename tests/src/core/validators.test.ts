@@ -202,12 +202,31 @@ const ROWS: ReadonlyArray<
 	[
 		'isCaptureLookupJournal',
 		isCaptureLookupJournal,
-		{ version: 1, manifest: FIXTURE_HASH, lookups: [createLookupFixture()] },
+		{
+			version: 1,
+			manifest: FIXTURE_HASH,
+			inputs: { [FIXTURE_HASH]: createLookupFixture().inputs },
+			lookups: [{ ...createLookupFixture(), inputs: FIXTURE_HASH }],
+		},
 		[
-			['another version', { version: 2, lookups: [] }],
-			['a short manifest digest', { version: 1, manifest: 'abc', lookups: [] }],
-			['a malformed collection', { version: 1, collections: [{}], lookups: [] }],
-			['a malformed lookup', { version: 1, lookups: [{}] }],
+			['another version', { version: 2, inputs: {}, lookups: [] }],
+			['a short manifest digest', { version: 1, manifest: 'abc', inputs: {}, lookups: [] }],
+			['a malformed collection', { version: 1, collections: [{}], inputs: {}, lookups: [] }],
+			['a malformed lookup', { version: 1, inputs: {}, lookups: [{}] }],
+			['a missing input table', { version: 1, lookups: [] }],
+			['a short table digest', { version: 1, inputs: { abc: {} }, lookups: [] }],
+			[
+				'a malformed input map',
+				{ version: 1, inputs: { [FIXTURE_HASH]: { '../escape': FIXTURE_HASH } }, lookups: [] },
+			],
+			[
+				'an embedded lookup input map',
+				{ version: 1, inputs: {}, lookups: [createLookupFixture()] },
+			],
+			[
+				'a short input reference',
+				{ version: 1, inputs: {}, lookups: [{ ...createLookupFixture(), inputs: 'abc' }] },
+			],
 		],
 	],
 	[

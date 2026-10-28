@@ -83,10 +83,12 @@ import {
 } from '@src/core'
 import {
 	buildCaptureDigest,
+	buildCaptureLookupJournal,
 	computeCaptureHash,
 	computeRegistryDigest,
 	matchesCaptureSignature,
 	normalizeSlashes,
+	readCaptureLookups,
 } from './helpers.js'
 
 /**
@@ -228,6 +230,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		// The record pass reads each file once; the final check below rereads disk with its own memo.
 		const readings = new Map<string, CaptureFileSnapshot | undefined>()
 		const digests = new Map<string, CaptureDigest>()
+		const stable = new Map<string, true>()
 		const reporter = this.#fresh(options.report, before, readings)
 		const report = readCaptureReport(this.#json(options.report))
 		if (report.start < before.time || report.end > Date.now())
@@ -268,17 +271,17 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				throw new CaptureError('Missing pre-execution project snapshot', { code: 'EVIDENCE' })
 			this.#attest(run, evidence, snapshot.inputs.files, readings)
 			for (const destination of run.registry)
-				this.#stable(destination, snapshot.inputs, readings, digests)
+				this.#stable(destination, snapshot.inputs, readings, digests, stable)
 			return { file, run, artifact }
 		})
 		const entries = records.flatMap(({ run }) => run.entries)
 		this.#uniqueRegistry(entries)
 		const images = entries.map((entry) => this.#fresh(entry.file, before, readings, true))
-		const physical = this.#images().map((file) => this.#physicalIdentity(file))
+		const identities = new Map<string, string>()
+		const physical = Map.groupBy(this.#images(), (file) => this.#physicalIdentity(file, identities))
 		if (
 			entries.some(
-				(entry) =>
-					physical.filter((file) => file === this.#physicalIdentity(entry.file)).length > 1,
+				(entry) => (physical.get(this.#physicalIdentity(entry.file, identities))?.length ?? 0) > 1,
 			)
 		)
 			throw new CaptureError('Duplicate physical capture output', { code: 'EVIDENCE' })
@@ -339,6 +342,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		const merged = this.#mergeLookups(evidence.lookups, lookups)
 		const rereadings = new Map<string, CaptureFileSnapshot | undefined>()
 		const redigests = new Map<string, CaptureDigest>()
+		const restable = new Map<string, true>()
 		for (const record of records) {
 			const project = before.projects.find((entry) =>
 				options.projects.some(
@@ -348,7 +352,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			if (project === undefined)
 				throw new CaptureError('Missing final input snapshot', { code: 'EVIDENCE' })
 			for (const destination of record.run.registry)
-				this.#stable(destination, project.inputs, rereadings, redigests)
+				this.#stable(destination, project.inputs, rereadings, redigests, restable)
 			if (
 				this.#digest(project.inputs.patterns, rereadings, redigests).digest !==
 				project.inputs.digest
@@ -397,12 +401,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				.digest
 			this.#commit(
 				this.#options.lookups,
-				{
-					version: CAPTURE_VERSION,
-					...(manifest === undefined ? {} : { manifest }),
-					lookups: merged,
-					collections,
-				},
+				buildCaptureLookupJournal(merged, collections, manifest),
 				options.signal,
 			)
 		}
@@ -514,6 +513,8 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		}
 		const required = this.#select(evidence, registry, options, false)
 		const disk = this.#images()
+		const identities = new Map<string, string>()
+		const physical = Map.groupBy(disk, (file) => this.#physicalIdentity(file, identities))
 		const duplicates = collectCaptureDuplicates(registry.map(resolveCaptureKey), true)
 		const entries: CaptureFreshness[] = required.map((entry) => {
 			const key = resolveCaptureKey(entry)
@@ -524,10 +525,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			const findings: Array<{ readonly status: CaptureStatus; readonly reason: string }> = []
 			if (duplicates.includes(key))
 				findings.push({ status: 'duplicate', reason: 'Repeated registry identity' })
-			if (
-				disk.filter((file) => this.#physicalIdentity(file) === this.#physicalIdentity(entry.file))
-					.length > 1
-			)
+			if ((physical.get(this.#physicalIdentity(entry.file, identities))?.length ?? 0) > 1)
 				findings.push({ status: 'duplicate', reason: 'Several paths name the same physical image' })
 			if (image === undefined)
 				findings.push({ status: 'missing', reason: 'Required image is absent' })
@@ -838,7 +836,9 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	}
 
 	// A path under a portfolio root also resolves inside that root's physical directory.
-	#path(file: string): string {
+	#path(file: string, paths?: Map<string, string>): string {
+		const known = paths?.get(file)
+		if (known !== undefined) return known
 		const path = this.#resolve(file)
 		for (const [directory, authorized] of this.#roots) {
 			if (file !== directory && !file.startsWith(`${directory}/`)) continue
@@ -848,6 +848,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 					code: 'CONTAINMENT',
 				})
 		}
+		paths?.set(file, path)
 		return path
 	}
 
@@ -884,15 +885,16 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	#file(
 		file: string,
 		readings: Map<string, CaptureFileSnapshot | undefined>,
+		paths?: Map<string, string>,
 	): CaptureFileSnapshot | undefined {
 		if (readings.has(file)) return readings.get(file)
-		const reading = this.#readFile(file)
+		const reading = this.#readFile(file, paths)
 		readings.set(file, reading)
 		return reading
 	}
 
-	#readFile(file: string): CaptureFileSnapshot | undefined {
-		const path = this.#path(file)
+	#readFile(file: string, paths?: Map<string, string>): CaptureFileSnapshot | undefined {
+		const path = this.#path(file, paths)
 		if (!existsSync(path)) return undefined
 		const stat = statSync(path)
 		if (!stat.isFile())
@@ -908,8 +910,8 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		}
 	}
 
-	#json(file: string): unknown {
-		const document: unknown = parseJSON(readFileSync(this.#path(file), 'utf8'))
+	#json(file: string, paths?: Map<string, string>): unknown {
+		const document: unknown = parseJSON(readFileSync(this.#path(file, paths), 'utf8'))
 		if (!isRecord(document))
 			throw new CaptureError(`Invalid JSON document: ${file}`, { code: 'EVIDENCE' })
 		return document
@@ -1052,7 +1054,15 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		before: CaptureDigest,
 		readings: Map<string, CaptureFileSnapshot | undefined>,
 		digests: Map<string, CaptureDigest>,
+		stable: Map<string, true>,
 	): void {
+		const key = JSON.stringify([
+			before.digest,
+			entry.sources.own.toSorted(),
+			entry.sources.shared.toSorted(),
+			entry.sources.tests.toSorted(),
+		])
+		if (stable.has(key)) return
 		for (const patterns of [entry.sources.own, entry.sources.shared, entry.sources.tests]) {
 			const current = this.#digest(patterns, readings, digests)
 			if (Object.keys(current.files).some((file) => before.files[file] === undefined))
@@ -1079,9 +1089,10 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 					code: 'HOST',
 				})
 		}
+		stable.set(key, true)
 	}
 
-	#destination(entry: CaptureDestination): void {
+	#destination(entry: CaptureDestination, paths?: Map<string, string>): void {
 		const portfolio = this.#options.portfolios.find(
 			(candidate) => candidate.portfolio === entry.portfolio,
 		)
@@ -1092,7 +1103,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			throw new CaptureError(`Noncanonical physical destination: ${entry.file}`, {
 				code: 'EVIDENCE',
 			})
-		this.#path(entry.file)
+		this.#path(entry.file, paths)
 	}
 
 	#uniqueRegistry(entries: readonly CaptureDestination[]): void {
@@ -1104,15 +1115,18 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		)
 	}
 
-	#registry(readings: Map<string, CaptureFileSnapshot | undefined>): CaptureRegistry {
-		if (!existsSync(this.#path(this.#options.registry)))
+	#registry(
+		readings: Map<string, CaptureFileSnapshot | undefined>,
+		paths: Map<string, string>,
+	): CaptureRegistry {
+		if (!existsSync(this.#path(this.#options.registry, paths)))
 			throw new CaptureError(
 				'Missing accepted registry; run the explicit complete-registry refresh',
 				{
 					code: 'EVIDENCE',
 				},
 			)
-		const registry = this.#json(this.#options.registry)
+		const registry = this.#json(this.#options.registry, paths)
 		if (
 			!isCaptureRegistry(registry) ||
 			registry.digest !== computeRegistryDigest(registry) ||
@@ -1125,13 +1139,13 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			true,
 		)
 		for (const receipt of registry.receipts) {
-			const report = this.#file(receipt.report.file, readings)
+			const report = this.#file(receipt.report.file, readings, paths)
 			if (!receipt.complete || report?.image.digest !== receipt.report.digest)
 				throw new CaptureError('Registry receipt is incomplete or its report changed', {
 					code: 'EVIDENCE',
 				})
-			validateCaptureReceipt(receipt, readCaptureReport(this.#json(receipt.report.file)))
-			for (const path of Object.keys(receipt.inputs)) this.#path(path)
+			validateCaptureReceipt(receipt, readCaptureReport(this.#json(receipt.report.file, paths)))
+			for (const path of Object.keys(receipt.inputs)) this.#path(path, paths)
 			requireCaptureUnique(Object.keys(receipt.inputs), 'receipt input paths', true)
 		}
 		if (
@@ -1141,14 +1155,15 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			)
 		)
 			throw new CaptureError('Registry entries differ from complete receipts', { code: 'EVIDENCE' })
-		for (const entry of registry.entries) this.#destination(entry)
+		for (const entry of registry.entries) this.#destination(entry, paths)
 		return registry
 	}
 
 	#evidence(readings: Map<string, CaptureFileSnapshot | undefined>): CaptureEvidence {
-		const registry = this.#registry(readings)
-		const manifest = existsSync(this.#path(this.#options.manifest))
-			? this.#json(this.#options.manifest)
+		const paths = new Map<string, string>()
+		const registry = this.#registry(readings, paths)
+		const manifest = existsSync(this.#path(this.#options.manifest, paths))
+			? this.#json(this.#options.manifest, paths)
 			: undefined
 		if (manifest !== undefined && !isCaptureStoredManifest(manifest))
 			throw new CaptureError('Invalid inherited manifest schema', { code: 'EVIDENCE' })
@@ -1165,38 +1180,40 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 					!matchesCaptureMembers(stamp.shared.patterns, stamp.sources.shared)
 				)
 					throw new CaptureError('Invalid inherited shared digest', { code: 'EVIDENCE' })
-				this.#path(stamp.file)
+				this.#path(stamp.file, paths)
 				for (const path of [
 					...Object.keys(stamp.own),
 					...Object.keys(stamp.shared.files),
 					...Object.keys(stamp.tests),
 				])
-					this.#path(path)
+					this.#path(path, paths)
 			}
 		}
-		const separate: unknown = existsSync(this.#path(this.#options.lookups))
-			? this.#json(this.#options.lookups)
+		const separate: unknown = existsSync(this.#path(this.#options.lookups, paths))
+			? this.#json(this.#options.lookups, paths)
 			: undefined
 		if (separate !== undefined && !isCaptureLookupJournal(separate))
 			throw new CaptureError('Invalid separate lookup schema', { code: 'EVIDENCE' })
-		const manifestDigest = this.#file(this.#options.manifest, readings)?.image.digest
-		const current = separate?.manifest === manifestDigest ? (separate?.lookups ?? []) : []
+		const manifestDigest = this.#file(this.#options.manifest, readings, paths)?.image.digest
+		const current =
+			separate !== undefined && separate.manifest === manifestDigest
+				? readCaptureLookups(separate)
+				: []
 		const lookups = this.#mergeLookups(manifest?.lookups ?? [], current).filter(
 			(entry) => entry.registry === registry.digest,
 		)
-		const references = [...new Set(lookups.map((entry) => entry.run.file))]
-		const runs = references.map((file) => {
-			const reading = this.#file(file, readings)
+		const populations = new Map<Readonly<Record<string, string>>, true>()
+		const references = Map.groupBy(lookups, (entry) => entry.run.file)
+		const runs = [...references].map(([file, referenced]) => {
+			const reading = this.#file(file, readings, paths)
 			if (
 				reading === undefined ||
-				lookups.some(
-					(entry) => entry.run.file === file && entry.run.digest !== reading.image.digest,
-				)
+				referenced.some((entry) => entry.run.digest !== reading.image.digest)
 			)
 				throw new CaptureError(`Lookup run record is missing or changed: ${file}`, {
 					code: 'EVIDENCE',
 				})
-			const run = this.#json(file)
+			const run = this.#json(file, paths)
 			if (
 				!isCaptureRun(run) ||
 				run.request === undefined ||
@@ -1209,7 +1226,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				throw new CaptureError('Lookup record mixes producing projects', { code: 'EVIDENCE' })
 			validateCaptureRun(
 				run,
-				readCaptureReport(this.#json(this.#reportPath(run.request.args))),
+				readCaptureReport(this.#json(this.#reportPath(run.request.args, paths), paths)),
 				projects[0] ?? '',
 			)
 			const anchor = registry.receipts.find((entry) => entry.variant === run.variant)
@@ -1227,21 +1244,26 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				throw new CaptureError('Lookup declarations disagree with the accepted registry', {
 					code: 'EVIDENCE',
 				})
-			for (const entry of lookups.filter((lookup) => lookup.run.file === file)) {
-				const declaration = run.declarations.find((candidate) => candidate.case === entry.case)
+			const declarations = new Map(run.declarations.map((entry) => [entry.case, entry]))
+			const passed = new Set(run.passed)
+			for (const entry of referenced) {
+				const declaration = declarations.get(entry.case)
 				if (
 					declaration === undefined ||
 					declaration.owner !== entry.owner ||
 					run.variant !== entry.variant ||
-					!run.passed.includes(entry.case) ||
+					!passed.has(entry.case) ||
 					!matchesCaptureMembers(declaration.states, entry.states)
 				)
 					throw new CaptureError('Lookup differs from its passing declaration', {
 						code: 'EVIDENCE',
 					})
-				for (const path of Object.keys(entry.inputs)) this.#path(path)
+				if (!populations.has(entry.inputs)) {
+					for (const path of Object.keys(entry.inputs)) this.#path(path, paths)
+					populations.set(entry.inputs, true)
+				}
 			}
-			for (const destination of run.registry) this.#destination(destination)
+			for (const destination of run.registry) this.#destination(destination, paths)
 			return { file: reading, run }
 		})
 		const collections = this.#mergeCollections(
@@ -1393,23 +1415,30 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		return variants[0]
 	}
 
-	#reportPath(args: readonly string[]): string {
+	#reportPath(args: readonly string[], paths?: Map<string, string>): string {
 		const outputs = args.filter((argument) => argument.startsWith('--outputFile.json='))
 		if (outputs.length !== 1 || outputs[0] === undefined)
 			throw new CaptureError('Request has no unique JSON reporter path', { code: 'HOST' })
 		const file: string = normalizeSlashes(
 			relative(this.#root, resolve(this.#root, outputs[0].slice('--outputFile.json='.length))),
 		)
-		this.#path(file)
+		this.#path(file, paths)
 		return file
 	}
 
-	#physicalIdentity(file: string): string {
+	#physicalIdentity(file: string, identities: Map<string, string>): string {
+		const known = identities.get(file)
+		if (known !== undefined) return known
 		const path = this.#path(file)
-		if (!existsSync(path)) return path
+		if (!existsSync(path)) {
+			identities.set(file, path)
+			return path
+		}
 		// Native file identifiers can exceed the exact integer range of a Number.
 		const stat = statSync(path, { bigint: true })
-		return stat.ino === 0n ? realpathSync(path) : `${stat.dev}:${stat.ino}`
+		const identity = stat.ino === 0n ? realpathSync(path) : `${stat.dev}:${stat.ino}`
+		identities.set(file, identity)
+		return identity
 	}
 
 	#attributable(

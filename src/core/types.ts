@@ -389,18 +389,21 @@ export interface CaptureStoredManifest extends CaptureManifest {
  *
  * @remarks
  * A successful capture merges the journal and changes the manifest digest, retiring this journal
- * logically without a second filesystem mutation in the capture transaction.
+ * logically without a second filesystem mutation in the capture transaction. The `inputs` table
+ * stores each distinct path-to-hash map under its digest; every lookup names that digest in its
+ * `inputs` field. Expanded lookup results and image manifests retain their input maps.
  *
  * @example
  * ```ts
- * const journal: CaptureLookupJournal = { version: 1, lookups: [] }
+ * const journal: CaptureLookupJournal = { version: 1, inputs: {}, lookups: [] }
  * ```
  */
 export interface CaptureLookupJournal {
 	readonly collections?: readonly CaptureCollectionReceipt[]
 	readonly version: 1
 	readonly manifest?: string
-	readonly lookups: readonly CaptureLookup[]
+	readonly inputs: Readonly<Record<string, Readonly<Record<string, string>>>>
+	readonly lookups: ReadonlyArray<Omit<CaptureLookup, 'inputs'> & { readonly inputs: string }>
 }
 
 /**

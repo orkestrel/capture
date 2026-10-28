@@ -634,6 +634,131 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 		}
 	})
 
+	it('publishes one lookup input map across producing variants and resolves every passing state', async () => {
+		const fixture = new IntegrityFixture()
+		try {
+			fixture.seed()
+			const result = await fixture.capture({ command: 'journey', variants: VARIANTS })
+			const journal = readJSON(fixture, fixture.options.lookups)
+			if (!isCaptureLookupJournal(journal)) throw new Error('Missing lookup journal')
+			expect(Object.values(journal.inputs)).toEqual([fixture.hashes()])
+			expect(journal.lookups).toHaveLength(result.lookups.length)
+			expect(result.lookups.length).toBeGreaterThan(1)
+			for (const lookup of result.lookups) {
+				for (const state of lookup.states) {
+					const resolved = await fixture.engine.lookup({
+						selector: lookup.owner,
+						state,
+						variants: [lookup.variant],
+					})
+					expect(resolved.case).toBe(lookup.case)
+					expect(resolved.lookups).toContainEqual(lookup)
+				}
+			}
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it.each([
+		['unknown inputs', 'Lookup names an unknown inputs digest:'],
+		['altered inputs', 'Lookup input digest differs from its map:'],
+		['duplicate lookup', 'Duplicate incoming lookup identities'],
+		['changed run', 'Lookup run record is missing or changed:'],
+		['unauthorized run', 'Lookup has no authorized runner record'],
+		['wrong owner', 'Lookup differs from its passing declaration'],
+		['wrong states', 'Lookup differs from its passing declaration'],
+		['wrong variant', 'Lookup differs from its passing declaration'],
+		['missing case', 'Lookup differs from its passing declaration'],
+	])('refuses %s in a compact journal and preserves published evidence', async (fault, message) => {
+		const fixture = await IntegrityFixture.current()
+		try {
+			await fixture.capture({ command: 'journey', selector: 'pages:mail' })
+			const lookup = { ...MAIL_LIGHT, state: 'mail-screen' }
+			expect((await fixture.engine.lookup(lookup)).case).toBe(MAIL)
+			const journal = readJSON(fixture, fixture.options.lookups)
+			if (!isCaptureLookupJournal(journal)) throw new Error('Missing lookup journal')
+			if (fault === 'unauthorized run') {
+				for (const file of new Set(journal.lookups.map((entry) => entry.run.file)))
+					fixture.write(`${file}.foreign`, fixture.read(file))
+			}
+			const altered = {
+				...journal,
+				inputs:
+					fault === 'unknown inputs'
+						? {}
+						: fault === 'altered inputs'
+							? Object.fromEntries(Object.keys(journal.inputs).map((digest) => [digest, {}]))
+							: journal.inputs,
+				lookups:
+					fault === 'duplicate lookup'
+						? [...journal.lookups, ...journal.lookups]
+						: journal.lookups.map((entry) => ({
+								...entry,
+								...(fault === 'changed run'
+									? { run: { ...entry.run, digest: '0'.repeat(64) } }
+									: {}),
+								...(fault === 'unauthorized run'
+									? { run: { ...entry.run, file: `${entry.run.file}.foreign` } }
+									: {}),
+								...(fault === 'wrong owner' ? { owner: 'pages:absent' } : {}),
+								...(fault === 'wrong states' ? { states: ['absent'] } : {}),
+								...(fault === 'wrong variant' ? { variant: 'absent' } : {}),
+								...(fault === 'missing case' ? { case: `${entry.case} absent` } : {}),
+							})),
+			}
+			fixture.write(fixture.options.lookups, JSON.stringify(altered))
+			const manifest = readFixtureManifest(fixture.root)
+			const bytes = fixture.read(fixture.options.lookups)
+			await expect(fixture.engine.lookup(lookup)).rejects.toThrow(message)
+			await expect(fixture.capture({ command: 'journey' })).rejects.toThrow(message)
+			expect(readFixtureManifest(fixture.root)).toBe(manifest)
+			expect(fixture.read(fixture.options.lookups)).toEqual(bytes)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it.each(COLLECTION_POPULATIONS)(
+		'refuses %s lookup declarations that disagree with the registry despite matching run and report bytes',
+		async (population) => {
+			const fixture = new IntegrityFixture()
+			try {
+				fixture.seed()
+				const stage = fixture.stage({ command: 'journey' })
+				await fixture.engine.stamp(stage)
+				const journal = readJSON(fixture, fixture.options.lookups)
+				if (!isCaptureLookupJournal(journal)) throw new Error('Missing lookup journal')
+				const outcome = fixture.execute({
+					request: stage.request,
+					variants: stage.request.variants,
+					capture: false,
+					report: stage.report,
+					records: Object.fromEntries(
+						stage.projects.map((project) => [project.variant, project.record]),
+					),
+					population,
+				})
+				expect(outcome).toEqual({ code: 0, signal: null })
+				fixture.write(
+					fixture.options.lookups,
+					JSON.stringify({
+						...journal,
+						lookups: journal.lookups.map((entry) => ({
+							...entry,
+							run: { ...entry.run, digest: computeCaptureHash(fixture.read(entry.run.file)) },
+						})),
+					}),
+				)
+				await expect(
+					fixture.engine.lookup({ ...MAIL_LIGHT, state: 'mail-screen' }),
+				).rejects.toThrow('Lookup declarations disagree with the accepted registry')
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+
 	it('keeps test-only complete-registry refresh distinct from pixel currency and refreshes lookup explicitly', async () => {
 		const fixture = await IntegrityFixture.current()
 		try {
@@ -935,6 +1060,11 @@ describe(
 		it('refuses capture redirection into a source directory even inside the workspace', async () => {
 			const fixture = await IntegrityFixture.current()
 			try {
+				expect(
+					(await fixture.engine.check(MAIL_LIGHT)).entries.every(
+						(entry) => entry.status === 'current',
+					),
+				).toBe(true)
 				const before = readFixtureManifest(fixture.root)
 				renameSync(
 					resolve(fixture.root, 'tmp/captures/states/pages'),
@@ -1362,6 +1492,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 				fixture.options.lookups,
 				JSON.stringify({
 					version: journal.version,
+					inputs: journal.inputs,
 					lookups: journal.lookups,
 					...(journal.manifest === undefined ? {} : { manifest: journal.manifest }),
 				}),
