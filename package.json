@@ -91,7 +91,7 @@
 		"@microsoft/api-extractor": "^7.59.4",
 		"@orkestrel/guide": "^0.0.25",
 		"@orkestrel/probe": "^0.0.24",
-		"@orkestrel/scaffold": "file:C:/Users/mikes/WebstormProjects/capture/tmp/tarballs/orkestrel-scaffold-0.0.109-7664ca38663f.tgz",
+		"@orkestrel/scaffold": "^0.0.108",
 		"@orkestrel/test": "^0.0.29",
 		"@types/node": "^24.19.2",
 		"oxfmt": "^0.74.0",
