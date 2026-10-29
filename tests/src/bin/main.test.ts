@@ -15,10 +15,14 @@ import {
 	FIXTURE_TIMEOUT,
 	SUPPORTS_GROUP_SIGNAL,
 	readFixtureManifest,
+	readCaptureHeld,
+	requireCaptureBuild,
 } from '../../setupServer.js'
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 const BUILT = resolve(ROOT, 'dist/bin/main.js')
+
+requireCaptureBuild()
 
 // The executable runs in a workspace the real runner, engine, and readers can drive: its built-in
 // wrapper path and request directory are the ones the fixture carries and its stand-in reads.
@@ -29,9 +33,13 @@ const fixture = new ComposedFixture({
 
 afterAll(() => fixture.destroy())
 
-function execute(args: readonly string[], environment: Readonly<Record<string, string>> = {}) {
+function execute(
+	args: readonly string[],
+	environment: Readonly<Record<string, string>> = {},
+	root = fixture.root,
+) {
 	const child = spawnSync(process.execPath, [BUILT, ...args], {
-		cwd: fixture.root,
+		cwd: root,
 		env: { ...process.env, ...environment },
 		encoding: 'utf8',
 		windowsHide: true,
@@ -42,6 +50,76 @@ function execute(args: readonly string[], environment: Readonly<Record<string, s
 }
 
 describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('H1t rejects an unknown wrapper portfolio before registry authentication', () => {
+		const isolated = new ComposedFixture({
+			config: CAPTURE_DEFAULTS.config,
+			requests: CAPTURE_DEFAULTS.requests,
+		})
+		try {
+			for (const command of ['stale', 'preflight', 'sheets']) {
+				const run = execute(
+					[
+						command,
+						'pages:mail',
+						'--portfolio',
+						'missing-portfolio',
+						...(command === 'sheets' ? ['--output', 'tmp/refused-portfolio'] : []),
+					],
+					{},
+					isolated.root,
+				)
+				expect({ command, status: run.status, stderr: run.stderr }).toMatchObject({
+					status: 64,
+					stderr: expect.stringContaining('--portfolio'),
+				})
+				expect(isolated.stages).toEqual([])
+				expect(readCaptureHeld(isolated.root, isolated.requests)).toEqual([])
+			}
+		} finally {
+			isolated.destroy()
+		}
+	})
+	it('H1t names unknown argument values as usage before execution with a valid registry', () => {
+		const isolated = new ComposedFixture({
+			config: CAPTURE_DEFAULTS.config,
+			requests: CAPTURE_DEFAULTS.requests,
+		})
+		try {
+			const registry = execute(['registry'], {}, isolated.root)
+			expect(registry.status === 0 ? 0 : registry.stderr).toBe(0)
+			for (const command of ['journey', 'frames', 'stale', 'preflight', 'sheets']) {
+				for (const flag of [
+					'case',
+					...(command === 'journey' ? [] : ['state']),
+					...(['stale', 'preflight', 'sheets'].includes(command) ? ['portfolio'] : []),
+				]) {
+					const before = isolated.stages.length
+					const run = execute(
+						[
+							command,
+							'pages:mail',
+							`--${flag}`,
+							`missing-${flag}`,
+							...(command === 'sheets' ? ['--output', 'tmp/refused-h1t'] : []),
+						],
+						{},
+						isolated.root,
+					)
+					expect({ command, flag, status: run.status, stderr: run.stderr }).toMatchObject({
+						status: 64,
+						stderr: expect.stringContaining(flag),
+					})
+					expect(run.stderr).toContain(`received "missing-${flag}"`)
+					expect(run.stderr).toContain('valid candidates:')
+					expect(run.stderr).not.toContain('selection.variants')
+					expect(isolated.stages.length).toBe(before)
+					expect(readCaptureHeld(isolated.root, isolated.requests)).toEqual([])
+				}
+			}
+		} finally {
+			isolated.destroy()
+		}
+	})
 	it('is built, opens with the interpreter line, and names the executable the manifest publishes', () => {
 		expect(existsSync(BUILT) ? BUILT : 'run `npm run build` before this proof').toBe(BUILT)
 		expect(readFileSync(BUILT, 'utf8')).toMatch(/^#!\/usr\/bin\/env node\r?\n/u)

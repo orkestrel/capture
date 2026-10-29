@@ -71,7 +71,7 @@
 		"check:src:core": "tsc --noEmit -p configs/src/tsconfig.core.json",
 		"check:src:server": "tsc --noEmit -p configs/src/tsconfig.server.json",
 		"check:src:bin": "tsc --noEmit -p configs/src/tsconfig.bin.json",
-		"test": "npm run test:src && npm run test:policy && npm run test:config && npm run test:setup && npm run test:guides",
+		"test": "npm run test:src && npm run test:policy && npm run test:config && npm run test:setup && npm run test:guides && npm run test:integration",
 		"test:src": "vitest run --config vite.config.ts --no-cache --reporter=dot --project src:core --project src:server --project src:bin",
 		"test:src:core": "vitest run --config vite.config.ts --no-cache --reporter=dot --project src:core",
 		"test:src:server": "vitest run --config vite.config.ts --no-cache --reporter=dot --project src:server",
@@ -80,8 +80,8 @@
 		"test:config": "vitest run --config vite.config.ts --no-cache --reporter=dot --project config",
 		"test:probe": "vitest run --config vite.config.ts --no-cache --reporter=verbose --project probe",
 		"test:bench": "vitest bench --config vite.config.ts --no-cache --project probe",
+		"test:integration": "vitest run --config vite.config.ts --no-cache --reporter=dot --project integration",
 		"test:distribution": "vitest run --config vite.config.ts --no-cache --reporter=dot --project distribution",
-		"test:studies": "vitest run --config vite.config.ts --no-cache --reporter=dot --project studies",
 		"test:setup": "vitest run --config vite.config.ts --no-cache --reporter=dot --project setup",
 		"test:guides": "node --experimental-strip-types tests/guides.test.ts",
 		"build": "npm run clean && npm run build:src",
@@ -90,7 +90,7 @@
 		"build:src:server": "vite build --config configs/src/vite.server.config.ts && npm run copy dist/src/server/index.d.ts dist/src/server/index.d.cts",
 		"build:src:bin": "vite build --config configs/src/vite.bin.config.ts",
 		"prepack": "npm run build",
-		"prepublishOnly": "npm run format:check && npm run lint:check && npm run check && npm run build && npm test && npm run test:studies && npm run test:distribution -- --mode release"
+		"prepublishOnly": "npm run format:check && npm run lint:check && npm run check && npm run build && npm test && npm run test:distribution -- --mode release"
 	},
 	"dependencies": {
 		"@orkestrel/contract": "^0.0.19",

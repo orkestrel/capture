@@ -104,6 +104,7 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		})
 		invocation.attach()
 		try {
+			invocation.prepare()
 			const parsed = readCaptureRegistryArguments(argv, root, config)
 			const description = await new CaptureDiscovery({
 				root,
@@ -118,10 +119,16 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 				description.projects.map((entry) => entry.project),
 			)
 		} catch (error) {
+			if (resolveCaptureExit(error) === 64)
+				rmSync(invocation.directory, { recursive: true, force: true })
 			this.#stderr(`${describeCaptureError(error)}\n`)
 			return resolveCaptureExit(error)
 		} finally {
-			await invocation.release()
+			await invocation
+				.release()
+				.catch((error: unknown) =>
+					this.#stderr(`Capture cleanup failed: ${describeCaptureError(error)}\n`),
+				)
 		}
 	}
 

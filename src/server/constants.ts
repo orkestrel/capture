@@ -187,6 +187,14 @@ export const CAPTURE_VITEST_ENTRY = 'node_modules/vitest/vitest.mjs'
  */
 export const CAPTURE_RUNS_DIRECTORY = 'runs'
 
+/** Names the create-only child record beneath an invocation's run directory.
+ * @example
+ * ```ts
+ * CAPTURE_SURVIVORS_FILE // 'survivors.json'
+ * ```
+ */
+export const CAPTURE_SURVIVORS_FILE = 'survivors.json'
+
 /**
  * Holds the byte count under which an image is too small to be a real frame.
  *
@@ -201,23 +209,40 @@ export const CAPTURE_MINIMUM_IMAGE = 4000
  * Bounds decoded image memory, row metadata, and PNG input bytes independently of untrusted headers.
  *
  * @remarks The pixel budget admits the fleet's 2880 × 6000 and 1170 × 15000 Chromium full-page
- * frames with 19.5% margin over 17,550,000 pixels. An isolated Node RGBA decode at the budget
- * peaked at 434 MiB process RSS on Windows on 2026-10-28; the fleet sizes peaked at 325–333 MiB.
- * The side limit bounds row metadata for narrow images. The byte limit bounds disk reads,
- * compressed buffers, and chunk metadata; it admits an uncompressed RGBA image at the pixel limit.
+ * frames with 19.5% margin over 17,550,000 pixels. The byte budget adds 20% to the largest RGBA
+ * scanlines for deflate overhead, chunk framing, and metadata, before any read or compressed copy.
+ * A valid 1 × 1 PNG padded to the derived byte boundary peaked at 171 MiB process RSS.
+ * Isolated Windows Node runs on 2026-10-28 measured the fixture peaks noted beside each bound;
+ * these measurements are not a universal process RSS ceiling.
  * @example
  * ```ts
  * CAPTURE_PNG_LIMITS.pixels // 20971520
  * ```
  */
 export const CAPTURE_PNG_LIMITS = Object.freeze({
-	// Bounds inflated RGB/RGBA storage independently of the PNG's declared scanline length.
+	// Bounds inflated storage; stored-deflate RGBA at this pixel boundary peaked at 438 MiB RSS.
 	pixels: 20 * 1024 * 1024,
-	// Bounds row metadata for very narrow full-page images.
+	// Bounds row metadata; the 131072 × 160 RGBA fixture peaked at 456 MiB RSS.
 	side: 131_072,
-	// Bounds physical reads and compressed/chunk storage; admits uncompressed RGBA at the pixel limit.
-	bytes: 600 * 1024 * 1024,
+	// Allows 20% over maximum RGBA scanlines for deflate, chunks, and metadata.
+	bytes: Math.ceil((4 * (20 * 1024 * 1024) + 131_072) * 1.2),
 } as const)
+
+/** Bounds a synchronous ownership retry sequence in milliseconds, including host contention.
+ * @example
+ * ```ts
+ * CAPTURE_OWNER_TIMEOUT // 1000
+ * ```
+ */
+export const CAPTURE_OWNER_TIMEOUT = 1000
+
+/** Yields between ownership probes in milliseconds so filesystem contention can settle.
+ * @example
+ * ```ts
+ * CAPTURE_OWNER_BACKOFF // 10
+ * ```
+ */
+export const CAPTURE_OWNER_BACKOFF = 10
 
 /**
  * Names the first word of the line a reader prints, followed by its JSON report.

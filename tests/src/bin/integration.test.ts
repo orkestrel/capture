@@ -4,8 +4,8 @@ import { resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createScratch } from '@orkestrel/test/server'
 import { createCaptureRunner } from '@src/server'
-import { describe, expect, it } from 'vitest'
-import { countCaptureChildren } from '../../setupServer.js'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { countCaptureChildren, requireCaptureBuild } from '../../setupServer.js'
 import { FIXTURE_TIMEOUT } from '../../setupServer.js'
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url))
@@ -13,6 +13,8 @@ const BUILT = resolve(ROOT, 'dist/src/server/index.js')
 const VITEST = resolve(ROOT, 'node_modules/vitest/vitest.mjs')
 const CONFIG = 'configs/journey.config.ts'
 const REQUESTS = 'tmp/capture'
+
+beforeAll(() => requireCaptureBuild())
 
 // The wrapper a consumer would write: it answers the discovery request first, ahead of the output
 // initialization, the setup file, and the test files, and returns the empty configuration once it
@@ -118,11 +120,7 @@ describe('discovery through a real Vitest and a real wrapper', { timeout: FIXTUR
 			for (const owner of ['app', 'app:mail'])
 				expect(result.stderr).toContain(JSON.stringify(owner))
 			const runs = listFiles(scratch.path, `${REQUESTS}/runs`)
-			expect(runs).toHaveLength(1)
-			expect(listFiles(scratch.path, `${REQUESTS}/runs/${runs[0] ?? ''}`).toSorted()).toEqual([
-				'description.json',
-				'discovery.log',
-			])
+			expect(runs).toEqual([])
 		} finally {
 			scratch.destroy()
 		}

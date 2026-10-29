@@ -222,7 +222,7 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 			const { error, output } = await discover(fixture, { config: '../outside.config.ts' })
 			expect(error).toMatchObject({
 				code: 'USAGE',
-				message: 'Config must be a contained repository path',
+				message: expect.stringContaining('--config resolves outside the repository'),
 			})
 			expect(output).toBe('')
 		} finally {

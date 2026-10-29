@@ -290,6 +290,49 @@ export function requireCaptureContained(root: string, path: string): string {
 	return physical
 }
 
+/** Validates a supplied path argument before work and classifies an outside value as usage.
+ * @param root - The repository root
+ * @param path - The supplied path resolved against the root
+ * @param flag - The command line flag that supplied the path
+ * @returns The contained physical path
+ * @example
+ * ```ts
+ * requireCaptureArgument('/workspace', '/workspace/checks.ts', '--checks')
+ * ```
+ */
+export function requireCaptureArgument(root: string, path: string, flag: string): string {
+	try {
+		return requireCaptureContained(root, path)
+	} catch (error) {
+		throw new CaptureError(
+			`${flag} ${isCaptureError(error) && error.code === 'CONTAINMENT' ? 'resolves outside the repository' : 'cannot resolve its filesystem path'}: ${preview(path)}; supply a contained repository path`,
+			{ code: 'USAGE', cause: error },
+		)
+	}
+}
+
+/** Recognizes filesystem contention codes that ownership arbitration can retry.
+ * @param error - The host operation's refusal
+ * @param platform - The host contract; Windows permission errors can reflect handles without delete sharing
+ * @returns Whether the error names temporary ownership contention
+ * @example
+ * ```ts
+ * matchesCaptureTransient(Object.assign(new Error('busy'), { code: 'EBUSY' })) // true
+ * ```
+ */
+export function matchesCaptureTransient(
+	error: unknown,
+	platform: NodeJS.Platform = process.platform,
+): boolean {
+	return (
+		error instanceof Error &&
+		'code' in error &&
+		['EBUSY', 'EMFILE', ...(platform === 'win32' ? ['EPERM', 'EACCES'] : [])].includes(
+			String(error.code),
+		)
+	)
+}
+
 /**
  * Names a sheet group by portfolio, owner, and state independently of its output variant.
  *
@@ -838,6 +881,7 @@ export function inflateCaptureStream(data: Buffer, length: number): Buffer {
  * ```
  */
 export function decodeCapturePicture(bytes: Buffer): CapturePicture {
+	requireCaptureImageSize(bytes.length)
 	if (
 		bytes.length < 33 ||
 		!matchesCaptureSignature(bytes) ||
@@ -868,7 +912,11 @@ export function decodeCapturePicture(bytes: Buffer): CapturePicture {
 		throw new CaptureError('Capture PNG exceeds the pixel budget', { code: 'EVIDENCE' })
 	if (width > CAPTURE_PNG_LIMITS.side || height > CAPTURE_PNG_LIMITS.side)
 		throw new CaptureError('Capture PNG exceeds the dimension budget', { code: 'EVIDENCE' })
-	const raw = inflateCaptureStream(Buffer.concat(readCaptureChunks(bytes)), length)
+	const chunks = readCaptureChunks(bytes)
+	const raw = inflateCaptureStream(
+		chunks.length === 1 && chunks[0] !== undefined ? chunks[0] : Buffer.concat(chunks),
+		length,
+	)
 	if (raw.length !== length)
 		throw new CaptureError('Capture PNG scanline length differs', { code: 'EVIDENCE' })
 	// Each row reads the reconstructed row above it, so the rows are a log the loop appends to.
@@ -973,7 +1021,7 @@ export function encodeCapturePicture(picture: CapturePicture, compressed = true)
 }
 
 /**
- * Scales a picture by a whole-number area average and clips its displayed height.
+ * Scales a picture with an exact area average and clips its displayed height.
  *
  * @param picture - The source RGB picture
  * @param factor - The integer reduction factor
@@ -990,25 +1038,38 @@ export function shrinkCapturePicture(
 	factor: number,
 	limit: number,
 ): CapturePicture {
-	const width = Math.max(1, Math.floor(picture.width / factor))
-	const height = Math.min(Math.max(1, Math.floor(picture.height / factor)), limit)
-	const pixels = Uint8Array.from({ length: width * height * 3 }, (_, index) => {
-		const y = Math.floor(index / (width * 3))
-		const x = Math.floor((index % (width * 3)) / 3)
-		const channel = index % 3
-		const sum = Array.from(
-			{ length: factor * factor },
-			(_value, sample) =>
-				picture.pixels[
-					((y * factor + Math.floor(sample / factor)) * picture.width +
-						x * factor +
-						(sample % factor)) *
-						3 +
-						channel
-				] ?? 0,
-		).reduce((total, value) => total + value, 0)
-		return Math.round(sum / (factor * factor))
-	})
+	const width = Math.max(1, Math.ceil(picture.width / factor))
+	const height = Math.min(Math.max(1, Math.ceil(picture.height / factor)), limit)
+	const pixels = new Uint8Array(width * height * 3)
+	const sums = new Float64Array(width * 3)
+	for (let y = 0; y < height; y += 1) {
+		sums.fill(0)
+		const rows = Math.min(factor, picture.height - y * factor)
+		for (let row = 0; row < rows; row += 1) {
+			let source = (y * factor + row) * picture.width * 3
+			for (let x = 0; x < width; x += 1) {
+				const columns = Math.min(factor, picture.width - x * factor)
+				let red = 0
+				let green = 0
+				let blue = 0
+				for (let column = 0; column < columns; column += 1) {
+					red += picture.pixels[source] ?? 0
+					green += picture.pixels[source + 1] ?? 0
+					blue += picture.pixels[source + 2] ?? 0
+					source += 3
+				}
+				const target = x * 3
+				sums[target] = (sums[target] ?? 0) + red
+				sums[target + 1] = (sums[target + 1] ?? 0) + green
+				sums[target + 2] = (sums[target + 2] ?? 0) + blue
+			}
+		}
+		for (let x = 0; x < width; x += 1) {
+			const count = rows * Math.min(factor, picture.width - x * factor)
+			for (let channel = 0; channel < 3; channel += 1)
+				pixels[(y * width + x) * 3 + channel] = Math.round((sums[x * 3 + channel] ?? 0) / count)
+		}
+	}
 	return { width, height, pixels }
 }
 
@@ -1227,6 +1288,7 @@ export function requireCaptureSelection(
 	variants: readonly string[],
 	projects: readonly CaptureProject[],
 	outputs: readonly string[] = [],
+	portfolio?: string,
 ): void {
 	const selectors = [
 		...new Set(
@@ -1240,6 +1302,23 @@ export function requireCaptureSelection(
 	]
 	const fault = describeCaptureSelectorFault(selector, selectors)
 	if (fault !== undefined) throw new CaptureError(fault, { code: 'USAGE' })
+	const portfolios = [
+		...new Set(
+			projects.flatMap((project) =>
+				[...project.portfolios, ...project.standalone].map((entry) => entry.portfolio),
+			),
+		),
+	]
+	if (portfolio !== undefined && !portfolios.includes(portfolio))
+		throw new CaptureError(
+			describeCaptureFault(
+				'--portfolio',
+				portfolio,
+				'a portfolio declared by the wrapper',
+				portfolios,
+			),
+			{ code: 'USAGE' },
+		)
 	const declared = [...new Set([...projects.flatMap((project) => project.variants), ...outputs])]
 	for (const variant of variants)
 		if (!declared.includes(variant))
@@ -1350,6 +1429,10 @@ export function readCaptureSeparator(entry: string): string {
 
 /**
  * Reads original title segments from the accepted registry's authenticated JSON reporter files.
+ * @param root - The repository root that contains the registry and its reporters
+ * @param file - The accepted registry path
+ * @param selector - The optional owner selector that bounds the case candidates
+ * @returns Exact case names mapped to their original title segments within the selected owners
  * @example
  * ```ts
  * const titles = readCaptureTitles('/workspace', '/workspace/tmp/captures/states/registry.json')
@@ -1358,8 +1441,16 @@ export function readCaptureSeparator(entry: string): string {
 export function readCaptureTitles(
 	root: string,
 	file: string,
+	selector?: string,
 ): Readonly<Record<string, readonly string[]>> {
-	const registry: unknown = parseJSON(readFileSync(requireCaptureContained(root, file), 'utf8'))
+	const path = requireCaptureContained(root, file)
+	const loaded = attempt(() => readFileSync(path, 'utf8'))
+	if (!loaded.success)
+		throw new CaptureError(
+			`Missing accepted registry; run the explicit complete-registry refresh: capture registry. Registry path: ${file}`,
+			{ code: 'EVIDENCE', cause: loaded.error },
+		)
+	const registry: unknown = parseJSON(loaded.value)
 	if (!isCaptureRegistry(registry))
 		throw new CaptureError('Invalid accepted registry for case titles', { code: 'EVIDENCE' })
 	return Object.fromEntries(
@@ -1375,6 +1466,14 @@ export function readCaptureTitles(
 			const report: unknown = parseJSON(text)
 			if (!isRecord(report) || !arrayOf(isRecord)(report.testResults))
 				throw new CaptureError('Invalid registry reporter for case titles', { code: 'EVIDENCE' })
+			const selected =
+				selector === undefined
+					? undefined
+					: new Set(
+							readCaptureReport(report)
+								.assertions.filter((entry) => matchesCaptureSelector(entry.owner, selector))
+								.map((entry) => entry.case),
+						)
 			return report.testResults.flatMap((result) =>
 				!arrayOf(isRecord)(result.assertionResults)
 					? []
@@ -1390,7 +1489,9 @@ export function readCaptureTitles(
 								throw new CaptureError('Registry reporter title segments differ from its case', {
 									code: 'EVIDENCE',
 								})
-							return [[assertion.fullName, titles] as const]
+							return selected === undefined || selected.has(assertion.fullName)
+								? [[assertion.fullName, titles] as const]
+								: []
 						}),
 			)
 		}),

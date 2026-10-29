@@ -1,13 +1,15 @@
-import { mkdirSync, realpathSync, rmSync } from 'node:fs'
+import { linkSync, readFileSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { attempt, isNumber, parseJSON } from '@orkestrel/contract'
+import { attempt, isNumber, isRecord, parseJSON } from '@orkestrel/contract'
 import { killTree } from '@orkestrel/process/server'
 import { waitForCondition } from '@orkestrel/test'
-import { isRunning } from '@orkestrel/test/server'
+import { createScratch, isRunning } from '@orkestrel/test/server'
 import { isCaptureError } from '@src/core'
 import {
+	CAPTURE_DEFAULTS,
+	CaptureCLI,
+	CaptureInvocation,
 	CAPTURE_OWNER_FILE,
-	computeCaptureHash,
 	escapeCapturePattern,
 	settleCaptureShutdown,
 } from '@src/server'
@@ -25,6 +27,11 @@ import {
 	SUPPORTS_GROUP_SIGNAL,
 	withEnvironment,
 	runCaptureOwnershipRace,
+	leaveCaptureTemporary,
+	readCaptureHeld,
+	leaveCaptureSurvivor,
+	leaveCaptureUnconfirmed,
+	CAPTURE_OWNERSHIP_CASES,
 } from '../../setupServer.js'
 
 const REPORTER = resolve(import.meta.dirname, '../../fixtures/capture/Reporter.ts')
@@ -33,32 +40,818 @@ const OUTPUT = resolve(import.meta.dirname, '../../fixtures/capture/Output.ts')
 
 // Each case spawns real Node children, which the default five-second budget leaves thin on a loaded host.
 describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
-	it('H1s keeps exactly one owner during repeated stale-marker process races', async () => {
+	it('X7 refuses a request path occupied by a file with a CaptureError and a CLI diagnostic', async () => {
+		const scratch = createScratch({ prefix: 'x7-requests-file-' })
+		const invocation = new CaptureInvocation({
+			command: 'journey',
+			root: scratch.path,
+			requests: CAPTURE_DEFAULTS.requests,
+			stdout: () => undefined,
+			stderr: () => undefined,
+		})
+		try {
+			scratch.write(CAPTURE_DEFAULTS.requests, 'not a directory\n')
+			const result = attempt(() => invocation.prepare())
+			const error = result.success ? undefined : result.error
+			const message = `Capture request directory is unavailable: ${resolve(scratch.path, CAPTURE_DEFAULTS.requests)}`
+			expect
+				.soft({
+					refused: !result.success,
+					capture: isCaptureError(error),
+					message: error instanceof Error ? error.message : String(error),
+				})
+				.toEqual({ refused: true, capture: true, message })
+			const stderr: string[] = []
+			const code = await new CaptureCLI({
+				root: scratch.path,
+				stdout: () => undefined,
+				stderr: (text) => stderr.push(text),
+			}).execute(['journey', 'pages:mail'])
+			expect(code).toBe(1)
+			expect.soft(stderr.join('')).toContain(message)
+			expect(stderr.join('')).not.toMatch(/^E[A-Z]+: /mu)
+		} finally {
+			await invocation.release()
+			scratch.destroy()
+		}
+	})
+	it('X6 writes a create-only survivor record and keeps the marker byte-identical', async () => {
+		const fixture = new InvocationFixture()
+		const confirmation = new AbortController()
+		const invocation = fixture.next({
+			terminate: async (child) => (confirmation.signal.aborted ? await child.stop() : false),
+		})
+		invocation.prepare()
+		const marker = resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE)
+		const before = readFileSync(marker, 'utf8')
+		const record = resolve(invocation.directory, 'survivors.json')
+		const executions = ['first', 'second'].map((name) =>
+			invocation.spawn([OUTPUT], resolve(invocation.directory, `${name}.log`), false),
+		)
+		try {
+			await waitForCondition(
+				'both survivor children are ready',
+				() => fixture.stdout.join('').split('ready').length === 3,
+			)
+			const pids = [...fixture.stdout.join('').matchAll(/pid=(\d+)/gu)].map((match) =>
+				Number(match[1]),
+			)
+			const failure: unknown = await invocation.release().catch((error: unknown) => error)
+			expect(failure).toMatchObject({ code: 'STAGE' })
+			expect.soft(String(failure)).toContain(record)
+			expect(String(failure)).toContain(marker)
+			for (const pid of pids) expect(String(failure)).toContain(String(pid))
+			expect.soft(readFileSync(marker, 'utf8')).toBe(before)
+			const bytes = readFileSync(record, 'utf8')
+			expect(parseJSON(bytes)).toEqual({
+				pid: process.pid,
+				id: invocation.id,
+				command: 'journey',
+				children: pids,
+				at: expect.any(String),
+			})
+			writeFileSync(record, `${bytes}\n`)
+			await expect(invocation.release()).rejects.toThrow(record)
+			expect(readFileSync(record, 'utf8')).toBe(`${bytes}\n`)
+			expect(readFileSync(marker, 'utf8')).toBe(before)
+			confirmation.abort()
+			await invocation.release()
+			await Promise.all(executions)
+			expect(readCaptureHeld(fixture.scratch.path, RUNNER_REQUESTS)).toEqual([])
+			for (const pid of pids) expect(isRunning(pid)).toBe(false)
+		} finally {
+			confirmation.abort()
+			await invocation.release().catch(() => undefined)
+			await Promise.allSettled(executions)
+			fixture.destroy()
+		}
+	})
+	it.each(['present', 'absent', 'unreadable', 'malformed'])(
+		'X6 reports a dead owner with its %s advisory record',
+		async (state) => {
+			const fixture = new InvocationFixture()
+			const dead = await readExitedPid()
+			const marker = resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE)
+			const record = resolve(
+				fixture.scratch.path,
+				RUNNER_REQUESTS,
+				'runs',
+				'dead-record-owner',
+				'survivors.json',
+			)
+			const content = JSON.stringify({ pid: dead, id: 'dead-record-owner' })
+			fixture.scratch.write(marker, content)
+			if (state === 'present')
+				fixture.scratch.write(
+					record,
+					JSON.stringify({
+						pid: dead,
+						id: 'dead-record-owner',
+						command: 'journey',
+						children: [process.pid],
+						at: new Date().toISOString(),
+					}),
+				)
+			if (state === 'unreadable') mkdirSync(record, { recursive: true })
+			if (state === 'malformed') fixture.scratch.write(record, '{')
+			try {
+				const result = attempt(() => fixture.invocation.prepare())
+				expect(result.success).toBe(false)
+				const message = result.success ? '' : String(result.error)
+				expect(message).toContain(`process ${String(dead)} is not running`)
+				expect.soft(message).toContain('invocation "dead-record-owner"')
+				expect(message).toContain(marker)
+				expect(message).toContain(record)
+				expect(message).toContain(
+					state === 'present'
+						? `Unconfirmed child processes: ${String(process.pid)}`
+						: state === 'absent'
+							? 'No child record exists at'
+							: 'Child record could not be read',
+				)
+				expect(message).toContain(
+					state === 'unreadable'
+						? 'EISDIR'
+						: state === 'malformed'
+							? 'EINVAL'
+							: 'Confirm no capture process',
+				)
+				expect(readFileSync(marker, 'utf8')).toBe(content)
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+	it.each(['ENOENT', 'EACCES', 'EBUSY', 'foreign'])(
+		'X6 retains ownership on record write %s and retries only missing directory once',
+		async (code) => {
+			const fixture = new InvocationFixture()
+			const confirmation = new AbortController()
+			const writes: string[] = []
+			const invocation = fixture.next({
+				terminate: async (child) => (confirmation.signal.aborted ? await child.stop() : false),
+				ownership: {
+					write: (file, text) => {
+						if (file.endsWith('survivors.json')) {
+							writes.push(file)
+							throw Object.assign(new Error('record write refused'), { code })
+						}
+						writeFileSync(file, text, { flag: 'wx' })
+					},
+				},
+			})
+			invocation.prepare()
+			const marker = resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE)
+			const foreign = JSON.stringify({ pid: process.pid, id: 'foreign-record-owner' })
+			if (code === 'foreign') writeFileSync(marker, foreign)
+			const before = readFileSync(marker, 'utf8')
+			const record = resolve(invocation.directory, 'survivors.json')
+			const execution = invocation.spawn(
+				[OUTPUT],
+				resolve(invocation.directory, 'refusal.log'),
+				false,
+			)
+			try {
+				await waitForCondition('the record-fault child is ready', () =>
+					fixture.stdout.join('').includes('ready'),
+				)
+				const failure: unknown = await invocation.release().catch((error: unknown) => error)
+				expect(failure).toMatchObject({ code: 'STAGE', message: expect.stringContaining(record) })
+				if (!(failure instanceof Error) || !(failure.cause instanceof AggregateError))
+					throw new Error('Missing shutdown cause')
+				expect(failure.cause.errors.map(String).join('\n')).toContain(
+					code === 'foreign' ? 'termination was not confirmed' : `(${code})`,
+				)
+				expect(writes).toHaveLength(code === 'foreign' ? 0 : code === 'ENOENT' ? 2 : 1)
+				expect(readFileSync(marker, 'utf8')).toBe(before)
+			} finally {
+				confirmation.abort()
+				await invocation.release().catch(() => undefined)
+				await execution.catch(() => undefined)
+				fixture.destroy()
+			}
+		},
+	)
+	it('X6 creates a missing run directory for the survivor record', async () => {
+		const fixture = new InvocationFixture()
+		const confirmation = new AbortController()
+		const invocation = fixture.next({
+			terminate: async (child) => (confirmation.signal.aborted ? await child.stop() : false),
+		})
+		invocation.prepare()
+		const marker = resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE)
+		const before = readFileSync(marker, 'utf8')
+		const execution = invocation.spawn(
+			[OUTPUT],
+			resolve(invocation.directory, 'missing.log'),
+			false,
+		)
+		try {
+			await waitForCondition('the missing-directory child is ready', () =>
+				fixture.stdout.join('').includes('ready'),
+			)
+			rmSync(invocation.directory, { recursive: true, force: true })
+			const record = resolve(invocation.directory, 'survivors.json')
+			await expect(invocation.release()).rejects.toThrow(record)
+			expect(parseJSON(readFileSync(record, 'utf8'))).toMatchObject({
+				id: invocation.id,
+				command: 'journey',
+			})
+			expect(readFileSync(marker, 'utf8')).toBe(before)
+		} finally {
+			confirmation.abort()
+			await invocation.release().catch(() => undefined)
+			await execution.catch(() => undefined)
+			fixture.destroy()
+		}
+	})
+	it.each([false, true])(
+		'X6 reads a dead holder record once and a live holder record never, alive=%s',
+		async (alive) => {
+			const fixture = new InvocationFixture()
+			const reads: string[] = []
+			const marker = resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE)
+			const record = resolve(
+				fixture.scratch.path,
+				RUNNER_REQUESTS,
+				'runs',
+				'record-read-owner',
+				'survivors.json',
+			)
+			const invocation = fixture.next({
+				ownership: {
+					alive: () => alive,
+					read: (file) => {
+						reads.push(file)
+						if (file === record) throw Object.assign(new Error('record busy'), { code: 'EBUSY' })
+						return readFileSync(file, 'utf8')
+					},
+				},
+			})
+			try {
+				fixture.scratch.write(
+					marker,
+					JSON.stringify({
+						pid: process.pid,
+						id: 'record-read-owner',
+						children: 'ignored extra member',
+					}),
+				)
+				const refusal = attempt(() => invocation.prepare())
+				expect(refusal.success).toBe(false)
+				const message = refusal.success ? '' : String(refusal.error)
+				expect(message).toContain(
+					alive ? 'Another runner holds' : 'Child record could not be read (EBUSY)',
+				)
+				expect(reads).toEqual(alive ? [marker, marker] : [marker, marker, record])
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+	it('X6 ignores a dead temporary removal failure and preserves a live temporary', async () => {
 		const fixture = new InvocationFixture()
 		try {
 			const dead = await readExitedPid()
-			for (const round of Array.from({ length: 6 }, (_, index) => index)) {
-				fixture.scratch.write(
-					`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`,
-					JSON.stringify({ pid: dead, id: `stale-${String(round)}` }),
-				)
-				const outcomes = await runCaptureOwnershipRace(fixture.scratch.path, RUNNER_REQUESTS)
-				expect({ round, outcomes }).toMatchObject({ outcomes: expect.arrayContaining(['owner']) })
-				expect({ round, owners: outcomes.filter((outcome) => outcome === 'owner') }).toEqual({
-					round,
-					owners: ['owner'],
+			const blocked = resolve(
+				fixture.scratch.path,
+				RUNNER_REQUESTS,
+				`${CAPTURE_OWNER_FILE}.${String(dead)}.blocked.tmp`,
+			)
+			mkdirSync(blocked, { recursive: true })
+			writeFileSync(resolve(blocked, 'content'), 'directory prevents nonrecursive removal')
+			const live = resolve(
+				fixture.scratch.path,
+				RUNNER_REQUESTS,
+				`${CAPTURE_OWNER_FILE}.${String(process.pid)}.live.tmp`,
+			)
+			writeFileSync(live, 'live claim bytes')
+			expect(() => fixture.invocation.prepare()).not.toThrow()
+			expect(readFileSync(live, 'utf8')).toBe('live claim bytes')
+			expect(readFileSync(resolve(blocked, 'content'), 'utf8')).toBe(
+				'directory prevents nonrecursive removal',
+			)
+			await fixture.invocation.release()
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('X6 checks the id after a failed removal and leaves a foreign marker untouched', async () => {
+		const fixture = new InvocationFixture()
+		const removals: string[] = []
+		const foreign = JSON.stringify({ pid: process.pid, id: 'foreign-after-remove' })
+		const invocation = fixture.next({
+			ownership: {
+				remove: (file) => {
+					removals.push(file)
+					writeFileSync(file, foreign)
+					throw Object.assign(new Error('busy removal'), { code: 'EBUSY' })
+				},
+			},
+		})
+		try {
+			invocation.prepare()
+			await invocation.release()
+			expect(removals).toHaveLength(1)
+			expect(fixture.scratch.read(`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`)).toBe(foreign)
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('X6 retains the marker after removal exhaustion and reports the code without deletion advice', async () => {
+		const fixture = new InvocationFixture()
+		const inactive = new AbortController()
+		const invocation = fixture.next({
+			ownership: {
+				remove: (file) => {
+					if (!inactive.signal.aborted)
+						throw Object.assign(new Error('busy removal'), { code: 'EBUSY' })
+					rmSync(file, { force: true })
+				},
+			},
+		})
+		try {
+			invocation.prepare()
+			const marker = resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE)
+			const before = readFileSync(marker, 'utf8')
+			const failure: unknown = await invocation.release().catch((error: unknown) => error)
+			if (!(failure instanceof Error) || !(failure.cause instanceof AggregateError))
+				throw new Error('Missing shutdown cause')
+			const message = failure.cause.errors.map(String).join('\n')
+			expect(message).toContain('temporarily unavailable (EBUSY)')
+			expect(message).not.toContain('delet')
+			expect(readFileSync(marker, 'utf8')).toBe(before)
+		} finally {
+			inactive.abort()
+			await invocation.release()
+			fixture.destroy()
+		}
+	})
+	it('X6 labels a permanent error on the liveness re-read as unreadable', () => {
+		const fixture = new InvocationFixture()
+		const probed = new AbortController()
+		const invocation = fixture.next({
+			ownership: {
+				alive: () => {
+					probed.abort()
+					return false
+				},
+				read: (file) => {
+					if (probed.signal.aborted) throw Object.assign(new Error('read fault'), { code: 'EIO' })
+					return readFileSync(file, 'utf8')
+				},
+			},
+		})
+		try {
+			fixture.scratch.write(
+				`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`,
+				JSON.stringify({ pid: process.pid, id: 'probe-error' }),
+			)
+			const refusal = attempt(() => invocation.prepare())
+			expect(refusal).toMatchObject({
+				success: false,
+				error: { message: expect.stringContaining('marker is unreadable'), cause: { code: 'EIO' } },
+			})
+			expect(refusal.success ? '' : String(refusal.error)).not.toContain('delet')
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it.each(['linux', 'win32'] as const)(
+		'H1x classifies read and remove errors on %s',
+		async (platform) => {
+			for (const operation of ['read', 'remove'] as const) {
+				for (const code of ['EPERM', 'EACCES', 'EBUSY', 'EMFILE']) {
+					const fixture = new InvocationFixture()
+					const calls: string[] = []
+					const inactive = new AbortController()
+					const invocation = fixture.next({
+						ownership: {
+							platform,
+							[operation]: (file: string) => {
+								if (!inactive.signal.aborted) calls.push(code)
+								if (!inactive.signal.aborted && calls.length === 1)
+									throw Object.assign(new Error(code), { code })
+								if (operation === 'read') return readFileSync(file, 'utf8')
+								rmSync(file, { force: true })
+							},
+						},
+					})
+					try {
+						invocation.prepare()
+						const result = await invocation.release().then(
+							() => true,
+							() => false,
+						)
+						const transient = platform === 'win32' || ['EBUSY', 'EMFILE'].includes(code)
+						expect(result).toBe(transient)
+						expect(calls).toHaveLength(transient ? (operation === 'read' ? 3 : 2) : 1)
+					} finally {
+						inactive.abort()
+						await invocation.release()
+						fixture.destroy()
+					}
+				}
+			}
+		},
+	)
+	it.each(CAPTURE_OWNERSHIP_CASES)(
+		'H1x classifies link $code on $platform',
+		async ({ platform, code }) => {
+			const fixture = new InvocationFixture()
+			const calls: string[] = []
+			const invocation = fixture.next({
+				ownership: {
+					platform,
+					link: (source, target) => {
+						calls.push(code)
+						if (calls.length === 1) throw Object.assign(new Error(code), { code })
+						linkSync(source, target)
+					},
+				},
+			})
+			try {
+				const result = attempt(() => invocation.prepare())
+				const transient = platform === 'win32' || ['EBUSY', 'EMFILE'].includes(code)
+				expect(result.success).toBe(transient)
+				expect(calls).toEqual(transient ? [code, code] : [code])
+			} finally {
+				await invocation.release()
+				fixture.destroy()
+			}
+		},
+	)
+	it('X6 Survivor composition consumes production release after the real owner exits', async () => {
+		const fixture = new InvocationFixture()
+		const owner = await leaveCaptureUnconfirmed(fixture.scratch.path, RUNNER_REQUESTS)
+		try {
+			expect(owner.published).toBe(true)
+			expect(isRunning(owner.owner)).toBe(false)
+			expect(process.platform === 'win32' ? isRunning(owner.pid) : false).toBe(false)
+			const marker = fixture.scratch.read(`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`)
+			expect(parseJSON(marker ?? '')).toEqual({
+				pid: owner.owner,
+				id: expect.any(String),
+			})
+			const status: unknown = parseJSON(fixture.scratch.read('survivor-status.json') ?? '')
+			if (!isRecord(status) || typeof status.record !== 'string')
+				throw new Error('Missing survivor receipt')
+			expect(marker).toBe(status.before)
+			expect(String(status.error)).toContain(status.record)
+			expect(String(status.error)).toContain(
+				resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE),
+			)
+			expect(parseJSON(readFileSync(status.record, 'utf8'))).toMatchObject({
+				pid: owner.owner,
+				children: [owner.pid],
+			})
+			const refusal = attempt(() => fixture.invocation.prepare())
+			expect(refusal).toMatchObject({
+				success: false,
+				error: expect.objectContaining({
+					message: expect.stringContaining(`process ${String(owner.owner)} is not running`),
+				}),
+			})
+			const message = refusal.success ? '' : String(refusal.error)
+			expect(message).toContain(`Unconfirmed child processes: ${String(owner.pid)}`)
+			expect(message).toContain(status.record)
+			expect(message).toContain('Confirm no capture process or surviving child is running')
+			expect(message).not.toMatch(/\b(?:live|running|surviving) child processes?: \d/iu)
+			expect(fixture.scratch.read(`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`)).toBe(marker)
+		} finally {
+			if (isRunning(owner.pid)) await killTree(owner.pid, 5000)
+			fixture.destroy()
+		}
+	})
+	it.each(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'])(
+		'H1w refuses unsupported POSIX link %s immediately',
+		async (code) => {
+			const fixture = new InvocationFixture()
+			const calls: string[] = []
+			const invocation = fixture.next({
+				ownership: {
+					platform: 'linux',
+					link: () => {
+						calls.push(code)
+						throw Object.assign(new Error(code), { code })
+					},
+				},
+			})
+			try {
+				expect(() => invocation.prepare()).toThrow(/link.*must support hard links/u)
+				expect(calls).toEqual([code])
+				await invocation.release()
+				expect(readCaptureHeld(fixture.scratch.path, RUNNER_REQUESTS)).toEqual([])
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+	it.each(['write', 'link'] as const)(
+		'H1w names %s and its permanent failure code without hard-link advice',
+		async (operation) => {
+			for (const code of ['ENOSPC', 'EACCES']) {
+				const fixture = new InvocationFixture()
+				const calls: string[] = []
+				const invocation = fixture.next({
+					ownership: {
+						platform: 'linux',
+						[operation]: () => {
+							calls.push(code)
+							throw Object.assign(new Error(code), { code })
+						},
+					},
 				})
-				expect({
+				try {
+					const result = attempt(() => invocation.prepare())
+					expect(result).toMatchObject({
+						success: false,
+						error: expect.objectContaining({
+							code: 'STAGE',
+							message: expect.stringContaining(`${operation} capture ownership`),
+						}),
+					})
+					const message = result.success ? '' : String(result.error)
+					expect(message).toContain(code)
+					expect(message).not.toContain('hard links')
+					expect(calls).toEqual([code])
+					await invocation.release()
+					expect(readCaptureHeld(fixture.scratch.path, RUNNER_REQUESTS)).toEqual([])
+				} finally {
+					fixture.destroy()
+				}
+			}
+		},
+	)
+	it('H1v retries a changed marker after the liveness probe and preserves its new holder', async () => {
+		const fixture = new InvocationFixture()
+		const probes: number[] = []
+		const marker = `${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`
+		const replacement = JSON.stringify({ pid: process.pid, id: 'replacement-after-probe' })
+		const invocation = fixture.next({
+			ownership: {
+				alive: (pid) => {
+					probes.push(pid)
+					fixture.scratch.write(marker, replacement)
+					return probes.length > 1
+				},
+			},
+		})
+		try {
+			fixture.scratch.write(marker, JSON.stringify({ pid: process.pid, id: 'departed' }))
+			expect(() => invocation.prepare()).toThrow('Another runner holds')
+			expect(probes).toHaveLength(2)
+			expect(fixture.scratch.read(marker)).toBe(replacement)
+			rmSync(resolve(fixture.scratch.path, marker))
+			expect(readCaptureHeld(fixture.scratch.path, RUNNER_REQUESTS)).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('X6 DetachedSurvivor names a real surviving child after its owner process exits', async () => {
+		const fixture = new InvocationFixture()
+		try {
+			const survivor = await leaveCaptureSurvivor(fixture.scratch.path, RUNNER_REQUESTS)
+			try {
+				expect(isRunning(survivor.owner)).toBe(false)
+				expect(isRunning(survivor.pid)).toBe(true)
+				const marker = fixture.scratch.read(`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`)
+				const holder: unknown = parseJSON(marker ?? '')
+				if (!isRecord(holder) || typeof holder.id !== 'string')
+					throw new Error('Missing detached owner')
+				const record = resolve(
+					fixture.scratch.path,
+					RUNNER_REQUESTS,
+					'runs',
+					holder.id,
+					'survivors.json',
+				)
+				expect(() => fixture.invocation.prepare()).toThrow(
+					`process ${String(survivor.owner)} is not running`,
+				)
+				expect(() => fixture.invocation.prepare()).toThrow(
+					`Unconfirmed child processes: ${String(survivor.pid)}; stop them before deleting`,
+				)
+				expect(() => fixture.invocation.prepare()).toThrow(record)
+				expect(() => fixture.invocation.prepare()).toThrow(holder.id)
+				expect(isRunning(survivor.pid)).toBe(true)
+				expect(fixture.scratch.read(`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`)).toBe(marker)
+				expect(
+					fixture.scratch
+						.names(RUNNER_REQUESTS)
+						.filter((name) => name.startsWith(`${CAPTURE_OWNER_FILE}.`)),
+				).toEqual([])
+			} finally {
+				if (isRunning(survivor.pid)) await killTree(survivor.pid, 5_000)
+				await waitForCondition('the survivor has exited', () => !isRunning(survivor.pid))
+			}
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('H1v records unconfirmed children and retries their stop on a later release', async () => {
+		const fixture = new InvocationFixture()
+		const calls: number[] = []
+		const invocation = fixture.next({
+			terminate: async (child) => {
+				calls.push(child.pid ?? 0)
+				return calls.length === 1 ? false : await child.stop()
+			},
+		})
+		invocation.prepare()
+		const execution = invocation.spawn([OUTPUT], resolve(invocation.directory, 'retry.log'), false)
+		try {
+			await waitForCondition('the retry child is ready', () =>
+				fixture.stdout.join('').includes('ready'),
+			)
+			const pid = Number(/pid=(\d+)/u.exec(fixture.stdout.join(''))?.[1])
+			await expect(invocation.release()).rejects.toThrow(`process ${String(pid)}`)
+			expect(
+				parseJSON(fixture.scratch.read(`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`) ?? ''),
+			).toEqual({ pid: process.pid, id: invocation.id })
+			expect(
+				parseJSON(readFileSync(resolve(invocation.directory, 'survivors.json'), 'utf8')),
+			).toMatchObject({ id: invocation.id, children: [pid] })
+			await expect(invocation.release()).resolves.toBeUndefined()
+			await execution
+			expect(isRunning(pid)).toBe(false)
+			expect(calls.length).toBeGreaterThan(1)
+			expect(readCaptureHeld(fixture.scratch.path, RUNNER_REQUESTS)).toEqual([])
+		} finally {
+			await invocation.release().catch(() => undefined)
+			await execution.catch(() => undefined)
+			fixture.destroy()
+		}
+	})
+	it.each(['EPERM', 'EACCES', 'EBUSY', 'EMFILE'])(
+		'H1v retries transient %s on link and marker read',
+		async (code) => {
+			const fixture = new InvocationFixture()
+			try {
+				for (const operation of ['link', 'read'] as const) {
+					const calls: string[] = []
+					const invocation = fixture.next({
+						ownership: {
+							platform: 'win32',
+							[operation]: (...paths: string[]) => {
+								calls.push(operation)
+								if (calls.length === 1) throw Object.assign(new Error(code), { code })
+								if (operation === 'read') return readFileSync(paths[0] ?? '', 'utf8')
+								linkSync(paths[0] ?? '', paths[1] ?? '')
+							},
+						},
+					})
+					if (operation === 'read') fixture.invocation.prepare()
+					const start = performance.now()
+					const result = attempt(() => invocation.prepare())
+					expect(result.success).toBe(operation === 'link')
+					expect(
+						result.success
+							? ''
+							: result.error instanceof Error
+								? result.error.message
+								: String(result.error),
+					).toContain(operation === 'link' ? '' : 'Another runner holds')
+					expect(calls.length).toBeGreaterThanOrEqual(2)
+					expect(performance.now() - start).toBeGreaterThanOrEqual(5)
+					await invocation.release()
+					await fixture.invocation.release()
+					expect(readCaptureHeld(fixture.scratch.path, RUNNER_REQUESTS)).toEqual([])
+				}
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+	it.each(['link', 'read'] as const)(
+		'H1v bounds persistent transient errors on %s without deletion advice',
+		async (operation) => {
+			const fixture = new InvocationFixture()
+			const invocation = fixture.next({
+				ownership: {
+					[operation]: () => {
+						throw Object.assign(new Error('busy'), { code: 'EBUSY' })
+					},
+				},
+			})
+			try {
+				if (operation === 'read') fixture.invocation.prepare()
+				const start = performance.now()
+				expect(() => invocation.prepare()).toThrow(/temporarily unavailable.*EBUSY.*rerun/u)
+				expect(performance.now() - start).toBeGreaterThanOrEqual(900)
+				expect(performance.now() - start).toBeLessThan(3000)
+				await fixture.invocation.release()
+				expect(readCaptureHeld(fixture.scratch.path, RUNNER_REQUESTS)).toEqual([])
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+	it.each(['EPERM', 'EBUSY'])('H1v retries %s while removing its own marker', async (code) => {
+		const fixture = new InvocationFixture()
+		const calls: string[] = []
+		const invocation = fixture.next({
+			ownership: {
+				remove: (file) => {
+					calls.push(file)
+					if (calls.length === 1) throw Object.assign(new Error(code), { code })
+					rmSync(file, { force: true })
+				},
+			},
+		})
+		try {
+			invocation.prepare()
+			await expect(invocation.release()).resolves.toBeUndefined()
+			expect(calls).toHaveLength(2)
+			expect(readCaptureHeld(fixture.scratch.path, RUNNER_REQUESTS)).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('H1v retries when the marker vanishes during the liveness probe', async () => {
+		const fixture = new InvocationFixture()
+		const invocation = fixture.next({
+			ownership: {
+				alive: () => {
+					rmSync(resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE))
+					return false
+				},
+			},
+		})
+		try {
+			fixture.scratch.write(
+				`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`,
+				JSON.stringify({ pid: process.pid, id: 'departed' }),
+			)
+			expect(() => invocation.prepare()).not.toThrow()
+			await invocation.release()
+			expect(readCaptureHeld(fixture.scratch.path, RUNNER_REQUESTS)).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('H1v confirms malformed content twice before refusing without deletion advice', async () => {
+		const fixture = new InvocationFixture()
+		const reads: string[] = []
+		const invocation = fixture.next({
+			ownership: {
+				read: (file) => {
+					reads.push(file)
+					return readFileSync(file, 'utf8')
+				},
+			},
+		})
+		try {
+			fixture.scratch.write(`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`, '')
+			expect(() => invocation.prepare()).toThrow(/empty.*confirm no capture process/u)
+			expect(reads).toHaveLength(2)
+			rmSync(resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE))
+			expect(readCaptureHeld(fixture.scratch.path, RUNNER_REQUESTS)).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('H1t retains ownership and reports the child pid when real termination is unconfirmed', async () => {
+		const fixture = new InvocationFixture()
+		const dead = await readExitedPid()
+		const invocation = fixture.next({ terminate: () => killTree(dead, 5_000) })
+		invocation.prepare()
+		const running = invocation.spawn(
+			[OUTPUT],
+			resolve(invocation.directory, 'unconfirmed.log'),
+			false,
+		)
+		try {
+			await waitForCondition('the unconfirmed child is ready', () =>
+				fixture.stdout.join('').includes('ready'),
+			)
+			const pid = Number(/pid=(\d+)/u.exec(fixture.stdout.join(''))?.[1])
+			await expect(invocation.release()).rejects.toThrow(`process ${String(pid)}`)
+			expect(isRunning(pid)).toBe(true)
+			expect(fixture.scratch.read(`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`)).toContain(
+				invocation.id,
+			)
+			expect(() => fixture.invocation.prepare()).toThrow('Another runner holds')
+		} finally {
+			const pid = Number(/pid=(\d+)/u.exec(fixture.stdout.join(''))?.[1])
+			if (isRunning(pid)) await killTree(pid, 5_000)
+			await running.catch(() => undefined)
+			await invocation.release().catch(() => undefined)
+			fixture.destroy()
+		}
+	})
+	it('H1t keeps at most one active owner while winners exit during repeated process races', async () => {
+		const fixture = new InvocationFixture()
+		try {
+			for (const round of Array.from({ length: 6 }, (_, index) => index)) {
+				const outcomes = await runCaptureOwnershipRace(fixture.scratch.path, RUNNER_REQUESTS)
+				expect({ round, outcomes }).toMatchObject({
+					outcomes: expect.arrayContaining(['released']),
+				})
+				expect({ round, invalid: outcomes.filter((outcome) => outcome !== 'released') }).toEqual({
 					round,
-					invalid: outcomes.filter(
-						(outcome) =>
-							outcome !== 'owner' &&
-							!(
-								typeof outcome === 'string' &&
-								outcome.includes('Another runner holds this workspace')
-							),
-					),
-				}).toEqual({ round, invalid: [] })
+					invalid: [],
+				})
 			}
 		} finally {
 			fixture.destroy()
@@ -76,18 +869,18 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			fixture.destroy()
 		}
 	})
-	it('H1s recovers when a previous stale-reclaim winner crashed before moving the marker', async () => {
+	it('H1t cleans a dead process temporary claim without removing a marker', async () => {
 		const fixture = new InvocationFixture()
 		try {
-			const dead = await readExitedPid()
-			const marker = JSON.stringify({ pid: dead, id: 'stale-owner' })
-			const fence = JSON.stringify({ pid: dead, id: 'crashed-reclaimer' })
-			fixture.scratch.write(`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`, marker)
-			fixture.scratch.write(
-				`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}.reclaim-${computeCaptureHash(marker)}`,
-				fence,
-			)
+			const dead = await leaveCaptureTemporary(fixture.scratch.path, RUNNER_REQUESTS)
+			const temporary = `${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}.${String(dead)}.crashed.tmp`
+			const live = `${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}.${String(process.pid)}.pending.tmp`
+			expect(fixture.scratch.has(temporary)).toBe(true)
+			expect(isRunning(dead)).toBe(false)
+			fixture.scratch.write(live, JSON.stringify({ pid: process.pid, id: 'pending-owner' }))
 			fixture.invocation.prepare()
+			expect(fixture.scratch.has(temporary)).toBe(false)
+			expect(fixture.scratch.has(live)).toBe(true)
 			expect(
 				parseJSON(fixture.scratch.read(`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`) ?? ''),
 			).toMatchObject({ id: fixture.invocation.id })
@@ -96,7 +889,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			fixture.destroy()
 		}
 	})
-	it('H1r reclaims a dead owner and reports it while refusing a live owner', async () => {
+	it('H1t refuses dead and live owners with their recovery instructions and preserves the marker', async () => {
 		const fixture = new InvocationFixture()
 		const live = await startSleeper()
 		try {
@@ -105,15 +898,13 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			fixture.scratch.write(marker, JSON.stringify({ pid: live.pid, id: 'live-holder' }))
 			expect(() => fixture.invocation.prepare()).toThrow(`process ${String(live.pid)}`)
 			expect(() => fixture.invocation.prepare()).toThrow('If this pid is not a capture run')
-			fixture.scratch.write(marker, JSON.stringify({ pid: dead, id: 'dead-holder' }))
-			fixture.invocation.prepare()
-			expect(fixture.stderr.join('')).toContain(
-				`Reclaimed stale capture ownership from process ${String(dead)}`,
+			const content = JSON.stringify({ pid: dead, id: 'dead-holder' })
+			fixture.scratch.write(marker, content)
+			expect(() => fixture.invocation.prepare()).toThrow(`process ${String(dead)} is not running`)
+			expect(() => fixture.invocation.prepare()).toThrow(
+				`re-read ${resolve(fixture.scratch.path, marker)} to confirm it still names pid ${String(dead)} before you delete`,
 			)
-			expect(parseJSON(fixture.scratch.read(marker) ?? '')).toMatchObject({
-				pid: process.pid,
-				id: fixture.invocation.id,
-			})
+			expect(fixture.scratch.read(marker)).toBe(content)
 		} finally {
 			await stopFixtureChild(live)
 			await fixture.invocation.release()
@@ -129,6 +920,9 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			)
 			fixture.scratch.write(marker, '')
 			expect(() => fixture.invocation.prepare()).toThrow('Capture ownership marker is empty')
+			expect(() => fixture.invocation.prepare()).toThrow(
+				`confirm no capture process or surviving child is running and inspect this file: ${resolve(fixture.scratch.path, marker)}`,
+			)
 			fixture.scratch.write(marker, 'not json')
 			expect(() => fixture.invocation.prepare()).toThrow('Capture ownership marker is malformed')
 			rmSync(resolve(fixture.scratch.path, marker))
@@ -649,7 +1443,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			).toEqual(kept.toSorted())
 			for (const name of kept)
 				expect(scratch.read(`${RUNNER_REQUESTS}/${name}`)).toBe(`bytes of ${name}`)
-			expect(scratch.has(`${RUNNER_REQUESTS}/runs/${invocation.id}`)).toBe(true)
+			expect(scratch.has(`${RUNNER_REQUESTS}/runs/${invocation.id}`)).toBe(false)
 		} finally {
 			await stopFixtureChild(live)
 			fixture.destroy()

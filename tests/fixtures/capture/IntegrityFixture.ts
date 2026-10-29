@@ -52,8 +52,11 @@ export class IntegrityFixture {
 	}
 
 	/** Creates a private committed Git workspace holding the fixture's sources. */
-	constructor() {
-		this.#scratch = createScratch({ prefix: 'integrity-' })
+	constructor(parent?: string) {
+		this.#scratch = createScratch({
+			prefix: 'integrity-',
+			...(parent === undefined ? {} : { parent }),
+		})
 		this.root = this.#scratch.path
 		try {
 			for (const path of [

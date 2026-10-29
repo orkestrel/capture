@@ -138,7 +138,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 			'--variant',
 			COMPOSED_FIRST,
 		])
-		expect(refused.code).toBe(1)
+		expect(refused.code).toBe(64)
 		expect(refused.stderr).toContain(
 			`Refresh explicitly with: capture journey pages:mail --variant ${COMPOSED_FIRST}`,
 		)

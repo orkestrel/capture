@@ -11,7 +11,11 @@ import { resolve } from 'node:path'
 import { attempt, parseJSON } from '@orkestrel/contract'
 import { CAPTURE_VERSION, CaptureError, describeCaptureError, isCapturePath } from '@src/core'
 import { CAPTURE_DISCOVERY, CAPTURE_VITEST_ENTRY } from './constants.js'
-import { readCaptureDescription, resolveCaptureRelative } from './helpers.js'
+import {
+	readCaptureDescription,
+	resolveCaptureRelative,
+	requireCaptureArgument,
+} from './helpers.js'
 
 /**
  * Reads a consumer's wrapper by running the consumer's installed Vitest in discovery mode.
@@ -47,6 +51,8 @@ export class CaptureDiscovery implements CaptureDiscoveryInterface {
 
 	async describe(): Promise<CaptureHostDescription> {
 		const { root, config, invocation, mode, deadline } = this.#options
+		invocation.prepare()
+		requireCaptureArgument(root, resolve(root, config), '--config')
 		const relative = resolveCaptureRelative(root, config)
 		if (!isCapturePath(relative))
 			throw new CaptureError('Config must be a contained repository path', { code: 'USAGE' })

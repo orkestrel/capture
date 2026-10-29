@@ -35,13 +35,16 @@ import {
 	CAPTURE_FLAG_VALUE,
 	CAPTURE_REQUESTS_FLAG,
 	CAPTURE_RUNS_DIRECTORY,
+	CAPTURE_SURVIVORS_FILE,
 	CAPTURE_OWNER_FILE,
+	CAPTURE_OWNER_TIMEOUT,
+	CAPTURE_OWNER_BACKOFF,
 } from './constants.js'
 import {
-	computeCaptureHash,
 	readCaptureRequestOwner,
 	readCaptureRunning,
 	settleCaptureShutdown,
+	matchesCaptureTransient,
 } from './helpers.js'
 
 /**
@@ -72,6 +75,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 	readonly #id = randomUUID()
 	readonly #controller = new AbortController()
 	readonly #children = new Set<SessionInterface>()
+	readonly #unconfirmed = new Set<number>()
 	readonly #launches: string[] = []
 	readonly #interrupt = this.#abort.bind(this)
 	readonly #request: string
@@ -124,12 +128,12 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 	async release(): Promise<void> {
 		const failures: unknown[] = []
 		try {
+			if (this.#termination !== undefined) await this.#termination
 			failures.push(
-				...(await (this.#termination ??
-					settleCaptureShutdown(
-						() => this.retract(),
-						[...this.#children].map((child) => () => child.stop()),
-					))),
+				...(await settleCaptureShutdown(
+					() => this.retract(),
+					[...this.#children].map((child) => () => this.#stop(child)),
+				)),
 			)
 		} catch (error) {
 			failures.push(error)
@@ -138,7 +142,8 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 			process.off('SIGTERM', this.#interrupt)
 			if (this.#lease !== undefined) {
 				const removal = attempt(() => {
-					const marker = attempt(() => readFileSync(this.#lock, 'utf8'))
+					const deadline = performance.now() + CAPTURE_OWNER_TIMEOUT
+					const marker = attempt(() => this.#read(deadline))
 					if (!marker.success) {
 						if (
 							marker.error instanceof Error &&
@@ -148,24 +153,31 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 							return
 						throw marker.error
 					}
-					if (this.#owner(marker.value).id === this.id) rmSync(this.#lock, { force: true })
+					if (this.#owner(marker.value).id !== this.id) return
+					if (this.#unconfirmed.size > 0) {
+						this.#record()
+						return
+					}
+					this.#remove(deadline)
 				})
-				if (removal.success) this.#lease = undefined
-				else failures.push(removal.error)
+				if (removal.success && this.#unconfirmed.size === 0) this.#lease = undefined
+				else if (!removal.success) failures.push(removal.error)
 			}
 		}
-		if (failures.length > 0)
-			throw new CaptureError('Capture shutdown failed', {
-				code: 'STAGE',
-				cause: new AggregateError(failures),
-			})
+		if (failures.length > 0 || this.#unconfirmed.size > 0)
+			throw new CaptureError(
+				`Capture shutdown failed${this.#unconfirmed.size === 0 ? '' : `; child termination was not confirmed for process ${[...this.#unconfirmed].join(', ')}; ownership marker retained: ${this.#lock}; child record: ${resolve(this.#directory, CAPTURE_SURVIVORS_FILE)}`}`,
+				{
+					code: 'STAGE',
+					cause: new AggregateError(failures),
+				},
+			)
 	}
 
 	prepare(): void {
 		const requests = resolve(this.#options.root, this.#options.requests)
-		mkdirSync(requests, { recursive: true })
+		attempt(() => mkdirSync(requests, { recursive: true }))
 		this.#claim()
-		mkdirSync(this.#directory, { recursive: true })
 		for (const name of readdirSync(requests)) {
 			const pid = readCaptureRequestOwner(name)
 			if (pid === undefined || pid === process.pid) continue
@@ -232,6 +244,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 			...(expiry === undefined ? [] : [expiry]),
 		])
 		try {
+			mkdirSync(this.#directory, { recursive: true })
 			writeFileSync(log, '')
 			const environment = Object.fromEntries(
 				Object.entries(process.env).filter(
@@ -318,8 +331,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 					...(expiry?.aborted === true ? { expired: true } : {}),
 				}
 			} finally {
-				await session.destroy()
-				this.#children.delete(session)
+				await this.#stop(session)
 			}
 		} catch (error) {
 			if (isCaptureError(error)) throw error
@@ -334,7 +346,103 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		this.#controller.abort(new CaptureError('Runner interrupted', { code: 'STAGE' }))
 		this.#termination = settleCaptureShutdown(
 			() => this.retract(),
-			[...this.#children].map((child) => () => child.stop()),
+			[...this.#children].map((child) => () => this.#stop(child)),
+		)
+	}
+
+	async #stop(child: SessionInterface): Promise<boolean> {
+		if (child.pid !== undefined) this.#unconfirmed.add(child.pid)
+		const confirmed = await (this.#options.terminate === undefined
+			? child.stop()
+			: this.#options.terminate(child))
+		if (confirmed && child.pid !== undefined) this.#unconfirmed.delete(child.pid)
+		if (confirmed) {
+			await child.destroy()
+			this.#children.delete(child)
+		}
+		return confirmed
+	}
+
+	#read(deadline: number): string {
+		const result = attempt(() =>
+			this.#options.ownership?.read === undefined
+				? readFileSync(this.#lock, 'utf8')
+				: this.#options.ownership.read(this.#lock),
+		)
+		if (result.success) return result.value
+		if (!matchesCaptureTransient(result.error, this.#options.ownership?.platform))
+			throw result.error
+		this.#backoff(deadline, result.error)
+		return this.#read(deadline)
+	}
+
+	#remove(deadline: number): void {
+		const result = attempt(() => {
+			// Re-read on every retry, including after a failed unlink.
+			if (this.#owner(this.#read(deadline)).id !== this.id) return
+			if (this.#options.ownership?.remove === undefined) rmSync(this.#lock, { force: true })
+			else this.#options.ownership.remove(this.#lock)
+		})
+		if (result.success) return
+		if (result.error instanceof Error && 'code' in result.error && result.error.code === 'ENOENT')
+			return
+		if (!matchesCaptureTransient(result.error, this.#options.ownership?.platform))
+			throw result.error
+		this.#backoff(deadline, result.error)
+		this.#remove(deadline)
+	}
+
+	#record(retry = true): void {
+		const file = resolve(this.#directory, CAPTURE_SURVIVORS_FILE)
+		const text = JSON.stringify({
+			pid: process.pid,
+			id: this.id,
+			command: this.#options.command,
+			children: [...this.#unconfirmed],
+			at: new Date().toISOString(),
+		})
+		try {
+			if (this.#options.ownership?.write === undefined) writeFileSync(file, text, { flag: 'wx' })
+			else this.#options.ownership.write(file, text)
+		} catch (error) {
+			const code =
+				error instanceof Error && 'code' in error ? String(error.code) : describeCaptureError(error)
+			if (code === 'EEXIST') return
+			if (code === 'ENOENT' && retry) {
+				mkdirSync(this.#directory, { recursive: true })
+				return this.#record(false)
+			}
+			throw new CaptureError(`Cannot write capture child record (${code}): ${file}`, {
+				code: 'STAGE',
+				cause: error,
+			})
+		}
+	}
+
+	#write(file: string, text: string): void {
+		try {
+			if (this.#options.ownership?.write === undefined) writeFileSync(file, text, { flag: 'wx' })
+			else this.#options.ownership.write(file, text)
+		} catch (error) {
+			throw new CaptureError(
+				`Cannot write capture ownership temporary (${error instanceof Error && 'code' in error ? String(error.code) : describeCaptureError(error)}): ${file}`,
+				{ code: 'STAGE', cause: error },
+			)
+		}
+	}
+
+	#backoff(deadline: number, error?: unknown): void {
+		const left = deadline - performance.now()
+		if (left <= 0)
+			throw new CaptureError(
+				`Capture ownership marker is temporarily unavailable (${error instanceof Error && 'code' in error ? String(error.code) : 'contention'}): ${this.#lock}; rerun after serializing capture commands`,
+				{ code: 'STAGE', cause: error },
+			)
+		Atomics.wait(
+			new Int32Array(new SharedArrayBuffer(4)),
+			0,
+			0,
+			Math.min(CAPTURE_OWNER_BACKOFF, left),
 		)
 	}
 
@@ -346,87 +454,117 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 				`Capture request directory is unavailable: ${resolve(this.#options.root, this.#options.requests)}`,
 				{ code: 'STAGE', ...(!directory.success ? { cause: directory.error } : {}) },
 			)
-		const temporary = `${this.#lock}.${this.id}.tmp`
-		try {
-			writeFileSync(temporary, JSON.stringify({ pid: process.pid, id: this.id }), { flag: 'wx' })
-			for (let iteration = 0; iteration < 64; iteration += 1) {
-				const opened = attempt(() => linkSync(temporary, this.#lock))
-				if (opened.success) {
-					this.#lease = this.id
-					return
-				}
-				if (
-					!(opened.error instanceof Error) ||
-					!('code' in opened.error) ||
-					opened.error.code !== 'EEXIST'
-				)
-					throw opened.error
-				const marker = attempt(() => readFileSync(this.#lock, 'utf8'))
-				if (!marker.success) {
-					if (
-						marker.error instanceof Error &&
-						'code' in marker.error &&
-						marker.error.code === 'ENOENT'
-					)
-						continue
-					throw new CaptureError(`Capture ownership marker is unreadable: ${this.#lock}`, {
-						code: 'STAGE',
-						cause: marker.error,
-					})
-				}
-				const owner = this.#owner(marker.value)
-				if (readCaptureRunning(owner.pid)) this.#refuse(owner)
-				this.#reserve(marker.value, temporary)
-				const moved = `${this.#lock}.${randomUUID()}.stale`
-				const renamed = attempt(() => renameSync(this.#lock, moved))
-				if (!renamed.success) {
-					if (
-						renamed.error instanceof Error &&
-						'code' in renamed.error &&
-						renamed.error.code === 'ENOENT'
-					)
-						continue
-					throw renamed.error
-				}
-				try {
-					const actual = readFileSync(moved, 'utf8')
-					if (actual !== marker.value) {
-						const restored = attempt(() => linkSync(moved, this.#lock))
-						if (
-							!restored.success &&
-							(!(restored.error instanceof Error) ||
-								!('code' in restored.error) ||
-								restored.error.code !== 'EEXIST')
-						)
-							throw restored.error
-						continue
-					}
-					this.#options.stderr(
-						`Reclaimed stale capture ownership from process ${String(owner.pid)}; invocation ${preview(owner.id)}\n`,
-					)
-				} finally {
-					rmSync(moved, { force: true })
-				}
-			}
-			throw new CaptureError(
-				'Capture ownership changed repeatedly; retry after serializing capture commands',
-				{ code: 'STAGE' },
+		const requests = resolve(this.#options.root, this.#options.requests)
+		for (const name of readdirSync(requests)) {
+			if (!name.startsWith(`${CAPTURE_OWNER_FILE}.`) || !name.endsWith('.tmp')) continue
+			const [pid] = name.slice(CAPTURE_OWNER_FILE.length + 1).split('.')
+			if (
+				pid !== undefined &&
+				/^\d+$/u.test(pid) &&
+				Number.isSafeInteger(Number(pid)) &&
+				Number(pid) > 0 &&
+				!readCaptureRunning(Number(pid))
 			)
+				attempt(() => rmSync(resolve(requests, name), { force: true }))
+		}
+		const temporary = `${this.#lock}.${String(process.pid)}.${this.id}.tmp`
+		try {
+			this.#write(temporary, JSON.stringify({ pid: process.pid, id: this.id }))
+			const deadline = performance.now() + CAPTURE_OWNER_TIMEOUT
+			this.#acquire(temporary, deadline)
 		} catch (error) {
 			if (isCaptureError(error)) throw error
-			throw new CaptureError(`Cannot claim capture ownership: ${this.#lock}`, {
-				code: 'STAGE',
-				cause: error,
-			})
+			const code =
+				error instanceof Error && 'code' in error ? String(error.code) : describeCaptureError(error)
+			const unsupported = [
+				'ENOTSUP',
+				'EOPNOTSUPP',
+				'ENOSYS',
+				'EXDEV',
+				...((this.#options.ownership?.platform ?? process.platform) === 'win32' ? [] : ['EPERM']),
+			].includes(code)
+			throw new CaptureError(
+				`Cannot link capture ownership (${code}): ${this.#lock}${unsupported ? '; the store directory must support hard links' : '; inspect the filesystem error and rerun'}`,
+				{ code: 'STAGE', cause: error },
+			)
 		} finally {
 			rmSync(temporary, { force: true })
 		}
 	}
 
+	#acquire(temporary: string, deadline: number): void {
+		const opened = attempt(() =>
+			this.#options.ownership?.link === undefined
+				? linkSync(temporary, this.#lock)
+				: this.#options.ownership.link(temporary, this.#lock),
+		)
+		if (opened.success) {
+			this.#lease = this.id
+			return
+		}
+		if (matchesCaptureTransient(opened.error, this.#options.ownership?.platform)) {
+			this.#backoff(deadline, opened.error)
+			return this.#acquire(temporary, deadline)
+		}
+		if (
+			!(opened.error instanceof Error) ||
+			!('code' in opened.error) ||
+			opened.error.code !== 'EEXIST'
+		)
+			throw opened.error
+		const marker = attempt(() => this.#read(deadline))
+		if (!marker.success) {
+			if (
+				marker.error instanceof Error &&
+				'code' in marker.error &&
+				marker.error.code === 'ENOENT'
+			) {
+				this.#backoff(deadline)
+				return this.#acquire(temporary, deadline)
+			}
+			if (isCaptureError(marker.error)) throw marker.error
+			throw new CaptureError(
+				`Capture ownership marker is unreadable: ${this.#lock}; rerun after inspecting the filesystem error`,
+				{
+					code: 'STAGE',
+					cause: marker.error,
+				},
+			)
+		}
+		const owner = attempt(() => this.#owner(marker.value))
+		const alive = owner.success
+			? (this.#options.ownership?.alive ?? readCaptureRunning)(owner.value.pid)
+			: undefined
+		// Confirm the content after the liveness probe, or after a yield for malformed content.
+		if (!owner.success) this.#backoff(deadline)
+		const confirmed = attempt(() => this.#read(deadline))
+		if (!confirmed.success) {
+			if (
+				confirmed.error instanceof Error &&
+				'code' in confirmed.error &&
+				confirmed.error.code === 'ENOENT'
+			) {
+				this.#backoff(deadline)
+				return this.#acquire(temporary, deadline)
+			}
+			if (isCaptureError(confirmed.error)) throw confirmed.error
+			throw new CaptureError(
+				`Capture ownership marker is unreadable: ${this.#lock}; rerun after inspecting the filesystem error`,
+				{ code: 'STAGE', cause: confirmed.error },
+			)
+		}
+		if (confirmed.value !== marker.value) {
+			this.#backoff(deadline)
+			return this.#acquire(temporary, deadline)
+		}
+		if (!owner.success) throw owner.error
+		this.#refuse(owner.value, alive === true)
+	}
+
 	#owner(marker: string): CaptureOwnership {
 		if (marker === '')
 			throw new CaptureError(
-				`Capture ownership marker is empty: ${this.#lock}; its holder cannot be established`,
+				`Capture ownership marker is empty; confirm no capture process or surviving child is running and inspect this file: ${this.#lock}; its holder cannot be established`,
 				{ code: 'STAGE' },
 			)
 		const owner = attempt(() => parseJSON(marker))
@@ -440,40 +578,66 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 			owner.value.id === ''
 		)
 			throw new CaptureError(
-				`Capture ownership marker is malformed: ${this.#lock}; expected { pid: positive integer, id: nonempty string }, received ${preview(marker)}`,
+				`Capture ownership marker is malformed; expected { pid: positive integer, id: nonempty string }, received ${preview(marker)}; confirm no capture process or surviving child is running and inspect this file: ${this.#lock}`,
 				{ code: 'STAGE' },
 			)
-		return { pid: owner.value.pid, id: owner.value.id }
-	}
-
-	#reserve(marker: string, temporary: string): void {
-		// Retain fences so a delayed reader of a stale identity cannot rename its replacement.
-		let predecessor = marker
-		for (let iteration = 0; iteration < 64; iteration += 1) {
-			const fence = `${this.#lock}.reclaim-${computeCaptureHash(predecessor)}`
-			const reserved = attempt(() => linkSync(temporary, fence))
-			if (reserved.success) return
-			if (
-				!(reserved.error instanceof Error) ||
-				!('code' in reserved.error) ||
-				reserved.error.code !== 'EEXIST'
-			)
-				throw reserved.error
-			predecessor = readFileSync(fence, 'utf8')
-			const owner = this.#owner(predecessor)
-			if (owner.id === this.id) return
-			if (readCaptureRunning(owner.pid)) this.#refuse(owner)
+		return {
+			pid: owner.value.pid,
+			id: owner.value.id,
 		}
+	}
+
+	#refuse(holder: CaptureOwnership, alive: boolean): never {
+		if (!alive)
+			throw new CaptureError(
+				`Capture ownership process ${String(holder.pid)} is not running; invocation ${preview(holder.id)}. ${this.#survivors(holder)} Confirm no capture process or surviving child is running and re-read ${this.#lock} to confirm it still names pid ${String(holder.pid)} before you delete this file and rerun`,
+				{ code: 'STAGE' },
+			)
 		throw new CaptureError(
-			'Capture reclaim history exceeds its retry budget; inspect the request directory before retrying',
+			`Another runner holds this workspace (process ${preview(holder.pid)}); invocation ${preview(holder.id)}; serialize capture commands. If this pid is not a capture run, confirm no capture process or surviving child is running and re-read ${this.#lock} to confirm it still names pid ${String(holder.pid)} before deleting`,
 			{ code: 'STAGE' },
 		)
 	}
 
-	#refuse(holder: CaptureOwnership): never {
-		throw new CaptureError(
-			`Another runner holds this workspace (process ${preview(holder.pid)}); invocation ${preview(holder.id)}; serialize capture commands. If this pid is not a capture run, inspect ${this.#lock} and remove the stale marker only after confirming no capture run owns this request directory`,
-			{ code: 'STAGE' },
+	#survivors(holder: CaptureOwnership): string {
+		const file = resolve(
+			this.#options.root,
+			this.#options.requests,
+			CAPTURE_RUNS_DIRECTORY,
+			holder.id,
+			CAPTURE_SURVIVORS_FILE,
 		)
+		try {
+			const record: unknown = parseJSON(
+				this.#options.ownership?.read === undefined
+					? readFileSync(file, 'utf8')
+					: this.#options.ownership.read(file),
+			)
+			if (
+				!isRecord(record) ||
+				record.pid !== holder.pid ||
+				record.id !== holder.id ||
+				typeof record.command !== 'string' ||
+				record.command === '' ||
+				typeof record.at !== 'string' ||
+				!Number.isFinite(Date.parse(record.at)) ||
+				!Array.isArray(record.children) ||
+				!record.children.every(
+					(pid: unknown) => typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0,
+				)
+			)
+				return `Child record could not be read (EINVAL): ${file}.`
+			return `Unconfirmed child processes: ${record.children.join(', ')}; stop them before deleting. Child record: ${file}.`
+		} catch (error) {
+			const code =
+				error instanceof SyntaxError
+					? 'EINVAL'
+					: error instanceof Error && 'code' in error
+						? String(error.code)
+						: describeCaptureError(error)
+			return code === 'ENOENT'
+				? `No child record exists at ${file}.`
+				: `Child record could not be read (${code}): ${file}.`
+		}
 	}
 }

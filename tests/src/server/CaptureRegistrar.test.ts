@@ -1,12 +1,12 @@
 import type { CaptureReceipt, CaptureRegistry } from '@src/core'
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, symlinkSync, watch } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, readdirSync, symlinkSync, watch } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
 import { requireValue, waitForCondition, waitForDelay } from '@orkestrel/test'
 import { createScratch, isRunning, supportsDirectoryLinks } from '@orkestrel/test/server'
 import { isCaptureRegistry } from '@src/core'
-import { CaptureRegistrar } from '@src/server'
+import { CaptureRegistrar, CAPTURE_OWNER_FILE } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import {
@@ -25,6 +25,38 @@ import {
 
 const REGISTRY = `${COMPOSED_DIRECTORY}/registry.json`
 const SUMMARY = 'REGISTRY '
+
+it(
+	'H1v preserves the registrar usage result when release fails',
+	async () => {
+		const fixture = new ComposedFixture()
+		const errors: string[] = []
+		try {
+			const code = await new CaptureRegistrar({
+				root: fixture.root,
+				config: fixture.config,
+				requests: fixture.requests,
+				argv: ['--variant', 'nope'],
+				stdout: () => undefined,
+				stderr: (text) => {
+					errors.push(text)
+					if (text.includes('Unknown variant')) {
+						const marker = resolve(fixture.root, fixture.requests, CAPTURE_OWNER_FILE)
+						rmSync(marker)
+						mkdirSync(marker)
+					}
+				},
+			}).execute()
+			expect(code).toBe(64)
+			expect(errors.join('')).toContain('Capture cleanup failed')
+			rmSync(resolve(fixture.root, fixture.requests, CAPTURE_OWNER_FILE), { recursive: true })
+			expect(readCaptureHeld(fixture.root)).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	},
+	FIXTURE_TIMEOUT,
+)
 
 it.runIf(supportsDirectoryLinks())(
 	'H1r rechecks registry containment after stage children redirect its root',

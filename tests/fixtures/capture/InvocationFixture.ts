@@ -1,5 +1,9 @@
 import type { ScratchInterface } from '@orkestrel/test/server'
-import type { CaptureWriteHandler } from '@src/server'
+import type {
+	CaptureChildTerminationHandler,
+	CaptureWriteHandler,
+	CaptureOwnershipHost,
+} from '@src/server'
 import { createScratch } from '@orkestrel/test/server'
 import { CaptureInvocation } from '@src/server'
 import { RUNNER_REQUESTS } from '../../setupServer.js'
@@ -29,7 +33,12 @@ export class InvocationFixture {
 	 * @returns A new invocation with its own identity
 	 */
 	next(
-		writers: { readonly stdout?: CaptureWriteHandler; readonly stderr?: CaptureWriteHandler } = {},
+		writers: {
+			readonly stdout?: CaptureWriteHandler
+			readonly stderr?: CaptureWriteHandler
+			readonly terminate?: CaptureChildTerminationHandler
+			readonly ownership?: Partial<CaptureOwnershipHost>
+		} = {},
 	): CaptureInvocation {
 		return new CaptureInvocation({
 			command: 'journey',
@@ -37,6 +46,8 @@ export class InvocationFixture {
 			requests: RUNNER_REQUESTS,
 			stdout: writers.stdout ?? ((text) => this.stdout.push(text)),
 			stderr: writers.stderr ?? ((text) => this.stderr.push(text)),
+			...(writers.terminate === undefined ? {} : { terminate: writers.terminate }),
+			...(writers.ownership === undefined ? {} : { ownership: writers.ownership }),
 		})
 	}
 

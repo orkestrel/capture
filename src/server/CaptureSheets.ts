@@ -18,7 +18,9 @@ import {
 	CAPTURE_REPORT_LINES,
 	CAPTURE_SHEET,
 	CAPTURE_SHEET_FILES,
+	CAPTURE_DEFAULTS,
 } from './constants.js'
+import { CaptureInvocation } from './CaptureInvocation.js'
 import { CapturePreflight } from './CapturePreflight.js'
 import {
 	composeCapturePictures,
@@ -28,6 +30,7 @@ import {
 	resolveCaptureSheetIdentity,
 	splitCapturePages,
 	resolveCaptureExit,
+	requireCaptureArgument,
 } from './helpers.js'
 
 /**
@@ -76,8 +79,24 @@ export class CaptureSheets implements CaptureSheetsInterface {
 	async execute(): Promise<number> {
 		try {
 			const { reader } = this.#options
+			const invocation = new CaptureInvocation({
+				command: 'stale',
+				root: reader.root,
+				requests: reader.requests ?? CAPTURE_DEFAULTS.requests,
+				stdout: this.#stdout,
+				stderr: this.#stderr,
+			})
+			try {
+				invocation.prepare()
+				this.#output()
+			} finally {
+				await invocation
+					.release()
+					.catch((error: unknown) =>
+						this.#stderr(`Capture cleanup failed: ${describeCaptureError(error)}\n`),
+					)
+			}
 			const result = await new CapturePreflight(reader).check()
-			this.#output(result)
 			const groups = this.#groups(result)
 			const rows = splitCapturePages(groups, CAPTURE_SHEET.pairs).map((pair): CaptureSheetRow => ({
 				groups: pair,
@@ -143,9 +162,10 @@ export class CaptureSheets implements CaptureSheetsInterface {
 	}
 
 	// Refuses an output directory that exists, escapes the workspace, or overlaps a selected capture directory.
-	#output(result: CapturePreflightResult): string {
+	#output(result?: CapturePreflightResult): string {
 		const { root } = this.#options.reader
 		const output = resolve(this.#options.output)
+		if (result === undefined) requireCaptureArgument(root, output, '--output')
 		const local = normalizeSlashes(relative(root, output))
 		const parent = attempt(() =>
 			normalizeSlashes(relative(realpathSync(root), realpathSync(dirname(output)))),
@@ -154,7 +174,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 			!isCapturePath(local) ||
 			!parent.success ||
 			(parent.value !== '' && !isCapturePath(parent.value)) ||
-			result.selection.entries.some((entry) => {
+			result?.selection.entries.some((entry) => {
 				const suffix = normalizeSlashes(
 					relative(
 						resolveCapturePhysical(resolve(root, dirname(entry.file))),
@@ -207,8 +227,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 								: { width: image.picture.width, height: image.picture.height, bytes: image.size },
 						factor,
 						clipped:
-							image !== undefined &&
-							Math.floor(image.picture.height / factor) > CAPTURE_SHEET.limit,
+							image !== undefined && Math.ceil(image.picture.height / factor) > CAPTURE_SHEET.limit,
 						freshness: result.freshness.entries.find((candidate) => candidate.file === entry.file),
 					}
 				})

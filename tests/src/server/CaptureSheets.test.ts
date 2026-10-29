@@ -23,6 +23,36 @@ function readIndex(fixture: ReaderFixture, directory: string): Record<string, un
 }
 
 describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('H1x flags a partial final thumbnail row at the height limit', async () => {
+		const fixture = new ReaderFixture()
+		try {
+			fixture.seed()
+			await fixture.capture({
+				selector: 'pages:mail',
+				case: MAIL,
+				picture: {
+					'mail-screen': { width: 641, height: 1201 },
+				},
+			})
+			const result = await fixture.run('contact-sheets', [
+				'pages:mail',
+				'--case',
+				MAIL,
+				'--variant',
+				'light-390',
+				'--output',
+				'tmp/edge-sheets',
+			])
+			expect(result.status).toBe(0)
+			const text = JSON.stringify(readIndex(fixture, 'tmp/edge-sheets'))
+			expect(text).toContain('"factor":3,"clipped":true')
+			expect(fixture.read('tmp/edge-sheets/index.md').toString('utf8')).toContain(
+				'source 641 x 1201; displayed 214 x 400; clipped',
+			)
+		} finally {
+			fixture.destroy()
+		}
+	})
 	it.runIf(supportsDirectoryLinks())(
 		'H1r revalidates the sheet parent at directory creation',
 		async () => {
@@ -218,7 +248,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 			expect(text).toContain('"factor":1,"clipped":true')
 			expect(text).toContain('"displayed":{"width":128,"height":400}')
 			expect(text).toContain('"factor":3,"clipped":false')
-			expect(text).toContain('"displayed":{"width":233,"height":100}')
+			expect(text).toContain('"displayed":{"width":234,"height":100}')
 			expect(fixture.read('tmp/shrunk-sheets/index.md').toString('utf8')).toContain('; clipped')
 		} finally {
 			fixture.destroy()
@@ -273,8 +303,10 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 				'--output',
 				output,
 			])
-			expect(result.status).toBe(1)
-			expect(result.stderr).toContain(REFUSAL)
+			expect(result.status).toBe(output === '../outside-sheets' ? 64 : 1)
+			expect(result.stderr).toContain(
+				output === '../outside-sheets' ? '--output resolves outside' : REFUSAL,
+			)
 			expect(result.stdout).toBe('')
 			expect(existsSync(resolve(fixture.root, output, 'index.json'))).toBe(false)
 			// The directory exists only where the case made it first: a refusal creates none of its own.

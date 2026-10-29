@@ -51,6 +51,7 @@ import {
 	resolveCaptureExit,
 	readCaptureTitles,
 	describeCaptureMembers,
+	describeCaptureFault,
 	requireCaptureSelection,
 	readCaptureVariants,
 } from './helpers.js'
@@ -107,6 +108,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		invocation.attach()
 		const argumentsResult = attempt(() => readCaptureArguments(argv, command, root, config))
 		try {
+			invocation.prepare()
 			if (!argumentsResult.success) throw argumentsResult.error
 			const parsed = argumentsResult.value
 			const description = await new CaptureDiscovery({
@@ -117,19 +119,26 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			}).describe()
 			const projects = description.projects.map((entry) => entry.project)
 			if (parsed.selector !== undefined) {
-				requireCaptureSelection(parsed.selector, [], projects)
+				requireCaptureSelection(parsed.selector, [], projects, [], parsed.portfolio)
 			}
 			if (command !== 'stale' && parsed.variants.length > 0)
 				resolveCaptureVariants(parsed.variants, projects)
+			if (command !== 'stale' && parsed.case !== undefined) {
+				this.#case(requireCaptureProjects(projects), parsed.case, parsed.selector)
+			}
 			if (command !== 'stale' && parsed.changed !== undefined) {
 				await invocation.release()
 				invocation.attach()
-				return await this.#changed(invocation, command, parsed, projects)
+				const code = await this.#changed(invocation, command, parsed, projects)
+				if (code === 64) rmSync(invocation.directory, { recursive: true, force: true })
+				return code
 			}
 			return command === 'stale'
 				? await this.#check(parsed, projects)
 				: await this.#run(invocation, command, parsed, projects)
 		} catch (error) {
+			if (resolveCaptureExit(error) === 64)
+				rmSync(invocation.directory, { recursive: true, force: true })
 			const ran = Object.values(CAPTURE_STAGES).filter((stage) =>
 				invocation.launched(resolve(invocation.directory, `${command}-${stage}.log`)),
 			)
@@ -197,6 +206,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		for (const owner of plan.owners) {
 			const fault = describeCaptureSelectorFault(owner, selectors)
 			if (fault !== undefined) throw new CaptureError(fault, { code: 'HOST' })
+			if (parsed.case !== undefined) this.#case(primary, parsed.case, owner)
 			if (parsed.plan) await this.#resolve(this.#integrity(primary), parsed, owner, variants)
 		}
 		if (parsed.plan) {
@@ -267,6 +277,20 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			this.#stdout(`NEXT ${renderCaptureCommand(command, parsed, owner, root)}\n`)
 		if (failed.length === 0 && notrun.length === 0) this.#stdout(`NEXT ${complete}\n`)
 		return failed.at(0)?.code ?? (discovery.interrupted ? CAPTURE_EXIT.failed : CAPTURE_EXIT.passed)
+	}
+
+	#case(primary: CaptureProject, name: string, selector?: string): void {
+		const { root } = this.#options
+		const titles = readCaptureTitles(
+			root,
+			resolve(root, primary.directory, CAPTURE_REGISTRY_FILE),
+			selector,
+		)
+		if (!Object.hasOwn(titles, name))
+			throw new CaptureError(
+				`Unknown case; ${describeCaptureFault('--case', name, "a case in the selected owner's accepted registry reporter collection", Object.keys(titles))}`,
+				{ code: 'USAGE' },
+			)
 	}
 
 	#changes(parsed: CaptureRunnerArguments, primary: CaptureProject): CaptureChangePlan {

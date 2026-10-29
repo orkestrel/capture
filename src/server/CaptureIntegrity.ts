@@ -745,9 +745,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 						.filter(
 							(entry) =>
 								matchesCaptureSelector(resolveCaptureOwner(entry), options.selector) &&
-								(options.portfolio === undefined || entry.portfolio === options.portfolio) &&
-								(options.state === undefined || entry.state === options.state) &&
-								(options.case === undefined || entry.case === options.case),
+								(options.portfolio === undefined || entry.portfolio === options.portfolio),
 						)
 						.map((entry) => entry.variant),
 				),
@@ -1340,12 +1338,23 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		const fault = describeCaptureSelectorFault(options.selector, selectors)
 		if (fault !== undefined) throw new CaptureError(fault, { code: 'USAGE' })
 		if (
+			options.portfolio !== undefined &&
+			!this.#options.portfolios.some((entry) => entry.portfolio === options.portfolio)
+		)
+			throw new CaptureError(
+				`Unknown portfolio; ${describeCaptureFault(
+					'selection.portfolio',
+					options.portfolio,
+					'an authorized portfolio',
+					this.#options.portfolios.map((entry) => entry.portfolio),
+				)}`,
+				{ code: 'USAGE' },
+			)
+		if (
 			!isCaptureSelector(options.selector) ||
 			!options.variants.every(isCaptureSegment) ||
 			(options.state !== undefined && !isCaptureSegment(options.state)) ||
-			(options.case !== undefined && options.case.trim() === '') ||
-			(options.portfolio !== undefined &&
-				!this.#options.portfolios.some((entry) => entry.portfolio === options.portfolio))
+			(options.case !== undefined && options.case.trim() === '')
 		)
 			throw new CaptureError(
 				`Invalid capture selection; ${describeCaptureFault('selection', options, 'portable variants and state, a nonempty case, and an authorized portfolio; valid values come from the selected registry destinations', ['selector', 'variants', 'state', 'case', 'portfolio'], ['selector', 'variants'], ['selector', 'variants', 'state', 'case', 'portfolio'])}; ${describeCaptureFault(
@@ -1354,7 +1363,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 					'an authorized portfolio when supplied',
 					this.#options.portfolios.map((entry) => entry.portfolio),
 				)}`,
-				{ code: 'SELECTION' },
+				{ code: 'USAGE' },
 			)
 		requireCaptureUnique(options.variants, 'selected variants', true)
 		const scoped = entries.filter(
@@ -1374,7 +1383,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		if (options.variants.length === 0)
 			throw new CaptureError(
 				`Invalid capture selection; ${describeCaptureFault('selection.variants', options.variants, 'a nonempty selected variant list', [...new Set(scoped.map((entry) => entry.variant))])}`,
-				{ code: 'SELECTION' },
+				{ code: 'USAGE' },
 			)
 		const variants = [
 			...new Set(
@@ -1399,7 +1408,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			throw new CaptureError(
 				`Empty selection or state outside selector/case; ${describeCaptureFault('selection.state', options.state, 'a state in the selected selector/case', [...new Set(scoped.map((entry) => entry.state))])}; ${describeCaptureFault('selection.case', options.case, 'a case in the selected selector', [...new Set(scoped.map((entry) => entry.case))])}`,
 				{
-					code: 'SELECTION',
+					code: 'USAGE',
 				},
 			)
 		return selected

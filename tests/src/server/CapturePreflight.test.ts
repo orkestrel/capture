@@ -1,4 +1,4 @@
-import { existsSync, renameSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseJSON } from '@orkestrel/contract'
 import { createScratch, supportsDirectoryLinks } from '@orkestrel/test/server'
@@ -6,6 +6,8 @@ import {
 	createCapturePreflight,
 	decodeCapturePicture,
 	readCaptureReaderArguments,
+	CAPTURE_OWNER_FILE,
+	CAPTURE_DEFAULTS,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { SCOPED_FINDING, TALL_FINDING } from '../../fixtures/capture/Checks.js'
@@ -25,9 +27,55 @@ import {
 	createReaderWrapper,
 	readFixtureManifest,
 	withEnvironment,
+	readCaptureHeld,
 } from '../../setupServer.js'
 
-const CHECKS = resolve(import.meta.dirname, '../../fixtures/capture/Checks.ts')
+const CHECKS = 'fixture-checks/Checks.ts'
+
+it(
+	'H1v preserves a reader discovery failure when release also fails',
+	async () => {
+		const fixture = new ReaderFixture()
+		const errors: string[] = []
+		try {
+			fixture.write(
+				'node_modules/vitest/vitest.mjs',
+				'process.stderr.write("broken wrapper\\n"); process.exit(7)',
+			)
+			const { reader } = readCaptureReaderArguments(['all'], fixture.root, {
+				config: READER_CONFIG,
+				journeys: READER_JOURNEYS,
+			})
+			const code = await createCapturePreflight({
+				...reader,
+				stdout: () => undefined,
+				stderr: (text) => {
+					errors.push(text)
+					if (text.includes('broken wrapper')) {
+						const directory = resolve(fixture.root, CAPTURE_DEFAULTS.requests)
+						const marker = resolve(directory, CAPTURE_OWNER_FILE)
+						if (existsSync(marker)) {
+							rmSync(marker)
+							mkdirSync(marker)
+						}
+					}
+				},
+			}).execute()
+			expect(code).toBe(1)
+			expect(errors.join('')).toContain('did not exit successfully')
+			expect(errors.join('')).toContain('Capture cleanup failed')
+			const directory = resolve(fixture.root, CAPTURE_DEFAULTS.requests)
+			for (const entry of readdirSync(directory).filter((file) =>
+				file.startsWith(CAPTURE_OWNER_FILE),
+			))
+				rmSync(resolve(directory, entry), { recursive: true, force: true })
+			expect(readCaptureHeld(fixture.root, CAPTURE_DEFAULTS.requests)).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	},
+	FIXTURE_TIMEOUT,
+)
 
 it.each(READER_COMMANDS)(
 	'H1s retains declared focused output variants through %s',
@@ -94,7 +142,7 @@ it(
 				expect(unknown.status).toBe(64)
 				expect(unknown.stderr).toContain('selector: received "missing"')
 				const run = await fixture.run(command, ['all', '--journeys', outside.path, ...args])
-				expect(run.status).toBe(1)
+				expect(run.status).toBe(64)
 				expect(run.stderr).toContain('outside')
 			}
 		} finally {
@@ -122,7 +170,7 @@ it.runIf(supportsDirectoryLinks())(
 			for (const command of READER_COMMANDS) {
 				const args = command === 'preflight' ? [] : ['--output', 'tmp/refused-sheets']
 				const run = await fixture.run(command, ['pages:mail', '--variant', 'light-390', ...args])
-				expect(run.status).toBe(1)
+				expect(run.status).toBe(64)
 				expect(run.stderr).toContain('outside')
 			}
 		} finally {
@@ -457,7 +505,7 @@ describe(
 						'board-screen',
 						...sheetsFor(command, 'refused-sheets'),
 					])
-					expect(result.status).toBe(1)
+					expect(result.status).toBe(64)
 					expect(result.stderr).toContain('Prepare the explicit complete-registry refresh')
 					expect(result.stdout).toBe('')
 					expect(existsSync(resolve(fixture.root, 'tmp/refused-sheets'))).toBe(false)
@@ -796,7 +844,7 @@ describe('CapturePreflight wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () =
 				'../outside.config.ts',
 			])
 			expect(result.status).toBe(64)
-			expect(result.stderr).toContain('Reader config must be a contained repository path')
+			expect(result.stderr).toContain('--config resolves outside the repository')
 		} finally {
 			fixture.destroy()
 		}

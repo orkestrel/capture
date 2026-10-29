@@ -146,88 +146,91 @@ Pure leaves from [`helpers.ts`](../src/core/helpers.ts). A helper that refuses a
 
 Engine, runner, preflight, and contact-sheet contracts from [`types.ts`](../src/server/types.ts).
 
-| Name                            | Kind      | Summary                                                                                                                   |
-| ------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `CaptureCommand`                | type      | Names one command the runner executes: a journey, a frame capture, or a stale reading.                                    |
-| `CapturePortfolioRoot`          | interface | Supplies a host-authorized physical portfolio root without repeating its states or variants.                              |
-| `CaptureHashHandler`            | type      | Digests the exact bytes of one file reading and returns the lowercase hexadecimal digest.                                 |
-| `CaptureIntegrityOptions`       | interface | Configures the engine's workspace and separate evidence documents.                                                        |
-| `CaptureStageProject`           | interface | Supplies one selected project's expected final record and bounded input population.                                       |
-| `CaptureParsedArguments`        | type      | Carries the typed values and tokens of a strictly parsed capture command line.                                            |
-| `CaptureExecutionResult`        | interface | Carries the supervised child outcome without treating a signal as a successful exit.                                      |
-| `CaptureExecutionHandler`       | type      | Executes the runner's child after the engine captures its input snapshot.                                                 |
-| `CaptureStageOptions`           | interface | Binds a stage transaction to its exact request, projects, reporter, and process boundary.                                 |
-| `CaptureFileSnapshot`           | interface | Records one physical file's bytes and native modification readings at a stage boundary.                                   |
-| `CaptureProjectSnapshot`        | interface | Preserves one project's declared patterns and sorted expansion before execution.                                          |
-| `CaptureSnapshot`               | interface | Holds a stage boundary's input populations and existing output identities.                                                |
-| `CaptureProjectResult`          | interface | Reports validated project evidence, retaining empty successful selections explicitly.                                     |
-| `CaptureStageResult`            | interface | Reports the successful stage's committed stamps and validated lookup evidence.                                            |
-| `CaptureReadOptions`            | interface | Selects a declaration population without requiring current images or passing state lookups.                               |
-| `CaptureStaleOptions`           | interface | Selects a freshness population and names the producing variants the host wrapper declares.                                |
-| `CaptureCheckOptions`           | interface | Selects required output pairs and attributable extras for a freshness reading.                                            |
-| `CaptureReadResult`             | interface | Returns the exact current declaration destinations and their complete-anchor identity.                                    |
-| `CaptureCheckResult`            | interface | Reports the exact judged population, every mismatch reason, and conservative test warnings.                               |
-| `CaptureLookupOptions`          | interface | Requests a state-to-case resolution before the runner starts any selected project.                                        |
-| `CaptureLookupResult`           | interface | Resolves one declaring case and its actual output pairs with their passing evidence.                                      |
-| `CaptureRunEvidence`            | interface | Binds a decoded run record to the physical file whose digest authenticated it.                                            |
-| `CaptureDirectoryResult`        | interface | Carries one physical-directory ancestry while enumerating logical portfolio paths.                                        |
-| `CaptureEvidence`               | interface | Carries accepted registry anchors and separately persisted passing run evidence.                                          |
-| `CaptureCollectionEvidence`     | interface | Carries the authenticated external record beside its collection receipt.                                                  |
-| `CaptureReceiptInput`           | interface | Supplies a verifier's actual process outcome and exact reporter bytes for registry import.                                |
-| `CaptureIntegrityInterface`     | interface | Defines the shared stage transaction, freshness reading, and state resolution engine.                                     |
-| `CaptureProject`                | interface | Preserves the wrapper's host declarations, including optional uniform scopes, for consumers.                              |
-| `CaptureRunnerOptions`          | interface | Configures one runner invocation: its command, its workspace, and the command line it reads.                              |
-| `CaptureRunnerArguments`        | interface | Carries parsed runner arguments while leaving omitted selectors available to the usage diagnostic.                        |
-| `CaptureRunnerInterface`        | interface | Drives selected owners through one journey stage or staged frame captures.                                                |
-| `CaptureChange`                 | interface | Classifies one changed Git path against accepted source attribution.                                                      |
-| `CaptureChangePlan`             | interface | Holds changed paths and the stable owner selection reduced by ancestry.                                                   |
-| `CaptureOwnerOutcome`           | interface | Records one changed owner's exit and whether an execution child started.                                                  |
-| `CaptureWriteHandler`           | type      | Writes one chunk of runner output to the stream the host chooses.                                                         |
-| `CaptureCLIOptions`             | interface | Configures the executable's workspace and its report and diagnostic writers.                                              |
-| `CaptureCLIInterface`           | interface | Runs capture command lines through injected output writers.                                                               |
-| `CaptureIntegrityHandler`       | type      | Creates the integrity engine the runner reads and stamps through, from the options it derives.                            |
-| `CaptureStagePlan`              | interface | Names one planned stage and the variants it runs in one Vitest process.                                                   |
-| `CaptureArgumentsOptions`       | interface | Configures the Vitest argument list one stage spawns with.                                                                |
-| `CaptureRequestOptions`         | interface | Configures how a wrapper reads the runner's request for its own Vitest process.                                           |
-| `CaptureOutcome`                | interface | Carries one project's owner-bearing passed work count from a finished stage.                                              |
-| `CaptureRunPlan`                | interface | Carries everything every stage of one invocation shares.                                                                  |
-| `CaptureInvocationOptions`      | interface | Configures one runner invocation's identity, workspace, and output.                                                       |
-| `CaptureInvocationInterface`    | interface | Owns one runner invocation's identity, request file, children, and interruption.                                          |
-| `CaptureDiscoveryRequest`       | interface | Carries the request the runner publishes for the discovery child that reads its wrapper.                                  |
-| `CaptureHostEntry`              | interface | Describes one wrapper project to the runner: its host declarations and, when it has one, its viewport.                    |
-| `CaptureHostDescription`        | interface | Carries the description a wrapper writes back to the runner that discovered it.                                           |
-| `CaptureDescriptionExpectation` | interface | Names what a description must echo for the runner to accept it.                                                           |
-| `CaptureDiscoveryOptions`       | interface | Configures how a wrapper answers the runner's discovery request.                                                          |
-| `CaptureDiscoveryRunOptions`    | interface | Configures one discovery: the workspace, the wrapper, the invocation that owns the child, and its bounds.                 |
-| `CaptureDiscoveryInterface`     | interface | Reads a consumer's wrapper by running its installed Vitest in discovery mode.                                             |
-| `CapturePicture`                | interface | Carries a decoded RGB image for the image checks and the contact sheets.                                                  |
-| `CaptureReaderOptions`          | interface | Configures a read-only capture consumer using the wrapper's host declarations.                                            |
-| `CaptureProducer`               | interface | Declares the viewport one wrapper project produces beside the project's own name.                                         |
-| `CaptureReaderDefaults`         | interface | Supplies the wrapper path, the journey artifact directory, and the request directory a reader command line falls back to. |
-| `CaptureReaderSelection`        | interface | Returns a reader's authenticated selection, uniform scopes, and engine for pixel classification.                          |
-| `CaptureArtifactResult`         | interface | Carries a judged run record and the verified text of the journey artifact it names.                                       |
-| `CaptureJudgedRecord`           | interface | Names the run record a judged frame's stamp points at and the case that stamped it.                                       |
-| `CaptureJudgedFrame`            | interface | Pairs a judged frame with its verified artifact, when one was read, and its coverage issues.                              |
-| `CaptureDecodedImage`           | interface | Records one selected image's real bytes, geometry, and canonical destination.                                             |
-| `CaptureImageResult`            | interface | Retains source geometry and a bounded sheet thumbnail after a full frame has been judged.                                 |
-| `CaptureOwnership`              | interface | Identifies the process and invocation that own a request directory or a stale-reclaim fence.                              |
-| `CaptureCheckFrame`             | interface | Carries one judged frame to a host check: its destination, its decoded pixels, and its artifact.                          |
-| `CaptureCheckHandler`           | type      | Reads one judged frame against a host rule and returns the issues it finds, none when it passes.                          |
-| `CapturePreflightResult`        | interface | Reports selected image checks without upgrading their engine freshness classifications.                                   |
-| `CapturePreflightInterface`     | interface | Reads the selected population's frames and reports their freshness, mixed observations, and coverage.                     |
-| `CaptureSheetOptions`           | interface | Carries a contact-sheet output request separately from the population selection.                                          |
-| `CaptureSheetCell`              | interface | Holds one contact-sheet cell: a frame's destination, its shrunk picture, and what the sheet reports about it.             |
-| `CaptureSheetGroup`             | interface | Holds the cells of one portfolio, owner, and state side by side as one composite picture.                                 |
-| `CaptureSheetRow`               | interface | Holds a pair of groups side by side as one composite picture.                                                             |
-| `CaptureSheetPage`              | interface | Holds one written sheet: its file name, the rows it stacks, and the composite picture.                                    |
-| `CaptureReaderCommand`          | interface | Carries parsed reader arguments and an optional contact-sheet output directory.                                           |
-| `CaptureSheetsInterface`        | interface | Composes exactly the authenticated sparse state and output pairs for iteration review.                                    |
-| `CaptureRegistryArguments`      | interface | Carries the parsed registry command line: the wrapper, the variants to refresh, and the mode.                             |
-| `CaptureRegistrarOptions`       | interface | Configures one registry refresh: its workspace, wrapper default, request directory, and command line.                     |
-| `CaptureRegistrarInterface`     | interface | Refreshes the accepted registry from one complete capture-free journey per producing variant.                             |
-| `CaptureInputHandler`           | type      | Reads a contained input through an owning operation's file snapshot memo.                                                 |
-| `CaptureRetractionHandler`      | type      | Removes one invocation's published request during shutdown.                                                               |
-| `CaptureTerminationHandler`     | type      | Begins one independent child termination only after request removal has been attempted.                                   |
+| Name                             | Kind      | Summary                                                                                                                   |
+| -------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `CaptureCommand`                 | type      | Names one command the runner executes: a journey, a frame capture, or a stale reading.                                    |
+| `CapturePortfolioRoot`           | interface | Supplies a host-authorized physical portfolio root without repeating its states or variants.                              |
+| `CaptureHashHandler`             | type      | Digests the exact bytes of one file reading and returns the lowercase hexadecimal digest.                                 |
+| `CaptureIntegrityOptions`        | interface | Configures the engine's workspace and separate evidence documents.                                                        |
+| `CaptureStageProject`            | interface | Supplies one selected project's expected final record and bounded input population.                                       |
+| `CaptureParsedArguments`         | type      | Carries the typed values and tokens of a strictly parsed capture command line.                                            |
+| `CaptureExecutionResult`         | interface | Carries the supervised child outcome without treating a signal as a successful exit.                                      |
+| `CaptureExecutionHandler`        | type      | Executes the runner's child after the engine captures its input snapshot.                                                 |
+| `CaptureStageOptions`            | interface | Binds a stage transaction to its exact request, projects, reporter, and process boundary.                                 |
+| `CaptureFileSnapshot`            | interface | Records one physical file's bytes and native modification readings at a stage boundary.                                   |
+| `CaptureProjectSnapshot`         | interface | Preserves one project's declared patterns and sorted expansion before execution.                                          |
+| `CaptureSnapshot`                | interface | Holds a stage boundary's input populations and existing output identities.                                                |
+| `CaptureProjectResult`           | interface | Reports validated project evidence, retaining empty successful selections explicitly.                                     |
+| `CaptureStageResult`             | interface | Reports the successful stage's committed stamps and validated lookup evidence.                                            |
+| `CaptureReadOptions`             | interface | Selects a declaration population without requiring current images or passing state lookups.                               |
+| `CaptureStaleOptions`            | interface | Selects a freshness population and names the producing variants the host wrapper declares.                                |
+| `CaptureCheckOptions`            | interface | Selects required output pairs and attributable extras for a freshness reading.                                            |
+| `CaptureReadResult`              | interface | Returns the exact current declaration destinations and their complete-anchor identity.                                    |
+| `CaptureCheckResult`             | interface | Reports the exact judged population, every mismatch reason, and conservative test warnings.                               |
+| `CaptureLookupOptions`           | interface | Requests a state-to-case resolution before the runner starts any selected project.                                        |
+| `CaptureLookupResult`            | interface | Resolves one declaring case and its actual output pairs with their passing evidence.                                      |
+| `CaptureRunEvidence`             | interface | Binds a decoded run record to the physical file whose digest authenticated it.                                            |
+| `CaptureDirectoryResult`         | interface | Carries one physical-directory ancestry while enumerating logical portfolio paths.                                        |
+| `CaptureEvidence`                | interface | Carries accepted registry anchors and separately persisted passing run evidence.                                          |
+| `CaptureCollectionEvidence`      | interface | Carries the authenticated external record beside its collection receipt.                                                  |
+| `CaptureReceiptInput`            | interface | Supplies a verifier's actual process outcome and exact reporter bytes for registry import.                                |
+| `CaptureIntegrityInterface`      | interface | Defines the shared stage transaction, freshness reading, and state resolution engine.                                     |
+| `CaptureProject`                 | interface | Preserves the wrapper's host declarations, including optional uniform scopes, for consumers.                              |
+| `CaptureRunnerOptions`           | interface | Configures one runner invocation: its command, its workspace, and the command line it reads.                              |
+| `CaptureRunnerArguments`         | interface | Carries parsed runner arguments while leaving omitted selectors available to the usage diagnostic.                        |
+| `CaptureRunnerInterface`         | interface | Drives selected owners through one journey stage or staged frame captures.                                                |
+| `CaptureChange`                  | interface | Classifies one changed Git path against accepted source attribution.                                                      |
+| `CaptureChangePlan`              | interface | Holds changed paths and the stable owner selection reduced by ancestry.                                                   |
+| `CaptureOwnerOutcome`            | interface | Records one changed owner's exit and whether an execution child started.                                                  |
+| `CaptureWriteHandler`            | type      | Writes one chunk of runner output to the stream the host chooses.                                                         |
+| `CaptureCLIOptions`              | interface | Configures the executable's workspace and its report and diagnostic writers.                                              |
+| `CaptureCLIInterface`            | interface | Runs capture command lines through injected output writers.                                                               |
+| `CaptureIntegrityHandler`        | type      | Creates the integrity engine the runner reads and stamps through, from the options it derives.                            |
+| `CaptureStagePlan`               | interface | Names one planned stage and the variants it runs in one Vitest process.                                                   |
+| `CaptureArgumentsOptions`        | interface | Configures the Vitest argument list one stage spawns with.                                                                |
+| `CaptureRequestOptions`          | interface | Configures how a wrapper reads the runner's request for its own Vitest process.                                           |
+| `CaptureOutcome`                 | interface | Carries one project's owner-bearing passed work count from a finished stage.                                              |
+| `CaptureRunPlan`                 | interface | Carries everything every stage of one invocation shares.                                                                  |
+| `CaptureInvocationOptions`       | interface | Configures one runner invocation's identity, workspace, and output.                                                       |
+| `CaptureChildTerminationHandler` | type      | Terminates one supervised child and reports whether its exit was confirmed.                                               |
+| `CaptureInvocationInterface`     | interface | Owns one runner invocation's identity, request file, children, and interruption.                                          |
+| `CaptureDiscoveryRequest`        | interface | Carries the request the runner publishes for the discovery child that reads its wrapper.                                  |
+| `CaptureHostEntry`               | interface | Describes one wrapper project to the runner: its host declarations and, when it has one, its viewport.                    |
+| `CaptureHostDescription`         | interface | Carries the description a wrapper writes back to the runner that discovered it.                                           |
+| `CaptureDescriptionExpectation`  | interface | Names what a description must echo for the runner to accept it.                                                           |
+| `CaptureDiscoveryOptions`        | interface | Configures how a wrapper answers the runner's discovery request.                                                          |
+| `CaptureDiscoveryRunOptions`     | interface | Configures one discovery: the workspace, the wrapper, the invocation that owns the child, and its bounds.                 |
+| `CaptureDiscoveryInterface`      | interface | Reads a consumer's wrapper by running its installed Vitest in discovery mode.                                             |
+| `CapturePicture`                 | interface | Carries a decoded RGB image for the image checks and the contact sheets.                                                  |
+| `CaptureReaderOptions`           | interface | Configures a read-only capture consumer using the wrapper's host declarations.                                            |
+| `CaptureProducer`                | interface | Declares the viewport one wrapper project produces beside the project's own name.                                         |
+| `CaptureReaderDefaults`          | interface | Supplies the wrapper path, the journey artifact directory, and the request directory a reader command line falls back to. |
+| `CaptureReaderSelection`         | interface | Returns a reader's authenticated selection, uniform scopes, and engine for pixel classification.                          |
+| `CaptureArtifactResult`          | interface | Carries a judged run record and the verified text of the journey artifact it names.                                       |
+| `CaptureJudgedRecord`            | interface | Names the run record a judged frame's stamp points at and the case that stamped it.                                       |
+| `CaptureJudgedFrame`             | interface | Pairs a judged frame with its verified artifact, when one was read, and its coverage issues.                              |
+| `CaptureDecodedImage`            | interface | Records one selected image's real bytes, geometry, and canonical destination.                                             |
+| `CaptureImageResult`             | interface | Retains source geometry and a bounded sheet thumbnail after a full frame has been judged.                                 |
+| `CaptureOwnership`               | interface | Identifies the process and invocation that own a request directory.                                                       |
+| `CaptureOwnershipHost`           | interface | Supplies the filesystem and liveness boundary for ownership arbitration.                                                  |
+| `CapturePngLimits`               | interface | Bounds a PNG's decoded pixels, side length, and encoded bytes.                                                            |
+| `CaptureCheckFrame`              | interface | Carries one judged frame to a host check: its destination, its decoded pixels, and its artifact.                          |
+| `CaptureCheckHandler`            | type      | Reads one judged frame against a host rule and returns the issues it finds, none when it passes.                          |
+| `CapturePreflightResult`         | interface | Reports selected image checks without upgrading their engine freshness classifications.                                   |
+| `CapturePreflightInterface`      | interface | Reads the selected population's frames and reports their freshness, mixed observations, and coverage.                     |
+| `CaptureSheetOptions`            | interface | Carries a contact-sheet output request separately from the population selection.                                          |
+| `CaptureSheetCell`               | interface | Holds one contact-sheet cell: a frame's destination, its shrunk picture, and what the sheet reports about it.             |
+| `CaptureSheetGroup`              | interface | Holds the cells of one portfolio, owner, and state side by side as one composite picture.                                 |
+| `CaptureSheetRow`                | interface | Holds a pair of groups side by side as one composite picture.                                                             |
+| `CaptureSheetPage`               | interface | Holds one written sheet: its file name, the rows it stacks, and the composite picture.                                    |
+| `CaptureReaderCommand`           | interface | Carries parsed reader arguments and an optional contact-sheet output directory.                                           |
+| `CaptureSheetsInterface`         | interface | Composes exactly the authenticated sparse state and output pairs for iteration review.                                    |
+| `CaptureRegistryArguments`       | interface | Carries the parsed registry command line: the wrapper, the variants to refresh, and the mode.                             |
+| `CaptureRegistrarOptions`        | interface | Configures one registry refresh: its workspace, wrapper default, request directory, and command line.                     |
+| `CaptureRegistrarInterface`      | interface | Refreshes the accepted registry from one complete capture-free journey per producing variant.                             |
+| `CaptureInputHandler`            | type      | Reads a contained input through an owning operation's file snapshot memo.                                                 |
+| `CaptureRetractionHandler`       | type      | Removes one invocation's published request during shutdown.                                                               |
+| `CaptureTerminationHandler`      | type      | Begins one independent child termination only after request removal has been attempted.                                   |
 
 ### Server constants
 
@@ -247,6 +250,7 @@ The runner's names and bounds from [`constants.ts`](../src/server/constants.ts).
 | `CAPTURE_FLAG_VALUE`      | const | Holds the one value of the capture variable that turns frame capture on.                                                                                                                                                        |
 | `CAPTURE_VITEST_ENTRY`    | const | Names the repository-relative path of the Vitest entry the runner spawns through Node.                                                                                                                                          |
 | `CAPTURE_RUNS_DIRECTORY`  | const | Names the directory beneath a portfolio or request directory that holds one invocation's records.                                                                                                                               |
+| `CAPTURE_SURVIVORS_FILE`  | const | Names the create-only child record beneath an invocation's run directory.                                                                                                                                                       |
 | `CAPTURE_MINIMUM_IMAGE`   | const | Holds the byte count under which an image is too small to be a real frame.                                                                                                                                                      |
 | `CAPTURE_REPORT_LINES`    | const | Names the first word of the line a reader prints, followed by its JSON report.                                                                                                                                                  |
 | `CAPTURE_SHEET`           | const | Holds the contact-sheet geometry: how wide a cell shrinks toward, how tall it may grow, the mark that stands in for an unreadable image, the gap between neighbors, and how many cells, rows, and pairs a row and a sheet hold. |
@@ -259,6 +263,8 @@ The runner's names and bounds from [`constants.ts`](../src/server/constants.ts).
 | `CAPTURE_DEFAULTS`        | const | Holds the repository-relative paths the executable falls back to when the command line names none.                                                                                                                              |
 | `CAPTURE_USAGE`           | const | Holds the usage text the executable prints when it is given no subcommand or an unknown one.                                                                                                                                    |
 | `CAPTURE_PNG_LIMITS`      | const | Bounds decoded image memory, row metadata, and PNG input bytes independently of untrusted headers.                                                                                                                              |
+| `CAPTURE_OWNER_TIMEOUT`   | const | Bounds a synchronous ownership retry sequence in milliseconds, including host contention.                                                                                                                                       |
+| `CAPTURE_OWNER_BACKOFF`   | const | Yields between ownership probes in milliseconds so filesystem contention can settle.                                                                                                                                            |
 | `CAPTURE_MESSAGE_LIMIT`   | const | Bounds external diagnostic text while retaining the number of omitted characters.                                                                                                                                               |
 
 ### Server helpers
@@ -283,7 +289,7 @@ Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry
 | `encodeCaptureWord`            | function | Encodes an unsigned 32-bit integer as four big-endian bytes.                                              |
 | `encodeCaptureChunk`           | function | Encodes one checked PNG chunk for contact-sheet output.                                                   |
 | `encodeCapturePicture`         | function | Encodes an RGB picture using the contact-sheet writer's native PNG format.                                |
-| `shrinkCapturePicture`         | function | Scales a picture by a whole-number area average and clips its displayed height.                           |
+| `shrinkCapturePicture`         | function | Scales a picture with an exact area average and clips its displayed height.                               |
 | `composeCapturePictures`       | function | Composes pictures on the contact-sheet gray background.                                                   |
 | `readCaptureRequestOwner`      | function | Reads the process id that a request file, or its temporary sibling, names.                                |
 | `resolveCaptureRelative`       | function | Resolves a path to the slash-separated form the evidence documents store, relative to a root.             |
@@ -328,6 +334,8 @@ Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry
 | `mergeCaptureLookups`          | function | Merges unique lookup populations with incoming identities replacing inherited ones.                       |
 | `describeCaptureFault`         | function | Describes a refusal with its key path, bounded preview, correction, and member differences.               |
 | `resolveCaptureExit`           | function | Maps usage refusals to exit 64 and every other failure to exit 1.                                         |
+| `requireCaptureArgument`       | function | Validates a supplied path argument before work and classifies an outside value as usage.                  |
+| `matchesCaptureTransient`      | function | Recognizes filesystem contention codes that ownership arbitration can retry.                              |
 | `settleCaptureShutdown`        | function | Settles independent request removal and child termination without hiding either failure.                  |
 | `describeCaptureMembers`       | function | Describes a bounded member population and the number omitted from its preview.                            |
 | `describeCaptureOutput`        | function | Caps external diagnostic text and names the number of omitted characters.                                 |
@@ -404,16 +412,16 @@ The runner interface exposes the following method:
 
 The invocation interface exposes the following methods:
 
-| Name       | Summary                                                                                                                      |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `attach`   | Installs the interrupt handler on the process.                                                                               |
-| `release`  | Releases request ownership and removes interrupt handlers even when shutdown fails.                                          |
-| `prepare`  | Claims invocation ownership, reclaims a dead holder, creates the report directory, and removes requests from dead processes. |
-| `holders`  | Lists the other live processes that hold a request file in the request directory.                                            |
-| `publish`  | Writes the stage or discovery request atomically, so no reader sees a partial file.                                          |
-| `retract`  | Removes this process's request file and its temporary sibling.                                                               |
-| `launched` | Reports whether a child with this log path has been spawned by this invocation.                                              |
-| `spawn`    | Spawns the Vitest child and tees its output to the host streams and the log.                                                 |
+| Name       | Summary                                                                                                                 |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `attach`   | Installs the interrupt handler on the process.                                                                          |
+| `release`  | Releases confirmed ownership and removes interrupt handlers even when shutdown fails.                                   |
+| `prepare`  | Claims invocation ownership, refuses an existing marker, and removes temporary claims and requests from dead processes. |
+| `holders`  | Lists the other live processes that hold a request file in the request directory.                                       |
+| `publish`  | Writes the stage or discovery request atomically, so no reader sees a partial file.                                     |
+| `retract`  | Removes this process's request file and its temporary sibling.                                                          |
+| `launched` | Reports whether a child with this log path has been spawned by this invocation.                                         |
+| `spawn`    | Spawns the Vitest child and tees its output to the host streams and the log.                                            |
 
 #### `CaptureSheetsInterface`
 
@@ -467,7 +475,7 @@ result.entries.map((entry) => entry.status) // one classification per selected f
 
 `stamp` is the only method that writes. It snapshots the bounded inputs, runs the runner's child once, and validates every selected final record against the reporter before it replaces the manifest in one atomic rename; a failure before that rename leaves the prior manifest bytes untouched, and a journey publishes lookups and full-collection receipts in the separate journal instead. `check` classifies each selected frame as `duplicate`, `orphan`, `missing`, `unstamped`, `stale-shared`, `stale-own`, or `current`, and keeps every finding that justified the class. `read` and `lookup` start no process: they resolve a selection or a state from evidence, and a refusal names the explicit refresh command to run.
 
-Every refusal is a `CaptureError`. An unknown or empty selector or an unknown variant is `USAGE`; other selection disagreements carry `SELECTION`. A wrapper fault is `HOST`; a stage that did not complete or whose inputs moved is `STAGE`; a record, report, registry, or manifest that fails its protocol is `EVIDENCE`; and a path that leaves the integrity root or an authorized portfolio root is `CONTAINMENT`. The executable maps `USAGE` to exit 64 and every other failure to exit 1. Commands check selectors against the discovered wrapper before registry authentication.
+Every refusal is a `CaptureError`. An unknown value for a declared selector, variant, state, case, or portfolio is `USAGE`, as is an empty selector; internal selection disagreements carry `SELECTION`. A wrapper fault is `HOST`; a stage that did not complete or whose inputs moved is `STAGE`; a record, report, registry, or manifest that fails its protocol is `EVIDENCE`; and a path that leaves the integrity root or an authorized portfolio root is `CONTAINMENT`. The executable maps `USAGE` to exit 64 and every other failure to exit 1. Commands check selectors against the discovered wrapper before registry authentication. Reader variants derive from the selected owner and portfolio before state and case validation, so an unknown state or case names its own candidates.
 
 The engine reads each file once per pass through a memo it discards when the pass ends, so a source hashed before the child, in the record pass, and in the final check costs three readings, never one per destination. Evidence reading also memoizes validated physical paths for that pass. The record pass and final check each validate an identical own/shared/tests pattern triple once against its pre-stage input population. Physical-image comparisons read each path's identity once per pass. The final check rereads disk with fresh memos, so a file changed between passes refuses the stage.
 
@@ -501,7 +509,7 @@ const runner = createCaptureRunner({
 const exit = await runner.execute() // 0 when every stage passed and work ran
 ```
 
-The exit is 0 when every stage is green and work ran, 64 for `USAGE`, and 1 for every other failure. Unknown or empty selectors and refused command syntax carry `USAGE`; other selection disagreements retain their condition. A wrapper fault is `HOST`; a failed or interrupted stage is `STAGE`. Discovery, ownership, and evidence failures can occur before an execution child starts and still exit 1. The runner maps the condition, never the message text or whether a child started.
+The exit is 0 when every stage is green and work ran, 64 for `USAGE`, and 1 for every other failure. Unknown selector, variant, state, case, and portfolio arguments, empty selectors, and refused command syntax carry `USAGE`. A wrapper fault is `HOST`; a failed or interrupted stage is `STAGE`. Discovery, ownership, and evidence failures can occur before an execution child starts and still exit 1. The runner maps the condition, never the message text or whether a child started. Before any execution stage, an explicit case is checked against the accepted registry's authenticated reporter collection. A missing registry refuses with `capture registry`; an unknown case refuses with its candidates and exit 64.
 
 **Journey stage.** A journey runs all selected variants in declaration order in one execution child with `--bail=1`, under the stage name `selected`. Its stage line names every selected variant, its request carries that same list, and one stamping transaction validates all selected records before publishing lookup and collection receipts. Records remain keyed by run, stage, and variant at `<directory>/runs/<id>/selected/<variant>.json`. A failed, bailed, or interrupted child publishes no evidence from that stage. An invocation with no applicable work exits 1.
 
@@ -520,11 +528,13 @@ SUMMARY {"run":[],"passed":[],"failed":[],"notrun":["pages:mail"],"reason":"--pl
 NEXT capture journey pages:mail --config configs/app/vite.journey.config.ts
 ```
 
-Any shared path refuses the whole changed run with exit 64, listing those paths and explaining that every destination reads them, so they cannot be narrowed. The output includes per-owner commands for own changes and `capture journey all` with the effective wrapper and variant flags for the shared proof. No owner starts automatically. Without own or shared paths, an execution exits 1 with `No journey input changed` and lists the outside paths.
+Any shared path refuses the whole changed run with exit 64, listing those paths and explaining that every destination reads them, so they cannot be narrowed. This refusal is usage because the invocation must change to an explicit journey selection. The output includes per-owner commands for own changes and `capture journey all` with the effective wrapper and variant flags for the shared proof. No owner starts automatically. Without own or shared paths, an execution exits 1 with `No journey input changed` and lists the outside paths.
 
 Without `--plan`, the runner executes each reduced owner through the ordinary single-selector path in stable order and stops at the first red owner. Every owner gets a distinct run ID, so its stage records remain available. The final `SUMMARY` names owners run, passed, failed, and not run, gives the stopping reason, and prints the exact commands for failed and unrun owners. `--variant`, `--case`, and the frames-only `--state` retain their ordinary meanings; a command printed for the shared proof carries no case or state narrowing. The changed flags never enter the request protocol.
 
 ### Choosing what to run
+
+**Argument paths.** A held ownership marker refuses before argument values are judged. A supplied `--config`, `--journeys`, `--checks`, or `--output` path that resolves outside the repository refuses as `USAGE` (64). Containment caught on a resolved target at write time stays `CONTAINMENT` (1). Explicit cases must belong to the selected selector's owners; cases registered only under another owner refuse with candidates and no execution stage.
 
 Climb from the smallest applicable selection to the gate:
 
@@ -580,6 +590,8 @@ request?.selector // 'pages:mail' when a runner is the parent, otherwise undefin
 
 **Host evidence (2026-10-28).** A real console Ctrl+C on Windows and a process-group SIGINT through the built executable on Linux each ended the stage tree, started no later stage, removed the request, and left the manifest bytes unchanged. The Windows reading uses a console-capable terminal; the POSIX automated case runs only where its process-group mechanism is available.
 
+Every command removes its invocation's run directory on a usage refusal (exit 64). A failure with exit 1 after discovery retains that directory and its logs as evidence.
+
 Discovery uses `@orkestrel/timeout` `createTimeout`, linked to the invocation's signal. Expiry is read from the armed signal before cleanup, so clearing the handle or receiving a later interrupt cannot erase it. An expired discovery is a `HOST` refusal; interruption remains a `STAGE` refusal and retains precedence if both are present when discovery settles. Neither a deadline nor a writer failure sets the invocation's interrupted state.
 
 Atomic evidence writes use an exclusive temporary sibling and `writeFileSync` with `flush: true`, then check cancellation before renaming. Integrity publication also rechecks containment of both paths before the rename. A refused write preserves the prior document and cleans its temporary sibling.
@@ -607,7 +619,7 @@ await createCaptureSheets({ reader, output: `${process.cwd()}/tmp/sheets` }).exe
 
 **Images.** Each selected destination is read from disk, refused below 4,000 bytes, and decoded. The reader judges each decoded frame and runs its host checks before moving to the next frame. The returned `images` hold source dimensions in `picture` and a bounded `thumbnail` for sheets; full pixel buffers reach host checks and are not retained in the result. A frame whose image cannot be read stays in the report as an issue and, in the sheets, as a red mark indexed `missing`. The frame scan groups the source geometry by portfolio, owner, and declared viewport width, and names a group whose frames mix cropped, viewport-sized, and page-sized images. It reads only a frame at its own producing variant, and it never decides which framing was intended. When the wrapper declares `uniform`, only images whose owner matches a declared selector enter those groups; an empty list produces no mixed observations. Without the declaration, every scope enters. Frames outside the declared scopes retain their freshness, coverage, image issues, host checks, and sheet cells.
 
-`CAPTURE_PNG_LIMITS` caps decoded frames at 20,971,520 pixels, with about 19.5% margin over the fleet's largest measured Chromium full-page frame, 1170 × 15000; 2880 × 6000 also fits. Each side is capped at 131,072 pixels, and the physical file is capped at 600 MiB before reading. The pixel and side checks precede inflation. PNG chunks are parsed iteratively and bounded by file bytes, so a valid many-chunk encoder stream is admitted. An isolated Node RGBA decode on Windows on 2026-10-28 peaked at 325–333 MiB process RSS for those fleet sizes and 434 MiB at the pixel boundary. The budget limits each decode; selected frame counts do not multiply retained full-frame storage.
+`CAPTURE_PNG_LIMITS` caps decoded frames at 20,971,520 pixels, with about 19.5% margin over the fleet's largest measured Chromium full-page frame, 1170 × 15000; 2880 × 6000 also fits. Each side is capped at 131,072 pixels. The byte budget is `ceil((4 × pixels + side) × 1.2)`, or 100,820,583 bytes: maximum RGBA scanlines plus a 20% allowance for deflate overhead, chunk framing, and metadata. The file size is checked before reading and before compressed chunks are joined; a single IDAT is inflated directly from its view. Pixel and side checks precede inflation. PNG chunks are parsed iteratively and bounded by file bytes, so a valid many-chunk encoder stream is admitted. Isolated Node runs on Windows on 2026-10-28 peaked at 276–333 MiB process RSS for the fleet frames, 438 MiB for stored-deflate RGBA at the pixel boundary, 456 MiB for 131072 × 160, and 171 MiB for a valid 1 × 1 PNG padded to the byte boundary. A file one byte over refused before reading at 74 MiB process RSS. These are fixture measurements, not a universal RSS ceiling. The budget limits each decode; selected frame counts do not multiply retained full-frame storage.
 
 **Artifacts.** The reader judges each frame by the run record its own stamp names, never by a variant's latest file. It reads that record, requires the journey artifact the record names to sit inside the journeys directory and to match the record's digest, and then requires the record to cover the frame, the artifact to bind the record with a `record=` line, and the artifact to show the stamping case with a `case-ran=` line. It also reports every artifact line that logs an uncaught, unhandled, or error entry. A frame with no stamp is an issue, never a guess. A standalone portfolio root the wrapper declares has no stamping route, so a selection that names one reads that root alone and reports its frames as unstamped.
 
@@ -628,7 +640,7 @@ export const CAPTURE_CHECKS = [
 
 A module that cannot be loaded, exports no list of functions, or holds a reader that returns something other than a list of strings refuses the run as a `HOST` condition before a report prints.
 
-**Sheets.** `execute` reads the selection through the preflight, so it judges the same population and keeps its refusals. It requires an output directory that does not exist, lies inside the workspace, has an existing parent, and lies outside every selected capture directory, and it refuses otherwise with exit 1 before writing anything. It shrinks each frame by a whole factor toward 320 pixels wide, clips it at 400 pixels tall, places a state's variants side by side, pairs two states per row, and stacks four rows per sheet. It writes `sheet-001.png` and onward, an `index.json` of every cell with its source and displayed size, its freshness, and the mixed observations, and an `index.md` that links each frame. It prints the index as one `SHEETS` line and returns the same exit status the preflight would.
+**Sheets.** `execute` validates the supplied output path after claiming ownership and before preflight work. It reads the selection through the preflight, so it judges the same population and keeps its refusals. It requires an output directory that does not exist, lies inside the workspace, has an existing parent, and lies outside every selected capture directory. A supplied outside or unreadable path refuses with exit 64; other output refusals and containment caught at write time exit 1 before writing. It shrinks each frame by a whole factor toward 320 pixels wide with an exact box area average over typed arrays. Every source pixel in a displayed block contributes once, and the divisor is that block's actual pixel count, including partial edge blocks. Accumulators hold one output row. It clips thumbnails at 400 pixels tall, places a state's variants side by side, pairs two states per row, and stacks four rows per sheet. Work is proportional to the source pixels used by the displayed blocks; the 131072 × 160 and largest accepted frame performance proofs enforce a 1,000 ms ceiling. It writes `sheet-001.png` and onward, an `index.json` of every cell with its source and displayed size, its freshness, and the mixed observations, and an `index.md` that links each frame. It prints the index as one `SHEETS` line and returns the same exit status the preflight would.
 
 ### Registry refresh
 
@@ -656,9 +668,90 @@ const exit = await registrar.execute() // 0 when the registry was published
 
 **Partial refresh.** With `--variant`, the receipts the existing registry holds for the other declared variants are kept: each is read again with its reporter bytes and imported beside the new ones before any journey runs, so a reporter that changed since it was recorded refuses the run first. An existing registry the package cannot read refuses a partial refresh and names the full refresh that replaces it. A receipt for a variant the wrapper no longer declares is dropped.
 
-**Lease.** An invocation writes its process id and invocation id to a unique temporary file in the request directory, then hard-links that complete file to `.capture-owner` before discovery. The marker remains held between that invocation's stages until release. A live holder refuses overlap with exit 1, naming the holder and instructing the host to serialize commands; this includes overlapping invocations in the same process. When the named pid belongs to something other than a capture run, inspect the marker and remove it only after confirming no capture run owns the request directory. An EPERM liveness result counts as alive. A later invocation reclaims a dead holder by renaming the marker to a unique path and verifying that its content still identifies the stale holder before claiming, and reports the reclaim on stderr. Atomic `.capture-owner.reclaim-*` fences serialize reclamation of a stale identity and remain in the directory so delayed readers cannot move its replacement; a crashed reclaimer can itself be superseded. Empty, unreadable, or malformed markers refuse with their own diagnostic; an unavailable request directory refuses as such. Preparation also removes request files from dead processes. Release removes the marker only when its invocation id still matches and removes signal listeners even when shutdown fails. A runner reports a release failure without replacing its already decided exit. The registry refresh also checks for live request-file holders. Use one request directory per workspace and serialize the host's Vitest work as well: another request directory and unrelated Vitest processes are outside this marker's ownership.
+**Lease.**
 
-**Exit.** 0 for a published registry, 64 for `USAGE` such as a refused command line or unknown variant, and 1 for every other failure, including a refused lease, failed or interrupted stage, altered or incomplete record, or refused registry. A wrapper outside the workspace is a `HOST` refusal and exits 1. A refresh writes no frame, and it widens no scoped run: it is a named command, never a tail of `journey`.
+Serialize capture commands and the host's Vitest work per workspace. Preparation creates the
+request directory and checks that it is a directory. An invocation writes `{pid,id}` once to
+a unique `.capture-owner.<pid>.<id>.tmp` file with flag `wx`, then claims `.capture-owner`
+with `linkSync`. The marker stays byte-identical from that link until its own invocation
+unlinks it after confirmed child termination. It stays held between stages. The temporary
+is always removed after the claim attempt. A dead pid's leftover claim temporary is swept
+best effort; sweep errors are ignored, and a live pid's temporary is never touched.
+The marker does not coordinate another request directory or unrelated Vitest processes.
+
+A held marker is parsed as `{pid,id}`, ignoring extra members. EPERM from the pid probe
+counts as alive. After the liveness probe the claim re-reads the marker; a vanished or
+changed marker retries. Deletion advice for a dead holder requires identical content on
+that re-read. A live-holder refusal makes any deletion conditional on confirming that no
+capture process or surviving child is running. Empty or malformed markers require
+identical reads separated by backoff and ask for inspection. A permanent read error
+refuses as unreadable without deletion advice.
+
+Marker reads, links, and removals retry only `EBUSY` and `EMFILE` on POSIX, and those
+codes plus `EPERM` and `EACCES` on Windows, with synchronous 10 ms backoff within
+1,000 ms. On POSIX, a link failure with `EPERM`, `ENOTSUP`, `EOPNOTSUPP`, `ENOSYS`,
+or `EXDEV` refuses immediately with the hard-link requirement. Exhaustion names the
+error code and gives no deletion advice. Other temporary-write or link errors refuse
+permanently and name the operation and code.
+
+Release awaits signal-driven termination, retracts its request, and stops every child.
+It reads its marker and checks its invocation id before acting; an absent or foreign
+marker is left alone. Unconfirmed termination keeps the marker byte-identical and the
+lease held. Release writes `runs/<id>/survivors.json` with flag `wx`, treats `EEXIST`
+as already recorded, and on `ENOENT` creates the run directory and retries once.
+Other write errors join the shutdown failure. The record contains the owner pid, run id,
+command, every unconfirmed child pid, and the ISO timestamp of the attempt:
+
+```text
+{"pid":1234,"id":"RUN_ID","command":"journey","children":[5678],"at":"2026-10-28T00:00:00.000Z"}
+```
+
+Release throws STAGE, naming the unconfirmed pids, marker, and record. A later release
+in the same process retries the stop. After termination is confirmed, release removes
+only its own marker, re-reading and checking its id on every removal retry. A successful
+release leaves no claim temporary or marker from that invocation. An exhausted or
+permanent removal failure retains the marker and joins the shutdown failure.
+
+A dead-holder refusal reads `runs/<holder id>/survivors.json` once, without retry.
+A well-formed record names its pids and path. ENOENT reports absence; other errors report
+the code, and malformed content reports EINVAL. The record is advisory; the marker
+provides ownership exclusion. A recorded pid is unconfirmed, not a claim that it is alive.
+Stop any recorded children and confirm the marker's content before deleting it.
+
+The following messages use `PID`, `RUN_ID`, `PIDS`, `MARKER`, `RECORD`,
+`TEMPORARY`, `DIRECTORY`, `CONTENT`, and `CODE` as placeholders for the actual values. `RECORD_STATUS`
+is one of the record messages that follows the dead-owner refusal.
+
+```text
+Capture ownership process PID is not running; invocation "RUN_ID". RECORD_STATUS Confirm no capture process or surviving child is running and re-read MARKER to confirm it still names pid PID before you delete this file and rerun
+Unconfirmed child processes: PIDS; stop them before deleting. Child record: RECORD.
+No child record exists at RECORD.
+Child record could not be read (CODE): RECORD.
+Another runner holds this workspace (process PID); invocation "RUN_ID"; serialize capture commands. If this pid is not a capture run, confirm no capture process or surviving child is running and re-read MARKER to confirm it still names pid PID before deleting
+Capture shutdown failed; child termination was not confirmed for process PIDS; ownership marker retained: MARKER; child record: RECORD
+Cannot write capture child record (CODE): RECORD
+Cannot write capture ownership temporary (CODE): TEMPORARY
+Cannot link capture ownership (CODE): MARKER; the store directory must support hard links
+Cannot link capture ownership (CODE): MARKER; inspect the filesystem error and rerun
+Capture ownership marker is temporarily unavailable (CODE): MARKER; rerun after serializing capture commands
+Capture ownership marker is unreadable: MARKER; rerun after inspecting the filesystem error
+Capture request directory is unavailable: DIRECTORY
+Capture ownership marker is empty; confirm no capture process or surviving child is running and inspect this file: MARKER; its holder cannot be established
+Capture ownership marker is malformed; expected { pid: positive integer, id: nonempty string }, received CONTENT; confirm no capture process or surviving child is running and inspect this file: MARKER
+Capture shutdown failed
+```
+
+Every USAGE refusal (exit 64) removes its invocation's run directory and leaves no marker.
+An exit-1 failure after discovery keeps its run directory and logs.
+Signal listeners are removed even when shutdown fails. The optional `terminate` callback returns
+whether child exit was confirmed; omission uses the session's `stop`. The optional `ownership`
+host supplies read, write, link, remove, platform, and liveness operations; its write operation
+uses flag `wx` for both claim temporaries and survivor records. Omitted members use the local
+host. Request publication and retraction retain their own lifecycle. Runner, registrar, and
+preflight report release failures without changing their decided result. Registry refresh also
+checks live request-file holders.
+
+**Exit.** 0 for a published registry, 64 for `USAGE` such as a refused command line, unknown variant, or supplied wrapper path outside the workspace, and 1 for every other failure, including a refused lease, failed or interrupted stage, altered or incomplete record, or refused registry. A refresh writes no frame, and it widens no scoped run: it is a named command, never a tail of `journey`.
 
 ### Executable
 
@@ -703,7 +796,6 @@ The package's proofs cover the protocol, server engines, executable, and built c
 - [`tests/distribution.test.ts`](../tests/distribution.test.ts)
 - [`tests/setupServer.test.ts`](../tests/setupServer.test.ts)
 - [`tests/setup.test.ts`](../tests/setup.test.ts)
-- [`tests/studies/capture.test.ts`](../tests/studies/capture.test.ts)
-- [`tests/setupStudy.test.ts`](../tests/setupStudy.test.ts)
+- [`tests/integration.test.ts`](../tests/integration.test.ts)
 
-The `studies` Vitest project runs the built executable through real Vitest and Chromium. Run `npm run build` before `npm run test:studies`; browser dependencies and the Chromium runtime must be installed. The publishing gate runs `test:studies` after `npm test` and before the release distribution proof.
+The integration proof at `tests/integration.test.ts` runs the built executable through real Vitest and Chromium as part of `npm test` or with `npm run test:integration`. Run `npm run build` first; the `@vitest/browser-playwright` browser provider and the Chromium runtime must be installed.

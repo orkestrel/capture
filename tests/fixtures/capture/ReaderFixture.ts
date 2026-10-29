@@ -1,4 +1,6 @@
 import type { ReaderCommand } from '../../setupServer.js'
+import { existsSync, readFileSync } from 'node:fs'
+import { basename, resolve } from 'node:path'
 import {
 	createCapturePreflight,
 	createCaptureSheets,
@@ -9,6 +11,8 @@ import {
 	READER_JOURNEYS,
 	createReaderWrapper,
 	createStandIn,
+	READER_CHECK_REFUSALS,
+	CAPTURE_WORKSPACE_ROOT,
 } from '../../setupServer.js'
 import { IntegrityFixture } from './IntegrityFixture.js'
 
@@ -30,11 +34,20 @@ export interface ReaderRun {
 export class ReaderFixture extends IntegrityFixture {
 	/** Creates the committed workspace and writes the wrapper the readers discover and the stand-in that answers. */
 	constructor() {
-		super()
+		// Vite's environment loader only imports files beneath this checkout; each checks module
+		// must also sit inside the consumer root whose containment the reader validates.
+		super(resolve(CAPTURE_WORKSPACE_ROOT, 'tmp'))
 		try {
 			this.write(READER_CONFIG, createReaderWrapper(this.root))
 			this.write('node_modules/vitest/vitest.mjs', createStandIn())
 			this.write('node_modules/vitest/package.json', JSON.stringify({ version: '4.1.12' }))
+			for (const file of [
+				'fixture-checks/Checks.ts',
+				...READER_CHECK_REFUSALS.map((entry) => entry.file),
+			]) {
+				const source = resolve(CAPTURE_WORKSPACE_ROOT, 'tests/fixtures/capture', basename(file))
+				if (existsSync(source)) this.write(file, readFileSync(source))
+			}
 		} catch (error) {
 			// A throwing constructor returns no instance, so no caller's finally block can destroy it.
 			this.destroy()

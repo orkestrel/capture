@@ -78,6 +78,26 @@ it.runIf(supportsDirectoryLinks())(
 )
 
 describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT }, () => {
+	it.each(['state', 'case', 'portfolio'] as const)(
+		'H1t names an unknown %s before deriving reader variants',
+		async (flag) => {
+			const fixture = new IntegrityFixture()
+			try {
+				fixture.seed()
+				const error: unknown = await fixture.engine
+					.read({ selector: 'pages:mail', [flag]: `missing-${flag}` })
+					.catch((failure: unknown) => failure)
+				expect(error).toMatchObject({ code: 'USAGE' })
+				if (!(error instanceof Error)) throw new Error('Expected a refusal')
+				expect(error.message).toContain(`selection.${flag}`)
+				expect(error.message).toContain(`received "missing-${flag}"`)
+				expect(error.message).toContain('valid candidates:')
+				expect(error.message).not.toContain('selection.variants')
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
 	it('H1s caps actual Git stderr with an omitted-character count', () => {
 		const fixture = new IntegrityFixture()
 		try {
@@ -1431,7 +1451,7 @@ describe('CaptureIntegrity refusal conditions', { timeout: FIXTURE_TIMEOUT }, ()
 			const failure: unknown = await fixture.engine
 				.lookup({ selector: 'examples:board', state: 'mail-screen', variants: ['light-390'] })
 				.catch((error: unknown) => error)
-			expect(isCaptureError(failure) && failure.code).toBe('SELECTION')
+			expect(isCaptureError(failure) && failure.code).toBe('USAGE')
 			expect(isCaptureError(failure) && isCaptureError(failure.cause)).toBe(true)
 		} finally {
 			fixture.destroy()

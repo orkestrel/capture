@@ -1,4 +1,5 @@
 import type { ParseArgsOptionsConfig, parseArgs } from 'node:util'
+import type { SessionInterface } from '@orkestrel/process'
 import type {
 	CaptureCollectionReceipt,
 	CaptureDeclaration,
@@ -1052,7 +1053,48 @@ export interface CaptureInvocationOptions {
 	readonly requests: string
 	readonly stdout: CaptureWriteHandler
 	readonly stderr: CaptureWriteHandler
+	/** Overrides child termination; false keeps ownership and reports the child's pid. */
+	readonly terminate?: CaptureChildTerminationHandler
+	/** Supplies host ownership operations; omitted members use the local filesystem and process probe. */
+	readonly ownership?: Partial<CaptureOwnershipHost>
 }
+
+/** Supplies the filesystem and liveness boundary for ownership arbitration.
+ * @example
+ * ```ts
+ * const host: Partial<CaptureOwnershipHost> = { alive: (pid) => readCaptureRunning(pid) }
+ * ```
+ */
+export interface CaptureOwnershipHost {
+	readonly platform: NodeJS.Platform
+	readonly read: (file: string) => string
+	/** Writes a temporary claim or survivor record exclusively with flag wx. */
+	readonly write: (file: string, text: string) => void
+	readonly link: (source: string, target: string) => void
+	readonly remove: (file: string) => void
+	readonly alive: (pid: number) => boolean
+}
+
+/** Bounds a PNG's decoded pixels, side length, and encoded bytes.
+ * @example
+ * ```ts
+ * const limits: CapturePngLimits = { pixels: 100, side: 10, bytes: 492 }
+ * ```
+ */
+export interface CapturePngLimits {
+	readonly pixels: number
+	readonly side: number
+	readonly bytes: number
+}
+
+/**
+ * Terminates one supervised child and reports whether its exit was confirmed.
+ * @example
+ * ```ts
+ * const terminate: CaptureChildTerminationHandler = (child) => child.stop()
+ * ```
+ */
+export type CaptureChildTerminationHandler = (child: SessionInterface) => Promise<boolean>
 
 /**
  * Removes one invocation's published request during shutdown.
@@ -1108,7 +1150,7 @@ export interface CaptureInvocationInterface {
 	attach(): void
 
 	/**
-	 * Releases request ownership and removes interrupt handlers even when shutdown fails.
+	 * Releases confirmed ownership and removes interrupt handlers even when shutdown fails.
 	 *
 	 * @returns Nothing once the children are gone and the handler is removed
 	 *
@@ -1120,7 +1162,7 @@ export interface CaptureInvocationInterface {
 	release(): Promise<void>
 
 	/**
-	 * Claims invocation ownership, reclaims a dead holder, creates the report directory, and removes requests from dead processes.
+	 * Claims invocation ownership, refuses an existing marker, and removes temporary claims and requests from dead processes.
 	 *
 	 * @remarks A request file under a live process id is never touched, this process's own included.
 	 *
@@ -1500,7 +1542,7 @@ export interface CaptureImageResult extends Omit<CaptureDecodedImage, 'picture'>
 }
 
 /**
- * Identifies the process and invocation that own a request directory or a stale-reclaim fence.
+ * Identifies the process and invocation that own a request directory.
  * @example
  * ```ts
  * const owner: CaptureOwnership = { pid: process.pid, id: 'capture-run' }

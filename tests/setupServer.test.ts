@@ -2,16 +2,19 @@ import type { ScratchInterface } from '@orkestrel/test/server'
 import type { CaptureExecutionResult } from '@src/server'
 import type { FixtureWrite } from './setupServer.js'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, utimesSync, statSync, writeFileSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { crc32, inflateSync } from 'node:zlib'
 import { isArray, isRecord, parseJSON } from '@orkestrel/contract'
-import { createHostileValues, waitForCondition } from '@orkestrel/test'
-import { createScratch } from '@orkestrel/test/server'
+import { createHostileValues, waitForCondition, waitForAbort } from '@orkestrel/test'
+import { createScratch, isRunning } from '@orkestrel/test/server'
+import { killTree } from '@orkestrel/process/server'
+import { createTimeout } from '@orkestrel/timeout'
 import { isCaptureRun, readCaptureReport } from '@src/core'
 import {
 	decodeCapturePicture,
+	CAPTURE_OWNER_FILE,
 	readCaptureProject,
 	readCaptureRequest,
 	readCaptureViewport,
@@ -20,8 +23,13 @@ import { describe, expect, it } from 'vitest'
 import { IntegrityFixture } from './fixtures/capture/IntegrityFixture.js'
 import { createDeclarationFixture, createRequestFixture, readThrown } from './setup.js'
 import {
+	readConsumerReport,
+	CaptureConsumer,
+	CAPTURE_WORKSPACE_ROOT,
 	readCaptureHeld,
+	requireCaptureBuild,
 	runCaptureOwnershipRace,
+	leaveCaptureTemporary,
 	countCaptureChildren,
 	BEHAVIOR,
 	BIN_REFUSALS,
@@ -78,6 +86,79 @@ import {
 } from './setupServer.js'
 
 describe('H1 shared infrastructure', () => {
+	it('H1w refuses a stale consumer build before creating its workspace', () => {
+		requireCaptureBuild()
+		const built = resolve(CAPTURE_WORKSPACE_ROOT, 'dist/bin/main.js')
+		const original = statSync(built)
+		try {
+			utimesSync(built, 1, 1)
+			expect(() => {
+				const consumer = new CaptureConsumer()
+				consumer.destroy()
+			}).toThrow('npm run build')
+		} finally {
+			utimesSync(built, original.atime, original.mtime)
+		}
+	})
+	it(
+		'H1w stops a hung consumer tree when its test signal times out',
+		async () => {
+			const timeout = createTimeout({ ms: 100 })
+			const consumer = new CaptureConsumer(timeout.signal)
+			const ready = resolve(consumer.root, 'hung-child.json')
+			writeFileSync(
+				resolve(consumer.root, 'journey.config.ts'),
+				"import { writeFileSync } from 'node:fs'\nwriteFileSync('hung-child.json', JSON.stringify({ pid: process.pid, parent: process.ppid }))\nsetInterval(() => undefined, 1000)\nawait new Promise(() => undefined)\nexport default {}\n",
+			)
+			const execution = consumer.execute(['registry'])
+			let parent: number | undefined
+			let pid: number | undefined
+			try {
+				await waitForCondition('the hung consumer child reports ready', () => existsSync(ready))
+				const record = parseJSON(readFileSync(ready, 'utf8'))
+				if (
+					!isRecord(record) ||
+					typeof record.pid !== 'number' ||
+					typeof record.parent !== 'number'
+				)
+					throw new Error('Missing hung child pids')
+				parent = record.parent
+				pid = record.pid
+				expect(isRunning(parent)).toBe(true)
+				expect(isRunning(pid)).toBe(true)
+				timeout.start()
+				await waitForAbort(timeout.signal)
+				await waitForCondition(
+					'the consumer and its hung child exit on timeout',
+					() => parent !== undefined && pid !== undefined && !isRunning(parent) && !isRunning(pid),
+					{ budget: 5000 },
+				)
+				expect(await execution).toMatchObject({ aborted: true })
+			} finally {
+				if (parent !== undefined && isRunning(parent)) await killTree(parent, 5000)
+				if (pid !== undefined && isRunning(pid)) await killTree(pid, 5000)
+				await execution.catch(() => undefined)
+				timeout.clear()
+				consumer.destroy()
+			}
+		},
+		FIXTURE_TIMEOUT,
+	)
+	it('H1v refuses a stale process fixture build and accepts a current one', () => {
+		const scratch = createScratch({ prefix: 'capture-build-age-' })
+		try {
+			expect(() => requireCaptureBuild(scratch.path)).toThrow('npm run build')
+			scratch.write('dist/bin/main.js', '')
+			scratch.write('src/server/leaf.ts', '')
+			utimesSync(resolve(scratch.path, 'src/server/leaf.ts'), 2, 2)
+			utimesSync(resolve(scratch.path, 'dist/bin/main.js'), 1, 1)
+			expect(() => requireCaptureBuild(scratch.path)).toThrow('npm run build')
+			utimesSync(resolve(scratch.path, 'dist/bin/main.js'), 3, 3)
+			expect(() => requireCaptureBuild(scratch.path)).not.toThrow()
+		} finally {
+			scratch.destroy()
+		}
+	})
 	it(
 		'H1s collects every claim and waits for all real contenders to exit',
 		async () => {
@@ -86,8 +167,11 @@ describe('H1 shared infrastructure', () => {
 				scratch.ensure('requests')
 				const outcomes = await runCaptureOwnershipRace(scratch.path, 'requests')
 				expect(outcomes).toHaveLength(12)
-				expect(outcomes.filter((outcome) => outcome === 'owner')).toHaveLength(1)
-				expect(outcomes.every((outcome) => typeof outcome === 'string')).toBe(true)
+				expect(outcomes.every((outcome) => outcome === 'released')).toBe(true)
+				const pid = await leaveCaptureTemporary(scratch.path, 'requests')
+				expect(scratch.read(`requests/${CAPTURE_OWNER_FILE}.${String(pid)}.crashed.tmp`)).toContain(
+					'crashed-owner',
+				)
 			} finally {
 				scratch.destroy()
 			}
@@ -100,7 +184,11 @@ describe('H1 shared infrastructure', () => {
 			scratch.write('requests/journey-selection-42.json', 'held')
 			scratch.write('requests/journey-selection-42.json.tmp', 'pending')
 			scratch.write('requests/unrelated.txt', 'other')
+			scratch.write(`requests/${CAPTURE_OWNER_FILE}`, 'owner')
+			scratch.write(`requests/${CAPTURE_OWNER_FILE}.42.claim.tmp`, 'temporary')
 			expect(readCaptureHeld(scratch.path, 'requests').toSorted()).toEqual([
+				CAPTURE_OWNER_FILE,
+				`${CAPTURE_OWNER_FILE}.42.claim.tmp`,
 				'journey-selection-42.json',
 				'journey-selection-42.json.tmp',
 			])
@@ -1130,4 +1218,16 @@ describe('registry and executable fixtures', () => {
 		expect(new Set(BIN_REFUSALS.map((entry) => entry.title)).size).toBe(BIN_REFUSALS.length)
 		expect(BIN_REFUSALS.every((entry) => entry.reason !== '')).toBe(true)
 	})
+})
+
+it('reads one named consumer report through LF and CRLF output', () => {
+	for (const ending of ['\n', '\r\n'])
+		expect(
+			readConsumerReport(['child output', 'READER {"issues":[]}', ''].join(ending), 'READER'),
+		).toEqual({ issues: [] })
+})
+
+it('refuses missing, malformed, and non-record consumer reports', () => {
+	for (const text of ['', 'READER {', 'READER []', 'OTHER {}'])
+		expect(() => readConsumerReport(text, 'READER')).toThrow('Missing READER report')
 })

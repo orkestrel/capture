@@ -13,7 +13,7 @@ import type {
 	CaptureReaderSelection,
 	CaptureWriteHandler,
 } from './types.js'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
@@ -64,6 +64,7 @@ import {
 	requireCaptureSelection,
 	readCaptureVariants,
 	shrinkCapturePicture,
+	requireCaptureArgument,
 } from './helpers.js'
 
 /**
@@ -122,48 +123,74 @@ export class CapturePreflight implements CapturePreflightInterface {
 	 */
 	async read(): Promise<CaptureReaderSelection> {
 		const { root, config, selection } = this.#options
-		requireCaptureContained(root, resolve(root, this.#options.journeys))
-		if (!isCapturePath(resolveCaptureRelative(root, config)))
-			throw new CaptureError('Reader config must be a contained repository path', { code: 'USAGE' })
-		const loaded = await this.#load(config)
-		requireCaptureSelection(
-			selection.selector,
-			[],
-			loaded.map((entry) => entry.project),
-		)
-		const primary = requireCaptureProjects(loaded.map((entry) => entry.project))
-		// A standalone root has no stamping route and is read only when a selection names it.
-		const standalone = primary.standalone.find(
-			(entry) =>
-				selection.portfolio === entry.portfolio ||
-				selection.selector === entry.portfolio ||
-				selection.selector.startsWith(`${entry.portfolio}:`),
-		)
-		const options = buildCaptureIntegrityOptions(root, primary, standalone)
-		requireCaptureSelection(
-			selection.selector,
-			selection.variants ?? [],
-			loaded.map((entry) => entry.project),
-			readCaptureVariants(root, resolve(root, options.directory, CAPTURE_REGISTRY_FILE)),
-		)
-		const integrity = new CaptureIntegrity(options)
-		const population = await integrity.read(selection)
-		// A standalone root's producers belong to another wrapper, so only the primary population is mapped.
-		if (
-			standalone === undefined &&
-			population.entries.some(
-				(entry) => !loaded.some((candidate) => candidate.producer.project === entry.project),
+		const invocation = new CaptureInvocation({
+			command: 'stale',
+			root,
+			requests: this.#options.requests ?? CAPTURE_DEFAULTS.requests,
+			stdout: () => undefined,
+			stderr: this.#stderr,
+		})
+		invocation.attach()
+		try {
+			const loaded = await this.#load(config, invocation)
+			requireCaptureArgument(root, resolve(root, this.#options.journeys), '--journeys')
+			if (this.#options.checks !== undefined)
+				requireCaptureArgument(root, resolve(root, this.#options.checks), '--checks')
+			if (!isCapturePath(resolveCaptureRelative(root, config)))
+				throw new CaptureError('Reader config must be a contained repository path', {
+					code: 'USAGE',
+				})
+			requireCaptureSelection(
+				selection.selector,
+				[],
+				loaded.map((entry) => entry.project),
+				[],
+				selection.portfolio,
 			)
-		)
-			throw new CaptureError('Authenticated destination has no actual wrapper project', {
-				code: 'HOST',
-			})
-		return {
-			integrity,
-			population,
-			variants: loaded.map((entry) => entry.producer),
-			directory: options.directory,
-			...(primary.uniform === undefined ? {} : { uniform: primary.uniform }),
+			const primary = requireCaptureProjects(loaded.map((entry) => entry.project))
+			// A standalone root has no stamping route and is read only when a selection names it.
+			const standalone = primary.standalone.find(
+				(entry) =>
+					selection.portfolio === entry.portfolio ||
+					selection.selector === entry.portfolio ||
+					selection.selector.startsWith(`${entry.portfolio}:`),
+			)
+			const options = buildCaptureIntegrityOptions(root, primary, standalone)
+			requireCaptureSelection(
+				selection.selector,
+				selection.variants ?? [],
+				loaded.map((entry) => entry.project),
+				readCaptureVariants(root, resolve(root, options.directory, CAPTURE_REGISTRY_FILE)),
+			)
+			const integrity = new CaptureIntegrity(options)
+			const population = await integrity.read(selection)
+			// A standalone root's producers belong to another wrapper, so only the primary population is mapped.
+			if (
+				standalone === undefined &&
+				population.entries.some(
+					(entry) => !loaded.some((candidate) => candidate.producer.project === entry.project),
+				)
+			)
+				throw new CaptureError('Authenticated destination has no actual wrapper project', {
+					code: 'HOST',
+				})
+			return {
+				integrity,
+				population,
+				variants: loaded.map((entry) => entry.producer),
+				directory: options.directory,
+				...(primary.uniform === undefined ? {} : { uniform: primary.uniform }),
+			}
+		} catch (error) {
+			if (resolveCaptureExit(error) === 64)
+				rmSync(invocation.directory, { recursive: true, force: true })
+			throw error
+		} finally {
+			await invocation
+				.release()
+				.catch((error: unknown) =>
+					this.#stderr(`Capture cleanup failed: ${describeCaptureError(error)}\n`),
+				)
 		}
 	}
 
@@ -277,36 +304,29 @@ export class CapturePreflight implements CapturePreflightInterface {
 	// Discovers the wrapper through the consumer's own Vitest and keeps each project beside its producing viewport.
 	async #load(
 		config: string,
+		invocation: CaptureInvocation,
 	): Promise<
 		ReadonlyArray<{ readonly project: CaptureProject; readonly producer: CaptureProducer }>
 	> {
-		const { root, requests, deadline } = this.#options
+		const { root, deadline } = this.#options
 		// A discovery child's output is the runner's log, never the reader's report.
-		const invocation = new CaptureInvocation({
-			command: 'stale',
+		invocation.prepare()
+		requireCaptureArgument(root, resolve(root, this.#options.journeys), '--journeys')
+		if (this.#options.checks !== undefined)
+			requireCaptureArgument(root, resolve(root, this.#options.checks), '--checks')
+		const description = await new CaptureDiscovery({
 			root,
-			requests: requests ?? CAPTURE_DEFAULTS.requests,
-			stdout: () => undefined,
-			stderr: this.#stderr,
+			config,
+			invocation,
+			...(deadline === undefined ? {} : { deadline }),
+		}).describe()
+		return description.projects.map(({ project, viewport }) => {
+			if (viewport === undefined)
+				throw new CaptureError('A reader project declares no viewport geometry', {
+					code: 'HOST',
+				})
+			return { project, producer: { ...viewport, project: project.name } }
 		})
-		invocation.attach()
-		try {
-			const description = await new CaptureDiscovery({
-				root,
-				config,
-				invocation,
-				...(deadline === undefined ? {} : { deadline }),
-			}).describe()
-			return description.projects.map(({ project, viewport }) => {
-				if (viewport === undefined)
-					throw new CaptureError('A reader project declares no viewport geometry', {
-						code: 'HOST',
-					})
-				return { project, producer: { ...viewport, project: project.name } }
-			})
-		} finally {
-			await invocation.release()
-		}
 	}
 
 	// Loads the host's check readers; a reader without a checks module has none.

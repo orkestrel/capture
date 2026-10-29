@@ -1,11 +1,31 @@
-import type { CaptureDeclaration, CaptureDestination, CaptureRequest, CaptureRun } from '@src/core'
-import type { CaptureReadOptions, CaptureRequestOptions } from '@src/server'
+import type {
+	CaptureDeclaration,
+	CaptureDestination,
+	CaptureRegistry,
+	CaptureRequest,
+	CaptureRun,
+	CaptureStoredManifest,
+} from '@src/core'
+import type { ExecuteResult } from '@orkestrel/process'
+import type { ScratchInterface } from '@orkestrel/test/server'
+import type { CaptureReadOptions, CaptureRequestOptions, CapturePicture } from '@src/server'
 import { createHash, randomUUID } from 'node:crypto'
 import { fork } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+	cpSync,
+	existsSync,
+	globSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from 'node:fs'
+import { createRequire } from 'node:module'
 import { basename, dirname, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { crc32, deflateSync } from 'node:zlib'
 import {
 	arrayOf,
@@ -16,20 +36,192 @@ import {
 	isFunction,
 	isRecord,
 	isString,
+	parseJSON,
 } from '@orkestrel/contract'
+import { execute, executeSync, detach } from '@orkestrel/process/server'
+import { waitForCondition } from '@orkestrel/test'
+import { createScratch, isRunning } from '@orkestrel/test/server'
 
-// The producer child in tests/fixtures/capture/Writer.ts is a plain Node process that imports this
-// module, so every value import above resolves without a Vite alias and the source under test is
-// never imported here.
+// The plain Node writer imports this module; consumer readers load source guards only when called.
+
+/** Anchors consumer fixture and tool paths to this checkout rather than a child workspace. */
+export const CAPTURE_WORKSPACE_ROOT = fileURLToPath(new URL('../', import.meta.url))
+
+/** Exercises ownership permission codes and host-independent contention on each host contract. */
+export const CAPTURE_OWNERSHIP_CASES = (['linux', 'win32'] as const).flatMap((platform) =>
+	['EPERM', 'EACCES', 'EBUSY', 'EMFILE'].map((code) => ({ platform, code })),
+)
+
+/** Supplies syntax, selection, and path usage refusals to every executable command. */
+export const CAPTURE_USAGE_CASES = [
+	['nope:x'],
+	['pages:mail', '--variant', 'nope'],
+	['pages:mail', '--portfolio', 'nope'],
+	['pages:mail', '--case', 'no such case'],
+	['pages:mail', '--state', 'nope'],
+	['pages:mail', '--bogus'],
+	['pages:mail', '--config', '../x.ts'],
+	['pages:mail', '--config', 'nope.config.ts'],
+] as const
+
+/**
+ * Bounds the real Vitest and Chromium consumer case under full-suite contention, in milliseconds.
+ * Final npm test runs measured 18.33 s and 17.18 s. The required 2.5× budget is 45.825 s;
+ * rounding up to a whole minute retains 60 s, with more than 3.27× headroom.
+ */
+export const CONSUMER_TIMEOUT = 60_000
 
 /** Bounds, in milliseconds, a case that creates a Git workspace and spawns producer children. */
 export const FIXTURE_TIMEOUT = 60_000
 
-/** Races real children from a common ready barrier, retaining every winner until all claims settle. */
+/** Supplies high-frequency frame features that expose thumbnail aliasing. */
+export const THUMBNAIL_FEATURES = Object.freeze(['rule', 'stripe', 'speckle'] as const)
+
+/** Creates deterministic RGB features with independent channel values. */
+export function createThumbnailPicture(
+	feature: string,
+	width: number,
+	height: number,
+): CapturePicture {
+	const pixels = new Uint8Array(width * height * 3)
+	let seed = 12345
+	for (let y = 0; y < height; y += 1) {
+		for (let x = 0; x < width; x += 1) {
+			seed = (seed * 1664525 + 1013904223) >>> 0
+			const bright =
+				feature === 'rule'
+					? x % 97 === 5 || y % 89 === 3
+					: feature === 'stripe'
+						? x % 128 >= 20 && x % 128 < 28
+						: seed / 0x100000000 < 0.12
+			const offset = (y * width + x) * 3
+			pixels[offset] = bright ? 255 : 20
+			pixels[offset + 1] = bright ? 30 : 180
+			pixels[offset + 2] = bright ? 110 : 5
+		}
+	}
+	return { width, height, pixels }
+}
+
+/** Computes an independent per-block reference, including incomplete edge blocks. */
+export function averageThumbnailPicture(
+	picture: CapturePicture,
+	factor: number,
+	limit: number,
+): CapturePicture {
+	const width = Math.max(1, Math.ceil(picture.width / factor))
+	const height = Math.min(Math.max(1, Math.ceil(picture.height / factor)), limit)
+	const pixels = new Uint8Array(width * height * 3)
+	for (let y = 0; y < height; y += 1) {
+		for (let x = 0; x < width; x += 1) {
+			const columns = Math.min(factor, picture.width - x * factor)
+			const rows = Math.min(factor, picture.height - y * factor)
+			for (let channel = 0; channel < 3; channel += 1) {
+				let sum = 0
+				for (let row = 0; row < rows; row += 1)
+					for (let column = 0; column < columns; column += 1)
+						sum +=
+							picture.pixels[
+								((y * factor + row) * picture.width + x * factor + column) * 3 + channel
+							] ?? 0
+				pixels[(y * width + x) * 3 + channel] = Math.round(sum / (rows * columns))
+			}
+		}
+	}
+	return { width, height, pixels }
+}
+
+/** Lists an invocation's run directories, including an absent runs parent. */
+export function readCaptureRuns(root: string, requests = COMPOSED_REQUESTS): readonly string[] {
+	const directory = resolve(root, requests, 'runs')
+	return existsSync(directory) ? readdirSync(directory).toSorted() : []
+}
+
+/** Refuses a process proof whose built executable predates any source file. */
+export function requireCaptureBuild(root = CAPTURE_WORKSPACE_ROOT): void {
+	const file = resolve(root, 'dist/bin/main.js')
+	if (
+		!existsSync(file) ||
+		Array.from(globSync('src/**/*', { cwd: root })).some((name) => {
+			const source = statSync(resolve(root, name))
+			return source.isFile() && source.mtimeMs > statSync(file).mtimeMs
+		})
+	)
+		throw new Error('Capture process fixture requires current dist; run npm run build')
+}
+
+/** Reads the retained marker that a real owner publishes through production release before exiting. */
+export async function leaveCaptureUnconfirmed(
+	root: string,
+	requests: string,
+): Promise<{ readonly owner: number; readonly pid: number; readonly published: boolean }> {
+	requireCaptureBuild()
+	detach(
+		{
+			file: process.execPath,
+			arguments: [resolve(import.meta.dirname, 'fixtures/capture/Survivor.ts'), root, requests],
+		},
+		{ workspace: root },
+	)
+	const status = resolve(root, 'survivor-status.json')
+	await waitForCondition(
+		'production release reports the surviving child',
+		() => existsSync(status),
+		{ budget: 20_000 },
+	)
+	const message = parseJSON(readFileSync(status, 'utf8'))
+	if (!isRecord(message) || typeof message.pid !== 'number' || typeof message.owner !== 'number')
+		throw new Error('Survivor fixture returned no child pid')
+	const owner = message.owner
+	writeFileSync(resolve(root, 'survivor-exit'), '')
+	await waitForCondition('the survivor owner exits', () => !isRunning(owner), { budget: 20_000 })
+	return { owner, pid: message.pid, published: message.published === true }
+}
+
+/** Leaves a real detached child and its retained ownership protocol artifact after the owner exits. */
+export async function leaveCaptureSurvivor(
+	root: string,
+	requests: string,
+): Promise<{ readonly owner: number; readonly pid: number }> {
+	requireCaptureBuild()
+	const child = fork(
+		resolve(import.meta.dirname, 'fixtures/capture/DetachedSurvivor.ts'),
+		[root, requests],
+		{ detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+	)
+	try {
+		const [message] = await once(child, 'message', { signal: AbortSignal.timeout(20_000) })
+		if (!isRecord(message) || typeof message.pid !== 'number' || child.pid === undefined)
+			throw new Error('Survivor fixture returned no child pid')
+		const closed = once(child, 'exit', { signal: AbortSignal.timeout(20_000) })
+		child.send('exit')
+		await closed
+		return { owner: child.pid, pid: message.pid }
+	} finally {
+		if (child.exitCode === null && child.signalCode === null) child.kill()
+	}
+}
+
+/** Crashes a real claim writer before linking its temporary file and returns its dead pid. */
+export async function leaveCaptureTemporary(root: string, requests: string): Promise<number> {
+	requireCaptureBuild()
+	const child = fork(
+		resolve(import.meta.dirname, 'fixtures/capture/Ownership.ts'),
+		[root, requests, 'crash'],
+		{ windowsHide: true, stdio: 'ignore' },
+	)
+	const [code] = await once(child, 'exit', { signal: AbortSignal.timeout(20_000) })
+	if (code !== 7 || child.pid === undefined)
+		throw new Error('Claim writer did not crash before linking')
+	return child.pid
+}
+
+/** Races real children while each winner samples active ownership, releases, and exits. */
 export async function runCaptureOwnershipRace(
 	root: string,
 	requests: string,
 ): Promise<readonly unknown[]> {
+	requireCaptureBuild()
 	const children = Array.from({ length: 12 }, () =>
 		fork(resolve(import.meta.dirname, 'fixtures/capture/Ownership.ts'), [root, requests], {
 			windowsHide: true,
@@ -56,8 +248,7 @@ export async function runCaptureOwnershipRace(
 			children.map(async (child) => {
 				if (child.exitCode !== null || child.signalCode !== null) return
 				const closed = once(child, 'exit', { signal: AbortSignal.timeout(20_000) })
-				if (child.connected) child.send('release')
-				else child.kill()
+				child.kill()
 				await closed
 			}),
 		)
@@ -66,7 +257,14 @@ export async function runCaptureOwnershipRace(
 
 /** Lists the published request files held in one workspace request directory. */
 export function readCaptureHeld(root: string, requests = COMPOSED_REQUESTS): readonly string[] {
-	return readdirSync(resolve(root, requests)).filter((name) => name.startsWith('journey-selection'))
+	return !existsSync(resolve(root, requests))
+		? []
+		: readdirSync(resolve(root, requests)).filter(
+				(name) =>
+					name.startsWith('journey-selection') ||
+					name === '.capture-owner' ||
+					name.startsWith('.capture-owner.'),
+			)
 }
 
 /** Counts the children whose process ids the invocation announced. */
@@ -673,6 +871,8 @@ export function writeFixtureOutputs(input: FixtureWrite): void {
 			endTime: Date.now(),
 			assertionResults: full.map((entry) => ({
 				fullName: entry.case,
+				title: entry.case,
+				ancestorTitles: [],
 				status: passed.some((test) => test.case === entry.case) ? 'passed' : 'pending',
 				duration: 1,
 				meta: { owner: entry.owner, variant, eligible: entry.eligible, states: entry.states },
@@ -1333,22 +1533,22 @@ export const READER_ENDINGS = Object.freeze(['\n', '\r\n'] as const)
 export const READER_CHECK_REFUSALS = Object.freeze([
 	{
 		title: 'a module that does not exist',
-		file: resolve(import.meta.dirname, 'fixtures/capture/MissingChecks.ts'),
+		file: 'fixture-checks/MissingChecks.ts',
 		message: 'Cannot load the checks module',
 	},
 	{
 		title: 'a module that exports no list',
-		file: resolve(import.meta.dirname, 'fixtures/capture/ScalarChecks.ts'),
+		file: 'fixture-checks/ScalarChecks.ts',
 		message: 'exports no CAPTURE_CHECKS list of readers',
 	},
 	{
 		title: 'a module whose list holds a non-function',
-		file: resolve(import.meta.dirname, 'fixtures/capture/MixedChecks.ts'),
+		file: 'fixture-checks/MixedChecks.ts',
 		message: 'exports no CAPTURE_CHECKS list of readers',
 	},
 	{
 		title: 'a reader that returns something other than findings',
-		file: resolve(import.meta.dirname, 'fixtures/capture/WrongChecks.ts'),
+		file: 'fixture-checks/WrongChecks.ts',
 		message: 'returned something other than a list of findings',
 	},
 ])
@@ -1918,4 +2118,175 @@ export async function writeFixtureDescription(input: FixtureDescription): Promis
 				}),
 	)
 	if (fault === 'failed') process.exitCode = 7
+}
+
+/** Owns an isolated consumer workspace using the checkout's built capture and installed test tools. */
+export class CaptureConsumer {
+	readonly #scratch: ScratchInterface
+	readonly #controller = new AbortController()
+	readonly #signal: AbortSignal
+
+	constructor(signal?: AbortSignal) {
+		requireCaptureBuild()
+		this.#signal =
+			signal === undefined
+				? this.#controller.signal
+				: AbortSignal.any([signal, this.#controller.signal])
+		for (const file of [
+			'dist/bin/main.js',
+			'dist/src/server/index.js',
+			'node_modules/vitest/vitest.mjs',
+			'node_modules/@vitest/browser-playwright/package.json',
+			'node_modules/playwright/package.json',
+		]) {
+			if (!existsSync(resolve(CAPTURE_WORKSPACE_ROOT, file)))
+				throw new Error(
+					`Consumer proof requires ${file}; run npm run build, install the browser provider and Chromium runtime, then run npm test or npm run test:integration`,
+				)
+		}
+		const vitest = parseJSON(
+			readFileSync(resolve(CAPTURE_WORKSPACE_ROOT, 'node_modules/vitest/package.json'), 'utf8'),
+		)
+		const provider = parseJSON(
+			readFileSync(
+				resolve(CAPTURE_WORKSPACE_ROOT, 'node_modules/@vitest/browser-playwright/package.json'),
+				'utf8',
+			),
+		)
+		if (
+			!isRecord(vitest) ||
+			!isRecord(provider) ||
+			!isRecord(provider.peerDependencies) ||
+			provider.peerDependencies.vitest !== vitest.version
+		)
+			throw new Error(
+				'The installed browser provider must declare the installed Vitest version as its peer',
+			)
+		mkdirSync(resolve(CAPTURE_WORKSPACE_ROOT, 'tmp'), { recursive: true })
+		this.#scratch = createScratch({
+			parent: resolve(CAPTURE_WORKSPACE_ROOT, 'tmp'),
+			prefix: 'capture-consumer-',
+		})
+		try {
+			executeSync({
+				file: 'git',
+				arguments: [
+					'clone',
+					'--shared',
+					'--no-checkout',
+					'--quiet',
+					CAPTURE_WORKSPACE_ROOT,
+					this.#scratch.path,
+				],
+			})
+			cpSync(
+				resolve(CAPTURE_WORKSPACE_ROOT, 'tests/fixtures/capture/consumer'),
+				this.#scratch.path,
+				{
+					recursive: true,
+				},
+			)
+			this.#scratch.ensure('specs')
+			for (const file of ['journey.ts', 'ConsumerJourney.ts', 'constants.ts', 'types.ts'])
+				cpSync(resolve(this.#scratch.path, file), resolve(this.#scratch.path, 'specs', file))
+			this.#scratch.write('package.json', JSON.stringify({ type: 'module' }))
+			this.#scratch.write('.gitignore', 'node_modules/\ntmp/\n')
+			this.#scratch.link(
+				'node_modules/vitest',
+				resolve(CAPTURE_WORKSPACE_ROOT, 'node_modules/vitest'),
+			)
+			// Shared package roots keep Vitest's runner and provider on one module instance.
+			for (const name of [
+				'@vitest/browser-playwright',
+				'@vitest/browser',
+				'playwright',
+				'@orkestrel/contract',
+			]) {
+				const require = createRequire(resolve(CAPTURE_WORKSPACE_ROOT, 'package.json'))
+				this.#scratch.link(`node_modules/${name}`, dirname(require.resolve(`${name}/package.json`)))
+			}
+			this.#scratch.link('node_modules/@orkestrel/capture', CAPTURE_WORKSPACE_ROOT)
+			this.#scratch.ensure('tmp')
+		} catch (error) {
+			this.#scratch.destroy()
+			throw error
+		}
+	}
+
+	get root(): string {
+		return this.#scratch.path
+	}
+
+	async execute(argv: readonly string[]): Promise<ExecuteResult> {
+		const started = performance.now()
+		const result = await execute(
+			{
+				file: process.execPath,
+				arguments: [
+					resolve(CAPTURE_WORKSPACE_ROOT, 'dist/bin/main.js'),
+					...argv,
+					'--config',
+					'journey.config.ts',
+				],
+				environment: { FORCE_COLOR: '0', NO_COLOR: '1', CI: '1' },
+			},
+			{
+				workspace: this.root,
+				timeout: CONSUMER_TIMEOUT,
+				signal: this.#signal,
+				limit: 4_194_304,
+				strict: false,
+			},
+		)
+		console.log(
+			`${argv.join(' ')}: exit=${result.code} durationMs=${Math.round(performance.now() - started)}`,
+		)
+		if (result.failed) console.log(result.stdout + result.stderr)
+		this.#scratch.write(
+			`tmp/command-${String(argv[0])}-${String(performance.now())}.json`,
+			JSON.stringify(result),
+		)
+		return result
+	}
+
+	read(file: string): unknown {
+		return parseJSON(readFileSync(resolve(this.root, file), 'utf8'))
+	}
+
+	async registry(): Promise<CaptureRegistry> {
+		const { isCaptureRegistry } = await import('@src/core')
+		const registry = this.read('tmp/captures/states/registry.json')
+		if (!isCaptureRegistry(registry)) throw new Error('Consumer emitted an invalid registry')
+		return registry
+	}
+
+	async manifest(): Promise<CaptureStoredManifest> {
+		const { isCaptureStoredManifest } = await import('@src/core')
+		const manifest = this.read('tmp/captures/states/manifest.json')
+		if (!isCaptureStoredManifest(manifest)) throw new Error('Consumer emitted an invalid manifest')
+		return manifest
+	}
+
+	async run(file: string): Promise<CaptureRun> {
+		const { isCaptureRun } = await import('@src/core')
+		const run = this.read(file)
+		if (!isCaptureRun(run)) throw new Error(`Consumer emitted an invalid run: ${file}`)
+		return run
+	}
+
+	destroy(): void {
+		this.#controller.abort()
+		this.#scratch.destroy()
+	}
+}
+
+/** Reads an emitted JSON report line, refusing absent or malformed reports. */
+export function readConsumerReport(
+	stdout: string,
+	prefix: string,
+): Readonly<Record<string, unknown>> {
+	const line = stdout.split(/\r\n|\n/u).find((entry) => entry.startsWith(`${prefix} `))
+	const report = line === undefined ? undefined : parseJSON(line.slice(prefix.length + 1))
+	if (!isRecord(report)) throw new Error(`Missing ${prefix} report in ${stdout}`)
+	return report
 }

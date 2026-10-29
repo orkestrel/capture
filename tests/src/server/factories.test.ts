@@ -122,7 +122,7 @@ describe('createCapturePreflight', { timeout: FIXTURE_TIMEOUT }, () => {
 			stderr: (text) => errors.push(text),
 		})
 		expect(await preflight.execute()).toBe(64)
-		expect(errors.join('')).toContain('Reader config must be a contained repository path')
+		expect(errors.join('')).toContain('--config resolves outside the repository')
 		expect(lines).toEqual([])
 	})
 })

@@ -32,6 +32,83 @@ import {
 const STAGE_LINE = /^(?:journey|capture) (?:selected|narrow|rest):/mu
 const INTEGRITY = 'INTEGRITY '
 
+it(
+	'H1v bounds a changed-owner case before plan resolution or execution',
+	async () => {
+		const fixture = new ComposedFixture({ committed: true })
+		try {
+			expect((await fixture.refresh()).code).toBe(0)
+			fixture.write('src/mail/view.ts', '// changed mail source\n')
+			for (const command of ['journey', 'capture'] as const) {
+				for (const plan of [true, false]) {
+					const before = fixture.stages.length
+					const run = await fixture.run(command, [
+						'--changed',
+						'HEAD',
+						'--case',
+						BOARD,
+						...(plan ? ['--plan'] : []),
+					])
+					expect({ command, plan, code: run.code, stages: fixture.stages.length - before }).toEqual(
+						{ command, plan, code: 64, stages: 0 },
+					)
+					expect(run.stderr).toContain('--case')
+					expect(run.stderr).toContain(MAIL)
+					expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
+				}
+			}
+		} finally {
+			fixture.destroy()
+		}
+	},
+	FIXTURE_TIMEOUT,
+)
+
+it(
+	'H1v scopes exact cases to the selected owner before every execution stage',
+	async () => {
+		const fixture = new ComposedFixture()
+		try {
+			expect((await fixture.refresh()).code).toBe(0)
+			for (const command of ['journey', 'capture', 'stale'] as const) {
+				const before = fixture.stages.length
+				const result = await fixture.run(command, ['pages:mail', '--case', BOARD])
+				expect({ command, code: result.code, stages: fixture.stages.length - before }).toEqual({
+					command,
+					code: 64,
+					stages: 0,
+				})
+				expect(result.stderr).toContain(BOARD)
+				expect(result.stderr).toContain(MAIL)
+				expect(readCaptureHeld(fixture.root)).toEqual([])
+			}
+			expect((await fixture.run('journey', ['pages:mail', '--case', MAIL])).code).toBe(0)
+			expect(fixture.stages.length).toBeGreaterThan(0)
+		} finally {
+			fixture.destroy()
+		}
+	},
+	FIXTURE_TIMEOUT,
+)
+
+it(
+	'H1t refuses a case without a registry with the refresh command before any stage',
+	async () => {
+		const fixture = new ComposedFixture()
+		try {
+			const result = await fixture.run('journey', ['pages:mail', '--case', 'no such case'])
+			expect(result).toMatchObject({ code: 1, stderr: expect.stringContaining('capture registry') })
+			expect(result.stderr).toContain('Missing accepted registry')
+			expect(result.stderr).not.toContain('ENOENT')
+			expect(fixture.stages).toEqual([])
+			expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	},
+	FIXTURE_TIMEOUT,
+)
+
 it('keeps a stale evidence refusal at exit 1', async () => {
 	const fixture = new ComposedFixture()
 	try {
@@ -657,8 +734,8 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 			'--variant',
 			COMPOSED_FIRST,
 		])
-		expect(run.code).toBe(1)
-		expect(run.stderr).toContain('outside selector/case')
+		expect(run.code).toBe(64)
+		expect(run.stderr).toContain('Unknown case; --case:')
 		expect(run.stdout).not.toMatch(STAGE_LINE)
 		expect(readCaptureHeld(base.root, base.requests)).toEqual([])
 	})
@@ -775,7 +852,7 @@ describe('CaptureRunner wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () => {
 			resolve(base.root, '..', 'outside.config.ts'),
 		])
 		expect(run.code).toBe(64)
-		expect(run.stderr).toContain('Config must be a contained repository path')
+		expect(run.stderr).toContain('--config resolves outside the repository')
 		expect(run.stdout).toBe('')
 	})
 

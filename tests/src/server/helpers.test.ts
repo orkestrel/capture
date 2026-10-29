@@ -1,7 +1,14 @@
 import type { CaptureDestination } from '@src/core'
 import type { CaptureImageResult, CaptureProducer } from '@src/server'
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, symlinkSync, truncateSync } from 'node:fs'
+import {
+	existsSync,
+	readFileSync,
+	readdirSync,
+	symlinkSync,
+	truncateSync,
+	writeFileSync,
+} from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { deflateSync, inflateSync } from 'node:zlib'
@@ -73,6 +80,8 @@ import {
 	matchesCaptureFile,
 	mergeCaptureLookups,
 	requireCaptureContained,
+	requireCaptureArgument,
+	matchesCaptureTransient,
 	resolveCapturePhysical,
 	readCaptureAncestor,
 	resolveCaptureExit,
@@ -122,6 +131,9 @@ import {
 	createWireOptions,
 	createWireRequest,
 	withEnvironment,
+	THUMBNAIL_FEATURES,
+	createThumbnailPicture,
+	averageThumbnailPicture,
 } from '../../setupServer.js'
 
 function createSolid(width: number, height: number, value: number) {
@@ -129,6 +141,13 @@ function createSolid(width: number, height: number, value: number) {
 }
 
 describe('H1 extracted pure leaves', () => {
+	it('H1w derives encoded PNG bytes from one immutable set of decoded bounds', () => {
+		expect(CAPTURE_PNG_LIMITS.bytes).toBe(
+			Math.ceil((4 * CAPTURE_PNG_LIMITS.pixels + CAPTURE_PNG_LIMITS.side) * 1.2),
+		)
+		expect(Object.isFrozen(CAPTURE_PNG_LIMITS)).toBe(true)
+		expect(CAPTURE_PNG_LIMITS.bytes).toBe(100_820_583)
+	})
 	it('maps usage to 64 and every other refusal to 1', () => {
 		for (const code of CAPTURE_ERROR_CODES)
 			expect(resolveCaptureExit(new CaptureError('refused', { code }))).toBe(
@@ -692,6 +711,32 @@ describe('readCaptureChunks', () => {
 })
 
 describe('decodeCapturePicture', () => {
+	it('H1t bounds physical input at the RGBA encoding allowance before joining compressed chunks', () => {
+		const maximum = 4 * CAPTURE_PNG_LIMITS.pixels + CAPTURE_PNG_LIMITS.side
+		expect(CAPTURE_PNG_LIMITS.bytes).toBeGreaterThan(maximum)
+		expect(CAPTURE_PNG_LIMITS.bytes).toBeLessThan(maximum * 1.25)
+		const scratch = createScratch({ prefix: 'capture-h1t-byte-bound-' })
+		try {
+			const png = createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3]] })
+			const padding = encodeCaptureChunk(
+				'tEXt',
+				Buffer.alloc(CAPTURE_PNG_LIMITS.bytes - png.length - 12),
+			)
+			writeFileSync(
+				resolve(scratch.path, 'boundary.png'),
+				Buffer.concat([png.subarray(0, 33), padding, png.subarray(33)]),
+			)
+			const bytes = readCaptureImage(resolve(scratch.path, 'boundary.png'))
+			expect(bytes.length).toBe(CAPTURE_PNG_LIMITS.bytes)
+			expect([...decodeCapturePicture(bytes).pixels]).toEqual([1, 2, 3])
+			truncateSync(resolve(scratch.path, 'boundary.png'), CAPTURE_PNG_LIMITS.bytes + 1)
+			expect(() => readCaptureImage(resolve(scratch.path, 'boundary.png'))).toThrow('file budget')
+			const oversized = Buffer.alloc(CAPTURE_PNG_LIMITS.bytes + 1)
+			expect(() => decodeCapturePicture(oversized)).toThrow('file budget')
+		} finally {
+			scratch.destroy()
+		}
+	})
 	it('H1s admits the pixel boundary and refuses a frame one pixel over', () => {
 		expect(() =>
 			decodeCapturePicture(createPngBytes({ width: 32768, height: 640, rows: [[0, 1, 2, 3]] })),
@@ -957,7 +1002,104 @@ describe('encodeCapturePicture', () => {
 	})
 })
 
+describe('H1v ownership and path boundaries', () => {
+	it('accepts contained supplied paths and refuses outside values as usage', () => {
+		const scratch = createScratch({ prefix: 'capture-path-flag-' })
+		try {
+			expect(
+				requireCaptureArgument(scratch.path, resolve(scratch.path, 'checks.ts'), '--checks'),
+			).toBe(resolve(scratch.path, 'checks.ts'))
+			expect(() =>
+				requireCaptureArgument(scratch.path, resolve(scratch.path, '../checks.ts'), '--checks'),
+			).toThrow(expect.objectContaining({ code: 'USAGE' }))
+		} finally {
+			scratch.destroy()
+		}
+	})
+	it('recognizes each transient host error without treating permanent errors as contention', () => {
+		for (const platform of ['win32', 'linux'] as const)
+			for (const code of ['EPERM', 'EACCES', 'EBUSY', 'EMFILE'])
+				expect(matchesCaptureTransient(Object.assign(new Error(code), { code }), platform)).toBe(
+					platform === 'win32' || ['EBUSY', 'EMFILE'].includes(code),
+				)
+		for (const value of [
+			new Error('no code'),
+			Object.assign(new Error('unsupported'), { code: 'ENOTSUP' }),
+			{ code: 'EBUSY' },
+			null,
+		])
+			expect(matchesCaptureTransient(value)).toBe(false)
+	})
+	it('caps exact-case candidates and states the omitted count', () => {
+		const text = describeCaptureFault(
+			'--case',
+			'unknown case',
+			'a declared case',
+			Array.from({ length: 200 }, (_, index) => `case-${String(index)}`),
+		)
+		expect(text).toContain('--case: received "unknown case"')
+		expect(text).toContain('case-0')
+		expect(text).not.toContain('case-199')
+		expect(text).toMatch(/\d+ more/u)
+	})
+})
+
 describe('shrinkCapturePicture', () => {
+	it.each(THUMBNAIL_FEATURES)(
+		'H1w computes exact area averages for %s at factors 9 and 17',
+		(feature) => {
+			for (const factor of [9, 17]) {
+				const source = createThumbnailPicture(feature, 643, 645)
+				const actual = shrinkCapturePicture(source, factor, 400)
+				const reference = averageThumbnailPicture(source, factor, 400)
+				expect([actual.width, actual.height]).toEqual([reference.width, reference.height])
+				expect(
+					Math.max(
+						...actual.pixels.map((value, index) =>
+							Math.abs(value - (reference.pixels[index] ?? 0)),
+						),
+					),
+				).toBeLessThanOrEqual(1)
+				expect(reference.pixels.some((value) => value > 1)).toBe(true)
+			}
+		},
+	)
+	it('H1w retains every pixel of a partial edge block with its true divisor', () => {
+		const source = createSolid(19, 19, 0)
+		source.pixels.fill(255, (18 * 19 + 18) * 3)
+		const actual = shrinkCapturePicture(source, 9, 400)
+		expect([actual.width, actual.height]).toEqual([3, 3])
+		expect([...actual.pixels.slice(-3)]).toEqual([255, 255, 255])
+		expect([...actual.pixels.slice(0, -3)]).toEqual(new Array(24).fill(0))
+	})
+	it('H1w bounds the largest accepted frame thumbnail at 1000 ms', () => {
+		const source = createThumbnailPicture('speckle', 5120, 4096)
+		const started = performance.now()
+		const thumbnail = shrinkCapturePicture(source, 16, 400)
+		const elapsed = performance.now() - started
+		process.stdout.write(`H1w 5120x4096 exact thumbnail durationMs=${elapsed.toFixed(2)}\n`)
+		expect(elapsed).toBeLessThan(1000)
+		expect([thumbnail.width, thumbnail.height]).toEqual([320, 256])
+	})
+	it('H1v preserves a thin bright edge above factor four', () => {
+		const source = createSolid(8, 8, 0)
+		for (const row of new Array(8).keys()) source.pixels.fill(255, row * 24, row * 24 + 3)
+		const [red] = shrinkCapturePicture(source, 8, 8).pixels
+		expect(Math.abs((red ?? -1) - 32)).toBeLessThanOrEqual(8)
+	})
+	it('H1v preserves solid strips shorter than the reduction factor', () => {
+		const result = shrinkCapturePicture(createSolid(400, 10, 85), 20, 400)
+		expect([result.width, result.height]).toEqual([20, 1])
+		expect(new Set(result.pixels)).toEqual(new Set([85]))
+	})
+	it('H1t bounds thumbnail work for the 131072 by 160 frame', () => {
+		const source = createSolid(131072, 160, 85)
+		const started = performance.now()
+		const thumbnail = shrinkCapturePicture(source, 410, 400)
+		expect(performance.now() - started).toBeLessThan(1000)
+		expect([thumbnail.width, thumbnail.height]).toEqual([320, 1])
+		expect([...thumbnail.pixels]).toEqual(new Array(320 * 3).fill(85))
+	})
 	it('averages each whole-number block per channel and rounds half up', () => {
 		const source = {
 			width: 2,
@@ -972,7 +1114,7 @@ describe('shrinkCapturePicture', () => {
 	it('clips the displayed height and never reduces below one pixel', () => {
 		expect(shrinkCapturePicture(createSolid(2, 8, 5), 1, 3).height).toBe(3)
 		const tiny = shrinkCapturePicture(createSolid(1, 1, 5), 4, 8)
-		expect([tiny.width, tiny.height, ...tiny.pixels]).toEqual([1, 1, 0, 0, 0])
+		expect([tiny.width, tiny.height, ...tiny.pixels]).toEqual([1, 1, 5, 5, 5])
 	})
 
 	it('returns a separately owned picture', () => {
@@ -1139,6 +1281,9 @@ describe('resolveCaptureVariants', () => {
 		const project = readCaptureProject(createProjectFixture())
 		expect(() => requireCaptureSelection('app', [project.variant], [project])).not.toThrow()
 		expect(() => requireCaptureSelection('all', [], [project])).not.toThrow()
+		expect(() => requireCaptureSelection('all', [], [project], [], 'missing-portfolio')).toThrow(
+			expect.objectContaining({ code: 'USAGE' }),
+		)
 		for (const selector of ['', 'missing'])
 			expect(() => requireCaptureSelection(selector, [], [project])).toThrow(
 				expect.objectContaining({ code: 'USAGE' }),
@@ -1465,38 +1610,54 @@ describe('buildCaptureArguments', () => {
 			scratch.destroy()
 		}
 	})
-	it('H1r reads original suite titles only from digest-authenticated reporter bytes', () => {
-		const scratch = createScratch({ prefix: 'capture-case-titles-' })
-		try {
-			const report = JSON.stringify({
-				testResults: [
-					{
-						assertionResults: [
-							{
-								fullName: 'outer suite inner case',
-								ancestorTitles: ['outer suite'],
-								title: 'inner case',
-							},
-						],
-					},
-				],
-			})
-			scratch.write('report.json', report)
-			const receipt = createReceiptFixture({
-				report: { file: 'report.json', digest: computeCaptureHash(report) },
-			})
-			scratch.write('registry.json', JSON.stringify(createRegistryFixture({ receipts: [receipt] })))
-			expect(readCaptureTitles(scratch.path, resolve(scratch.path, 'registry.json'))).toEqual({
-				'outer suite inner case': ['outer suite', 'inner case'],
-			})
-			scratch.write('report.json', `${report}\n`)
-			expect(() => readCaptureTitles(scratch.path, resolve(scratch.path, 'registry.json'))).toThrow(
-				'digest differs',
-			)
-		} finally {
-			scratch.destroy()
-		}
-	})
+	it.each(['4.1.12', '5.0.5'])(
+		'H1v reads Vitest %s space-joined JSON reporter titles and refuses altered bytes',
+		(version) => {
+			const scratch = createScratch({ prefix: `capture-case-titles-${version}-` })
+			try {
+				const report = JSON.stringify({
+					numTotalTests: 1,
+					success: true,
+					testResults: [
+						{
+							name: '/workspace/tests/journey.test.ts',
+							assertionResults: [
+								{
+									fullName: 'tests/journey.test.ts outer suite inner case',
+									ancestorTitles: ['tests/journey.test.ts', 'outer suite'],
+									title: 'inner case',
+									status: 'passed',
+									duration: 1,
+									failureMessages: [],
+								},
+							],
+						},
+					],
+				})
+				scratch.write('report.json', report)
+				const receipt = createReceiptFixture({
+					report: { file: 'report.json', digest: computeCaptureHash(report) },
+				})
+				scratch.write(
+					'registry.json',
+					JSON.stringify(createRegistryFixture({ receipts: [receipt] })),
+				)
+				expect(readCaptureTitles(scratch.path, resolve(scratch.path, 'registry.json'))).toEqual({
+					'tests/journey.test.ts outer suite inner case': [
+						'tests/journey.test.ts',
+						'outer suite',
+						'inner case',
+					],
+				})
+				scratch.write('report.json', `${report}\n`)
+				expect(() =>
+					readCaptureTitles(scratch.path, resolve(scratch.path, 'registry.json')),
+				).toThrow('digest differs')
+			} finally {
+				scratch.destroy()
+			}
+		},
+	)
 
 	it('selects an exact nested case and final case through a real nested Vitest run', () => {
 		const scratch = createScratch({ prefix: 'capture-selection-' })

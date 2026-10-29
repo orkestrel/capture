@@ -93,6 +93,12 @@ These go to 0.0.2. Reopen one when its trigger fires.
 - **Wording and logs.** Refusal wording polish, and a `pid=` line in run logs.
 - **Visual refinements.** Thumbnails and sheets.
 - **Review findings below the release bar,** including every low, housekeeping, and duplicate-helper finding raised from 2026-10-28 on.
+- **X7 falsify, outside the claims and below the bar:**
+  - **O2.** The `finally` removal of the claim temporary is unguarded against a host fault.
+  - **O3.** The shutdown message names the record path even when no record was written. The record-write code reaches only the aggregate cause.
+  - **O4.** The record path is built from the marker's unchecked id, read-only, and the record's child list is uncapped.
+  - **O5.** Exhaustion caused by marker churn says `(contention)` instead of an error code.
+  - **O6.** After a successful claim, the request-file sweep is unguarded against a directory with a request file's name.
 
 ## Sequence
 
