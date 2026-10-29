@@ -2,12 +2,12 @@ import type { ScratchInterface } from '@orkestrel/test/server'
 import type { CaptureExecutionResult } from '@src/server'
 import type { FixtureWrite } from './setupServer.js'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, utimesSync, statSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, utimesSync, statSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { crc32, inflateSync } from 'node:zlib'
 import { isArray, isRecord, parseJSON } from '@orkestrel/contract'
-import { createHostileValues, waitForCondition, waitForAbort } from '@orkestrel/test'
+import { createHostileValues, waitForCondition, waitForAbort, waitForDelay } from '@orkestrel/test'
 import { createScratch, isRunning } from '@orkestrel/test/server'
 import { killTree } from '@orkestrel/process/server'
 import { createTimeout } from '@orkestrel/timeout'
@@ -29,6 +29,7 @@ import {
 	readCaptureHeld,
 	requireCaptureBuild,
 	importCaptureBuild,
+	waitForCaptureStatus,
 	runCaptureOwnershipRace,
 	leaveCaptureTemporary,
 	countCaptureChildren,
@@ -87,6 +88,36 @@ import {
 } from './setupServer.js'
 
 describe('H1 shared infrastructure', () => {
+	it('X7 round 3 creates an absent scratch parent before constructing an integrity fixture', () => {
+		const scratch = createScratch({ prefix: 'capture-parent-' })
+		const parent = resolve(scratch.path, 'absent', 'tmp')
+		try {
+			expect(existsSync(parent)).toBe(false)
+			const fixture = new IntegrityFixture(parent)
+			try {
+				expect(fixture.root.startsWith(parent)).toBe(true)
+				expect(existsSync(resolve(fixture.root, 'src/mail/view.ts'))).toBe(true)
+			} finally {
+				fixture.destroy()
+			}
+		} finally {
+			scratch.destroy()
+		}
+	})
+	it('X7 round 3 waits for a complete status record after a partial JSON write', async () => {
+		const scratch = createScratch({ prefix: 'capture-status-' })
+		const file = scratch.write('status.json', '{')
+		const record = { owner: process.pid, pid: process.pid, published: true }
+		const complete = waitForDelay(20).then(() =>
+			scratch.write('status.json', JSON.stringify(record)),
+		)
+		try {
+			await expect(waitForCaptureStatus(file, ['owner', 'pid'])).resolves.toEqual(record)
+		} finally {
+			await complete
+			scratch.destroy()
+		}
+	})
 	it('X7 loads the built CaptureInvocation constructor when the build is current', async () => {
 		const { CaptureInvocation } = await importCaptureBuild()
 		const built = await import(
@@ -123,8 +154,7 @@ describe('H1 shared infrastructure', () => {
 			let parent: number | undefined
 			let pid: number | undefined
 			try {
-				await waitForCondition('the hung consumer child reports ready', () => existsSync(ready))
-				const record = parseJSON(readFileSync(ready, 'utf8'))
+				const record = await waitForCaptureStatus(ready, ['parent', 'pid'])
 				if (
 					!isRecord(record) ||
 					typeof record.pid !== 'number' ||
@@ -978,10 +1008,7 @@ describe('the producer child of a composed workspace', { timeout: FIXTURE_TIMEOU
 			windowsHide: true,
 		})
 		try {
-			await waitForCondition('the producer reports ready', () => scratch.has('ready.json'), {
-				budget: 20_000,
-			})
-			const ready: unknown = parseJSON(scratch.read('ready.json') ?? '')
+			const ready = await waitForCaptureStatus(resolve(scratch.path, 'ready.json'), ['pid'])
 			expect(isRecord(ready) ? ready.pid : undefined).toBe(child.pid)
 			expect(child.exitCode).toBeNull()
 		} finally {
@@ -1144,9 +1171,7 @@ describe('the discovery answer of a composed workspace', { timeout: FIXTURE_TIME
 			},
 		)
 		try {
-			await waitForCondition('the producer reports ready', () => scratch.has('ready.json'), {
-				budget: 20_000,
-			})
+			await waitForCaptureStatus(resolve(scratch.path, 'ready.json'), ['pid'])
 			expect(child.exitCode).toBeNull()
 			expect(scratch.has(`${REQUESTS}/runs/run-1/description.json`)).toBe(false)
 		} finally {

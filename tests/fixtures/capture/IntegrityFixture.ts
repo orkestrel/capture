@@ -53,6 +53,7 @@ export class IntegrityFixture {
 
 	/** Creates a private committed Git workspace holding the fixture's sources. */
 	constructor(parent?: string) {
+		if (parent !== undefined) mkdirSync(parent, { recursive: true })
 		this.#scratch = createScratch({
 			prefix: 'integrity-',
 			...(parent === undefined ? {} : { parent }),

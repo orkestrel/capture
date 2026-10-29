@@ -40,7 +40,7 @@ import {
 	parseJSON,
 } from '@orkestrel/contract'
 import { execute, executeSync, detach } from '@orkestrel/process/server'
-import { waitForCondition } from '@orkestrel/test'
+import { retryUntil, waitForCondition } from '@orkestrel/test'
 import { createScratch, isRunning } from '@orkestrel/test/server'
 
 // The plain Node writer imports this module; consumer readers load source guards only when called.
@@ -159,6 +159,24 @@ export async function importCaptureBuild(): Promise<typeof CaptureBuild> {
 	)
 }
 
+/** Waits for a complete JSON status record with numeric process fields and returns that same read. */
+export async function waitForCaptureStatus(
+	file: string,
+	fields: readonly string[],
+): Promise<Readonly<Record<string, unknown>>> {
+	return await retryUntil(
+		`the fixture reports complete status: ${file}`,
+		() => {
+			const message = parseJSON(readFileSync(file, 'utf8'))
+			if (!isRecord(message) || fields.some((field) => typeof message[field] !== 'number'))
+				throw new Error(`Incomplete fixture status: ${file}`)
+			return message
+		},
+		() => true,
+		{ budget: 20_000 },
+	)
+}
+
 /** Reads the retained marker that a real owner publishes through production release before exiting. */
 export async function leaveCaptureUnconfirmed(
 	root: string,
@@ -173,12 +191,7 @@ export async function leaveCaptureUnconfirmed(
 		{ workspace: root },
 	)
 	const status = resolve(root, 'survivor-status.json')
-	await waitForCondition(
-		'production release reports the surviving child',
-		() => existsSync(status),
-		{ budget: 20_000 },
-	)
-	const message = parseJSON(readFileSync(status, 'utf8'))
+	const message = await waitForCaptureStatus(status, ['owner', 'pid'])
 	if (!isRecord(message) || typeof message.pid !== 'number' || typeof message.owner !== 'number')
 		throw new Error('Survivor fixture returned no child pid')
 	const owner = message.owner

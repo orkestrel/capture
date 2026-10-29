@@ -15,6 +15,7 @@ import {
 	createComposedWrapper,
 	createStandIn,
 	withEnvironment,
+	waitForCaptureStatus,
 } from '../../setupServer.js'
 import { IntegrityFixture } from './IntegrityFixture.js'
 
@@ -173,9 +174,7 @@ export class ComposedFixture extends IntegrityFixture {
 		rmSync(ready, { force: true })
 		const running = withEnvironment(options.environment ?? {}, start)
 		if (options.interrupt !== undefined) {
-			await waitForCondition('the producer reports ready', () => existsSync(ready), {
-				budget: 20_000,
-			})
+			await waitForCaptureStatus(ready, ['pid'])
 			// A real signal reaches the installed handler only on a POSIX host, so a proof that asks for
 			// one runs only there; the emitted signal runs the same handler on every host.
 			if (options.interrupt === 'emit') process.emit('SIGINT')
