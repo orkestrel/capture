@@ -76,10 +76,18 @@ A `verifier` runs each loop standalone and reports the counts.
 
 ## State
 
-- `main` is at `77e63b8`. The uncommitted tree holds the hardening repairs ruled before this plan existed: rounds H1t, H1u, H1v, H1w, and H1x.
-- Rounds X2–X5 are accepted on their recorded gate receipts.
-- The X1 in-place rewrite of the marker is dropped by the 2026-10-28 design ruling. X6 removes its code.
-- Next action: dispatch X6.
+- The exit criterion is met at `025a8e2`. That commit and its fix-round predecessors (`3ca9839`, `951c7ba`, `d59644d`) carry the hardening rounds, X6, and the X7 repairs.
+- **Claims:** C1–C8 and C10–C12 are CONFIRMED. C9, and the blocking finding O1, are repaired and proved by mutation.
+- **Loops:** L1 10/10, L2 30/30, L3 30/30, L4 100 cycles with 0 remove exhaustions and 0 markers left.
+- **Runs, all on `025a8e2`:**
+  - R1–R5: the fresh-clone release run passes format, lint, check, build, and two full `npm test` runs (1,857 passed).
+  - R6: with the build set aside, every failure names `npm run build`; 965 tests pass.
+  - R7: Linux passes every step: `test:src` 1,128/1,128, distribution 16/16, the race 5/5, no leftover processes.
+  - R8: the integration proof passes on Vitest 5.0.5.
+  - R9: the release-mode distribution proof passes 16/16.
+  - R10: the packed tarball, installed with Vitest 5.0.5, runs `registry`, `journey`, `frames`, and `preflight`, each exiting 0.
+- The fresh-clone and Linux runs exposed defects in the test harness that a working checkout hides: a type-resolved `dist` import, scratch parents under the ignored `tmp/`, a status read racing its write, a Windows-only tree kill, and a stale peer literal. Each is repaired in the commits above.
+- Next action: with the user's one-time code, publish 0.0.1 from the release clone of `025a8e2`. Then push `main`, delete `candidate/0.0.1`, and mirror the guide into the scaffold catalog.
 
 ## Deferred
 
