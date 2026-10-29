@@ -9,6 +9,7 @@ import type {
 import type { ExecuteResult } from '@orkestrel/process'
 import type { ScratchInterface } from '@orkestrel/test/server'
 import type { CaptureReadOptions, CaptureRequestOptions, CapturePicture } from '@src/server'
+import type * as CaptureBuild from '@src/server'
 import { createHash, randomUUID } from 'node:crypto'
 import { fork } from 'node:child_process'
 import { once } from 'node:events'
@@ -148,6 +149,14 @@ export function requireCaptureBuild(root = CAPTURE_WORKSPACE_ROOT): void {
 		})
 	)
 		throw new Error('Capture process fixture requires current dist; run npm run build')
+}
+
+/** Loads the built server entry a plain Node fixture drives, typed by its source so a type check needs no build. */
+export async function importCaptureBuild(): Promise<typeof CaptureBuild> {
+	requireCaptureBuild()
+	return await import(
+		pathToFileURL(resolve(CAPTURE_WORKSPACE_ROOT, 'dist/src/server/index.js')).href
+	)
 }
 
 /** Reads the retained marker that a real owner publishes through production release before exiting. */

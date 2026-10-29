@@ -2,11 +2,9 @@ import { resolve } from 'node:path'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { detach } from '@orkestrel/process/server'
 import { waitForCondition } from '@orkestrel/test'
-import { requireCaptureBuild } from '../../setupServer.ts'
+import { importCaptureBuild } from '../../setupServer.ts'
 
-requireCaptureBuild()
-const { CaptureInvocation, CAPTURE_SURVIVORS_FILE } =
-	await import('../../../dist/src/server/index.js')
+const { CaptureInvocation, CAPTURE_SURVIVORS_FILE } = await importCaptureBuild()
 const [root, requests] = process.argv.slice(2)
 if (root === undefined || requests === undefined) throw new Error('Missing survivor fixture paths')
 const invocation = new CaptureInvocation({

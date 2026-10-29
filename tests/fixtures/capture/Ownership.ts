@@ -2,10 +2,9 @@ import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'nod
 import { resolve } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { waitForCondition } from '@orkestrel/test'
-import { requireCaptureBuild } from '../../setupServer.ts'
+import { importCaptureBuild } from '../../setupServer.ts'
 
-requireCaptureBuild()
-const { CAPTURE_OWNER_FILE, CaptureInvocation } = await import('../../../dist/src/server/index.js')
+const { CAPTURE_OWNER_FILE, CaptureInvocation } = await importCaptureBuild()
 
 const root = process.argv[2]
 const requests = process.argv[3]

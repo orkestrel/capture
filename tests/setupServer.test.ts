@@ -28,6 +28,7 @@ import {
 	CAPTURE_WORKSPACE_ROOT,
 	readCaptureHeld,
 	requireCaptureBuild,
+	importCaptureBuild,
 	runCaptureOwnershipRace,
 	leaveCaptureTemporary,
 	countCaptureChildren,
@@ -86,6 +87,14 @@ import {
 } from './setupServer.js'
 
 describe('H1 shared infrastructure', () => {
+	it('X7 loads the built CaptureInvocation constructor when the build is current', async () => {
+		const { CaptureInvocation } = await importCaptureBuild()
+		const built = await import(
+			pathToFileURL(resolve(CAPTURE_WORKSPACE_ROOT, 'dist/src/server/index.js')).href
+		)
+		expect(typeof CaptureInvocation).toBe('function')
+		expect(CaptureInvocation).toBe(built.CaptureInvocation)
+	})
 	it('H1w refuses a stale consumer build before creating its workspace', () => {
 		requireCaptureBuild()
 		const built = resolve(CAPTURE_WORKSPACE_ROOT, 'dist/bin/main.js')
