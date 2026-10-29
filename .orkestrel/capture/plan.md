@@ -87,21 +87,23 @@ A `verifier` runs each loop standalone and reports the counts.
   - R9: the release-mode distribution proof passes 16/16.
   - R10: the packed tarball, installed with Vitest 5.0.5, runs `registry`, `journey`, `frames`, and `preflight`, each exiting 0.
 - The fresh-clone and Linux runs exposed defects in the test harness that a working checkout hides: a type-resolved `dist` import, scratch parents under the ignored `tmp/`, a status read racing its write, a Windows-only tree kill, and a stale peer literal. Each is repaired in the commits above.
-- Next action: with the user's one-time code, publish 0.0.1 from the release clone of `025a8e2`. Then push `main`, delete `candidate/0.0.1`, and mirror the guide into the scaffold catalog.
+- 0.0.1 is published from `025a8e2` (2026-10-29). `main` is pushed at `69541b9`, `candidate/0.0.1` is deleted, and the guide is mirrored into the scaffold catalog in scaffold 0.0.109.
+- Next action: adopt scaffold 0.0.110 and its toolchain (Vitest 5.0.5, TypeScript 7.0.2), then open the 0.0.2 campaign from § Deferred.
 
 ## Deferred
 
-These go to 0.0.2. Reopen one when its trigger fires.
+These go to 0.0.2. Reopen one when its trigger fires. Every entry is owned by the 0.0.2 hardening campaign (`orkestrel-harden`, which opens its own `plan.md` claims from this list) unless the entry names another owner.
 
-- **Release-exhaustion residual.** If `rmSync` exhausts on the invocation's own marker, the marker is left `{pid,id}` and the next run refuses it as a dead owner with no record. Trigger: an observed occurrence.
-- **Pid reuse.** A reused pid can make a dead holder read as alive. Trigger: a reported stale refusal naming a live unrelated process.
-- **An OS-held lock** (named pipe or socket) in place of the marker, or a pid-plus-start-time stamp. Trigger: a measured rate of stale-marker complaints after publication.
-- **Live macOS runs, and POSIX live proofs beyond the Linux gate.** Trigger: a macOS consumer.
-- **Vitest 5 coverage beyond R8.** Trigger: capture's own toolchain moves to Vitest 5.
-- **Wording and logs.** Refusal wording polish, and a `pid=` line in run logs.
-- **Visual refinements.** Thumbnails and sheets.
-- **Review findings below the release bar,** including every low, housekeeping, and duplicate-helper finding raised from 2026-10-28 on.
-- **X7 falsify, outside the claims and below the bar:**
+- **Release-exhaustion residual.** If `rmSync` exhausts on the invocation's own marker, the marker is left `{pid,id}` and the next run refuses it as a dead owner with no record. Trigger: a consumer reports a dead-owner refusal with no child record after a clean exit.
+- **Pid reuse.** A reused pid can make a dead holder read as alive. Trigger: a consumer reports a live-holder refusal naming a process that is not a capture run.
+- **An OS-held lock** (named pipe or socket) in place of the marker, or a pid-plus-start-time stamp. Owner: a design question the 0.0.2 campaign opens before any repair. Trigger: either entry above fires.
+- **Live macOS runs, and POSIX live proofs beyond the Linux gate.** Trigger: a consumer installs capture on macOS, or a POSIX host becomes a gate host.
+- **Vitest 5 coverage beyond R8.** Owner: capture's scaffold 0.0.110 adoption unit. Trigger: that unit moves capture's own toolchain to Vitest 5.0.5.
+- **Wording and logs.** Refusal wording polish, and a `pid=` line in run logs. Trigger: the 0.0.2 campaign opens.
+- **Visual refinements.** Thumbnails and sheets. Trigger: a consumer's verdict round reports a thumbnail or sheet that misreads its frame.
+- **Duplicate test helpers.** The tests re-implement `captureError` and other helpers that installed packages export (the debrief's artifact audit). Owner: capture's scaffold 0.0.110 adoption unit. Trigger: that unit opens.
+- **Review findings below the release bar,** including every low and housekeeping finding raised from 2026-10-28 on. Trigger: the 0.0.2 campaign opens.
+- **X7 falsify, outside the claims and below the bar.** Trigger: the 0.0.2 campaign opens.
   - **O2.** The `finally` removal of the claim temporary is unguarded against a host fault.
   - **O3.** The shutdown message names the record path even when no record was written. The record-write code reaches only the aggregate cause.
   - **O4.** The record path is built from the marker's unchecked id, read-only, and the record's child list is uncapped.
