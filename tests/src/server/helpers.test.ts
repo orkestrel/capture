@@ -994,6 +994,14 @@ describe('H1v ownership and path boundaries', () => {
 })
 
 describe('shrinkCapturePicture', () => {
+	it('bounds offsets by the picture when the factor exceeds the native array length', () => {
+		const source = { width: 1, height: 1, pixels: Uint8Array.of(5, 5, 5) }
+		const result = shrinkCapturePicture(source, 4294967296, 1)
+		expect([result.width, result.height]).toEqual([1, 1])
+		expect([...result.pixels]).toEqual([5, 5, 5])
+		expect(result.pixels).not.toBe(source.pixels)
+	})
+
 	it.each(THUMBNAIL_FEATURES)(
 		'H1w computes exact area averages for %s at factors 9 and 17',
 		(feature) => {

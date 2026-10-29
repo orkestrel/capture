@@ -1041,7 +1041,10 @@ export function shrinkCapturePicture(
 	const width = Math.max(1, Math.ceil(picture.width / factor))
 	const height = Math.min(Math.max(1, Math.ceil(picture.height / factor)), limit)
 	// One shared offset list; each output channel sums its block with no per-pixel allocation.
-	const span = Array.from({ length: Math.ceil(factor) }, (_, index) => index)
+	const span = Array.from(
+		{ length: Math.ceil(Math.min(factor, Math.max(picture.width, picture.height))) },
+		(_, index) => index,
+	)
 	const pixels = Uint8Array.from({ length: width * height * 3 }, (_, index) => {
 		const channel = index % 3
 		const x = Math.floor(index / 3) % width
