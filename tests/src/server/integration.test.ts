@@ -1,11 +1,15 @@
+import * as core from '@src/core'
+import * as server from '@src/server'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
 import { requireValue } from '@orkestrel/test'
 import { isCaptureLookupJournal } from '@src/core'
 import { afterAll, describe, expect, it } from 'vitest'
-import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import {
+	readCaptureIntegrityReports,
+	readCaptureIntegrationStatuses,
+	ComposedFixture,
 	COMPOSED_DIRECTORY,
 	COMPOSED_FIRST,
 	FIXTURE_FAULT_MESSAGES,
@@ -15,29 +19,13 @@ import {
 	VARIANTS,
 	readFixtureManifest,
 } from '../../setupServer.js'
-
 const LOOKUPS = `${COMPOSED_DIRECTORY}/lookups.json`
-const PREFIX = 'INTEGRITY '
 // Every child the runner spawns announces its process id, so the count tells discovery's one child from an execution child.
-
-function readIntegrity(stdout: string): readonly unknown[] {
-	return stdout
-		.split('\n')
-		.filter((line) => line.startsWith(PREFIX))
-		.map((line) => parseJSON(line.slice(PREFIX.length)))
-}
-
-function readStatuses(stdout: string): readonly unknown[] {
-	const report = requireValue(readIntegrity(stdout).at(0), 'The stale command printed no reading')
-	if (!isRecord(report) || !Array.isArray(report.entries))
-		throw new Error('The stale reading carries no entries')
-	return report.entries.map((entry: unknown) => (isRecord(entry) ? entry.status : undefined))
-}
 
 // One workspace serves the ordered cases: the registry exists before any stage can stamp, a journey
 // publishes the lookups a state selection reads, and a capture stamps the manifest the readings use.
 // Vitest runs a file's cases in order, so each case starts from what the one before it left.
-const fixture = new ComposedFixture()
+const fixture = new ComposedFixture({ core, server })
 
 afterAll(() => fixture.destroy())
 
@@ -66,7 +54,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		expect(run.stdout).toContain(`journey selected: ${VARIANTS.join(', ')}; all;`)
 		expect(run.stdout).toContain('"stage":"selected"')
 		expect(run.stdout).toMatch(/journey:light-390: \d+ owner-bearing passed cases/u)
-		const reports = readIntegrity(run.stdout)
+		const reports = readCaptureIntegrityReports(run.stdout)
 		expect(reports).toHaveLength(1)
 		expect(countCaptureChildren(run.stdout)).toBe(2)
 		for (const report of reports)
@@ -83,7 +71,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('reads every frame of a selected owner as missing before any capture', async () => {
 		const run = await fixture.run('stale', ['pages:mail'])
 		expect(run.code).toBe(1)
-		const statuses = readStatuses(run.stdout)
+		const statuses = readCaptureIntegrationStatuses(run.stdout)
 		expect(statuses).toHaveLength(12)
 		expect(new Set(statuses)).toEqual(new Set(['missing']))
 	})
@@ -103,7 +91,7 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		)
 		const stale = await fixture.run('stale', ['pages:mail'])
 		expect(stale.code === 0 ? 0 : stale.stdout).toBe(0)
-		expect(new Set(readStatuses(stale.stdout))).toEqual(new Set(['current']))
+		expect(new Set(readCaptureIntegrationStatuses(stale.stdout))).toEqual(new Set(['current']))
 	})
 
 	it.each(['failed-child', 'invalid-record', 'identity', 'artifact', 'complete'] as const)(
@@ -174,6 +162,6 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		fixture.write('src/mail/view.ts', '// edited after the capture\n')
 		const run = await fixture.run('stale', ['pages:mail'])
 		expect(run.code).toBe(1)
-		expect(new Set(readStatuses(run.stdout))).toEqual(new Set(['stale-own']))
+		expect(new Set(readCaptureIntegrationStatuses(run.stdout))).toEqual(new Set(['stale-own']))
 	})
 })

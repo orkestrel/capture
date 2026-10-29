@@ -75,6 +75,9 @@ A selector is `all` or a declared colon-separated owner path. Only `--variant` r
 flag except `--plan` takes a nonempty value as `--flag value` or `--flag=value`; a value beginning
 with a dash needs equals form. The CLI refuses the `--` terminator and repeated single-value flags.
 
+Registry refresh checks inherited manifest and lookup journal schemas before starting a stage.
+An unreadable or unsupported document refuses the refresh and names the file to inspect and repair.
+
 For changed selection, `HEAD` includes uncommitted work. The plan prints changed paths and commands
 after discovery and starts no execution child. Shared inputs refuse narrowing and print an explicit
 complete journey command. Without `--plan`, owners run in stable order until an owner fails.

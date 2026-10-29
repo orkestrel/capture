@@ -1,3 +1,6 @@
+import { captureError } from '@orkestrel/test'
+import * as core from '@src/core'
+import * as server from '@src/server'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
@@ -16,21 +19,19 @@ import {
 	createCaptureSheets,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
-import { IntegrityFixture } from '../../fixtures/capture/IntegrityFixture.js'
-import { ReaderFixture } from '../../fixtures/capture/ReaderFixture.js'
-import { readThrown } from '../../setup.js'
 import {
+	ComposedFixture,
+	IntegrityFixture,
+	ReaderFixture,
 	FIXTURE_TIMEOUT,
 	READER_CONFIG,
 	READER_JOURNEYS,
 	RUNNER_REQUESTS,
 	VARIANTS,
 } from '../../setupServer.js'
-
 describe('createCaptureIntegrity', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('creates an engine bound to the options, reading the workspace they name', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			const created = createCaptureIntegrity(fixture.options)
 			const result = await created.check({ selector: 'pages:mail', variants: ['light-390'] })
@@ -42,10 +43,10 @@ describe('createCaptureIntegrity', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses options the class refuses, under the same condition', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			expect(
-				readThrown(() => createCaptureIntegrity({ ...fixture.options, root: 'relative' })),
+				captureError(() => createCaptureIntegrity({ ...fixture.options, root: 'relative' })),
 			).toMatchObject({ message: 'Integrity root must be absolute', code: 'HOST' })
 		} finally {
 			fixture.destroy()
@@ -90,7 +91,7 @@ describe('createCaptureRegistrar', () => {
 
 describe('createCapturePreflight', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('creates a preflight bound to the selection, whose execute reads the workspace it names', async () => {
-		const fixture = new ReaderFixture()
+		const fixture = new ReaderFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({ selector: 'pages:mail', picture: true })
@@ -129,7 +130,7 @@ describe('createCapturePreflight', { timeout: FIXTURE_TIMEOUT }, () => {
 
 describe('createCaptureSheets', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('creates a sheet writer bound to the output, whose execute writes the sheets', async () => {
-		const fixture = new ReaderFixture()
+		const fixture = new ReaderFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({ selector: 'pages:mail', picture: true })
@@ -156,7 +157,7 @@ describe('createCaptureSheets', { timeout: FIXTURE_TIMEOUT }, () => {
 
 describe('createCaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('creates a discovery bound to the wrapper, whose describe returns the host description it answers', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			const invocation = new CaptureInvocation({
 				command: 'journey',

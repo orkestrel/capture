@@ -2,6 +2,7 @@ import type { CaptureRequest } from '@src/core'
 import type {
 	CaptureExecutionResult,
 	CaptureInvocationInterface,
+	CaptureIntegrityOptions,
 	CaptureProject,
 	CaptureReceiptInput,
 	CaptureRegistrarInterface,
@@ -20,6 +21,8 @@ import {
 	describeCaptureRequest,
 	isCapturePath,
 	isCaptureRegistry,
+	isCaptureLookupJournal,
+	isCaptureStoredManifest,
 	isCaptureRun,
 	readCaptureReport,
 	validateCaptureRun,
@@ -65,6 +68,8 @@ import {
  * place, so a registry the engine would refuse never replaces a good one. With `--variant`, the
  * existing registry's receipts for the other declared variants are kept. It never widens a scoped
  * run into a refresh and refuses while another runner holds a request file in the request directory.
+ * Before any stage, it reads the inherited manifest and lookup journal and refuses an unsupported
+ * schema with the file to inspect and repair.
  *
  * @example
  * ```ts
@@ -161,10 +166,12 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		const target = `${directory}/${CAPTURE_REGISTRY_FILE}`
 		const candidate = `${target}.${invocation.id}.candidate`
 		// Validate the physical publication roots before a stage can write a run or a candidate.
+		const options = buildCaptureIntegrityOptions(root, primary)
 		const integrity = new CaptureIntegrity({
-			...buildCaptureIntegrityOptions(root, primary),
+			...options,
 			registry: candidate,
 		})
+		this.#inherit(options)
 		const holders = invocation.holders()
 		if (holders.length > 0)
 			throw new CaptureError(
@@ -204,6 +211,26 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 			})}\n`,
 		)
 		return CAPTURE_EXIT.passed
+	}
+
+	#inherit(options: CaptureIntegrityOptions): void {
+		for (const [file, guard] of [
+			[options.manifest, isCaptureStoredManifest],
+			[options.lookups, isCaptureLookupJournal],
+		] as const) {
+			const path = resolve(options.root, file)
+			try {
+				requireCaptureContained(options.root, path)
+				if (!existsSync(path)) continue
+				if (!guard(parseJSON(readFileSync(path, 'utf8'))))
+					throw new CaptureError('Invalid inherited evidence schema', { code: 'EVIDENCE' })
+			} catch (error) {
+				throw new CaptureError(
+					`Cannot refresh the registry with inherited evidence at ${JSON.stringify(file)}: ${describeCaptureError(error)}; inspect and repair this file before retrying`,
+					{ code: 'EVIDENCE', cause: error, context: { file } },
+				)
+			}
+		}
 	}
 
 	async #stage(

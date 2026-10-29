@@ -1,3 +1,5 @@
+import * as core from '@src/core'
+import * as server from '@src/server'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
@@ -8,8 +10,9 @@ import { requireValue, waitForCondition } from '@orkestrel/test'
 import { isRunning } from '@orkestrel/test/server'
 import { CAPTURE_DEFAULTS, CAPTURE_USAGE } from '@src/server'
 import { afterAll, describe, expect, it } from 'vitest'
-import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import {
+	executeCaptureBinary,
+	ComposedFixture,
 	BIN_REFUSALS,
 	COMPOSED_DIRECTORY,
 	FIXTURE_TIMEOUT,
@@ -18,7 +21,6 @@ import {
 	readCaptureHeld,
 	requireCaptureBuild,
 } from '../../setupServer.js'
-
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 const BUILT = resolve(ROOT, 'dist/bin/main.js')
 
@@ -26,38 +28,29 @@ requireCaptureBuild()
 
 // The executable runs in a workspace the real runner, engine, and readers can drive: its built-in
 // wrapper path and request directory are the ones the fixture carries and its stand-in reads.
-const fixture = new ComposedFixture({
-	config: CAPTURE_DEFAULTS.config,
-	requests: CAPTURE_DEFAULTS.requests,
-})
+const fixture = new ComposedFixture(
+	{ core, server },
+	{
+		config: CAPTURE_DEFAULTS.config,
+		requests: CAPTURE_DEFAULTS.requests,
+	},
+)
 
 afterAll(() => fixture.destroy())
 
-function execute(
-	args: readonly string[],
-	environment: Readonly<Record<string, string>> = {},
-	root = fixture.root,
-) {
-	const child = spawnSync(process.execPath, [BUILT, ...args], {
-		cwd: root,
-		env: { ...process.env, ...environment },
-		encoding: 'utf8',
-		windowsHide: true,
-		timeout: 60_000,
-	})
-	if (child.error !== undefined) throw child.error
-	return { status: child.status, stdout: child.stdout, stderr: child.stderr }
-}
-
 describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('H1t rejects an unknown wrapper portfolio before registry authentication', () => {
-		const isolated = new ComposedFixture({
-			config: CAPTURE_DEFAULTS.config,
-			requests: CAPTURE_DEFAULTS.requests,
-		})
+		const isolated = new ComposedFixture(
+			{ core, server },
+			{
+				config: CAPTURE_DEFAULTS.config,
+				requests: CAPTURE_DEFAULTS.requests,
+			},
+		)
 		try {
 			for (const command of ['stale', 'preflight', 'sheets']) {
-				const run = execute(
+				const run = executeCaptureBinary(
+					fixture,
 					[
 						command,
 						'pages:mail',
@@ -80,12 +73,15 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1t names unknown argument values as usage before execution with a valid registry', () => {
-		const isolated = new ComposedFixture({
-			config: CAPTURE_DEFAULTS.config,
-			requests: CAPTURE_DEFAULTS.requests,
-		})
+		const isolated = new ComposedFixture(
+			{ core, server },
+			{
+				config: CAPTURE_DEFAULTS.config,
+				requests: CAPTURE_DEFAULTS.requests,
+			},
+		)
 		try {
-			const registry = execute(['registry'], {}, isolated.root)
+			const registry = executeCaptureBinary(fixture, ['registry'], {}, isolated.root)
 			expect(registry.status === 0 ? 0 : registry.stderr).toBe(0)
 			for (const command of ['journey', 'frames', 'stale', 'preflight', 'sheets']) {
 				for (const flag of [
@@ -94,7 +90,8 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 					...(['stale', 'preflight', 'sheets'].includes(command) ? ['portfolio'] : []),
 				]) {
 					const before = isolated.stages.length
-					const run = execute(
+					const run = executeCaptureBinary(
+						fixture,
 						[
 							command,
 							'pages:mail',
@@ -132,7 +129,7 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each(BIN_REFUSALS)(
 		'refuses $title as usage on the error stream with exit 64',
 		({ argv, reason }) => {
-			const run = execute(argv)
+			const run = executeCaptureBinary(fixture, argv)
 			expect(run.status).toBe(64)
 			expect(run.stderr).toContain(reason)
 			// A refusal after discovery prints the discovery child's id and no report or stage line.
@@ -141,7 +138,7 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 	)
 
 	it('prints the whole usage text beside a refused command', () => {
-		const run = execute(['frobnicate'])
+		const run = executeCaptureBinary(fixture, ['frobnicate'])
 		expect(run.stderr).toContain(CAPTURE_USAGE)
 		expect(run.stderr).toContain('journey --changed <ref> [--plan]')
 		expect(run.stderr).toContain('frames --changed <ref> [--plan]')
@@ -156,7 +153,7 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 			['frames', '--changed', 'HEAD', '--plan', '--plan'],
 		]) {
 			const before = fixture.stages.length
-			const run = execute(argv)
+			const run = executeCaptureBinary(fixture, argv)
 			expect(run.status).toBe(64)
 			expect(fixture.stages).toHaveLength(before)
 			expect(run.stderr).toContain('NEXT capture')
@@ -164,7 +161,7 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses a freshness reading before the registry exists, with the refresh command named', () => {
-		const run = execute(['stale', 'pages:mail', '--variant', 'light-390'])
+		const run = executeCaptureBinary(fixture, ['stale', 'pages:mail', '--variant', 'light-390'])
 		expect(run.status).toBe(1)
 		expect(run.stderr).toContain(
 			'Missing accepted registry; run the explicit complete-registry refresh',
@@ -172,30 +169,31 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refreshes the registry, runs a journey, captures frames, and reads them as current', () => {
-		const registry = execute(['registry'])
+		const registry = executeCaptureBinary(fixture, ['registry'])
 		expect(registry.status === 0 ? 0 : registry.stderr).toBe(0)
 		expect(registry.stdout).toContain('REGISTRY {')
 		expect(existsSync(resolve(fixture.root, COMPOSED_DIRECTORY, 'registry.json'))).toBe(true)
-		const journey = execute(['journey', 'pages:mail', '--variant', 'light-390'])
+		const journeyArgs = ['journey', 'pages:mail', '--variant', 'light-390']
+		const journey = executeCaptureBinary(fixture, journeyArgs)
 		expect(journey.status === 0 ? 0 : journey.stderr).toBe(0)
 		expect(journey.stdout).toContain('journey selected: light-390; pages:mail;')
 		expect(readFixtureManifest(fixture.root)).toBeUndefined()
-		const frames = execute(['frames', 'pages:mail', '--variant', 'light-390'], {
-			CAPTURE_PRODUCER_PICTURE: '1',
-		})
+		const framesArgs = ['frames', 'pages:mail', '--variant', 'light-390']
+		const frames = executeCaptureBinary(fixture, framesArgs, { CAPTURE_PRODUCER_PICTURE: '1' })
 		expect(frames.status === 0 ? 0 : frames.stderr).toBe(0)
 		expect(frames.stdout).toContain('capture narrow: light-390; pages:mail;')
 		expect(readFixtureManifest(fixture.root)).toBeDefined()
-		const stale = execute(['stale', 'pages:mail', '--variant', 'light-390'])
+		const stale = executeCaptureBinary(fixture, ['stale', 'pages:mail', '--variant', 'light-390'])
 		expect(stale.status === 0 ? 0 : stale.stdout).toBe(0)
 		expect(stale.stdout.match(/"status":"current"/gu)).toHaveLength(3)
 	})
 
 	it('reads the captured frames through the preflight and writes their contact sheets', () => {
-		const preflight = execute(['preflight', 'pages:mail', '--variant', 'light-390'])
+		const preflightArgs = ['preflight', 'pages:mail', '--variant', 'light-390']
+		const preflight = executeCaptureBinary(fixture, preflightArgs)
 		expect(preflight.status === 0 ? 0 : preflight.stderr).toBe(0)
 		expect(preflight.stdout).toContain('READER ')
-		const sheets = execute([
+		const sheets = executeCaptureBinary(fixture, [
 			'sheets',
 			'pages:mail',
 			'--variant',
@@ -210,7 +208,7 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('H1r maps unknown and empty selectors to exit 64 under every command', () => {
 		for (const command of ['journey', 'frames', 'stale', 'preflight', 'sheets', 'registry']) {
 			for (const selector of ['missing', '']) {
-				const run = execute([
+				const run = executeCaptureBinary(fixture, [
 					command,
 					selector,
 					...(command === 'sheets' ? ['--output', 'tmp/refused-selection'] : []),
@@ -227,7 +225,7 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 
 	it('H1r maps Git plan failures to exit 1 through the built command', () => {
 		for (const command of ['journey', 'frames']) {
-			const run = execute([command, '--changed', 'missing-ref', '--plan'])
+			const run = executeCaptureBinary(fixture, [command, '--changed', 'missing-ref', '--plan'])
 			expect({ command, status: run.status, stderr: run.stderr }).toMatchObject({
 				command,
 				status: 1,
@@ -236,10 +234,13 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1s maps an unknown variant to usage under every command before and after registry authentication', () => {
-		const isolated = new ComposedFixture({
-			config: CAPTURE_DEFAULTS.config,
-			requests: CAPTURE_DEFAULTS.requests,
-		})
+		const isolated = new ComposedFixture(
+			{ core, server },
+			{
+				config: CAPTURE_DEFAULTS.config,
+				requests: CAPTURE_DEFAULTS.requests,
+			},
+		)
 		try {
 			for (const authenticated of [false, true]) {
 				if (authenticated) {
@@ -278,9 +279,8 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 
 	it('exits 1 for a stage whose child fails, leaving the manifest untouched', () => {
 		const before = readFixtureManifest(fixture.root)
-		const run = execute(['frames', 'pages:mail', '--variant', 'light-390'], {
-			CAPTURE_PRODUCER_MODE: 'failed-child',
-		})
+		const args = ['frames', 'pages:mail', '--variant', 'light-390']
+		const run = executeCaptureBinary(fixture, args, { CAPTURE_PRODUCER_MODE: 'failed-child' })
 		expect(run.status).toBe(1)
 		expect(run.stderr).toContain('Capture stage child did not exit successfully')
 		expect(readFixtureManifest(fixture.root)).toBe(before)
@@ -295,7 +295,7 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 				['journey', '--changed', 'HEAD', '--plan', '--variant', 'light-390'],
 				['journey', '--changed=HEAD', '--plan', '--variant=light-390'],
 			]) {
-				const run = execute(argv)
+				const run = executeCaptureBinary(fixture, argv)
 				expect(run.status === 0 ? 0 : run.stderr).toBe(0)
 				expect(fixture.stages).toHaveLength(stages)
 				expect(run.stdout).toContain('"classification":"own","owners":["pages:mail"]')

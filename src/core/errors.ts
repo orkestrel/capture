@@ -1,5 +1,5 @@
 import type { CaptureErrorCode, CaptureErrorContext, CaptureErrorOptions } from './types.js'
-import { holds, INTRINSICS, isError, isRecord } from '@orkestrel/contract'
+import { holds, INTRINSICS, isError, isFunction, isObject } from '@orkestrel/contract'
 import { CAPTURE_ERROR_BRAND, CAPTURE_ERROR_CODES } from './constants.js'
 
 /**
@@ -33,8 +33,7 @@ export class CaptureError extends Error {
 	 */
 	constructor(message: string, options: CaptureErrorOptions) {
 		super(message, 'cause' in options ? { cause: options.cause } : undefined)
-		// The brand holds the error itself, so a transparent proxy over a branded error forwards its
-		// target's identity and fails the comparison in `isCaptureError`.
+		// A transparent proxy forwards its target's identity and fails the guard's comparison.
 		Object.defineProperty(this, CAPTURE_ERROR_BRAND, { value: this })
 		this.code = options.code
 		this.context = options.context
@@ -46,7 +45,7 @@ export class CaptureError extends Error {
  *
  * @remarks
  * Recognition requires a native `Error` whose prototype is not `Error.prototype`, an own brand
- * property holding the tested value itself, a declared condition code, and a record or absent
+ * property holding the tested value itself, a declared condition code, and an object, callable, or absent
  * context. It recognizes an error from another installed copy of this package, and refuses a
  * look-alike with the same code and no brand, a proxy over a branded error, and a plain object
  * that only carries the brand.
@@ -68,7 +67,7 @@ export function isCaptureError(value: unknown): value is CaptureError {
 		const context: unknown = INTRINSICS.reflect.read(value, 'context')
 		return (
 			CAPTURE_ERROR_CODES.some((declared) => declared === code) &&
-			(context === undefined || isRecord(context))
+			(context === undefined || isObject(context) || isFunction(context))
 		)
 	})
 }

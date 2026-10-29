@@ -13,3 +13,4 @@ One row per dispatched unit and per user ruling on routing or scope, in date ord
 | 2026-10-28 | X7 fix round: C9, O1, and the C10 harness | astra | `3ca9839` |
 | 2026-10-28 | X7 fix rounds 2–4: the type-resolved `dist` import, scratch parents in a clean clone, the parsed status wait, the cross-platform tree stop, the `win32` retry pin, and the distribution peers read from the manifest | astra | `951c7ba`, `d59644d`, `025a8e2` |
 | 2026-10-29 | Release runs R1–R10 on `025a8e2`, all passing; R7 ran on a Linux host | Orchestrator | `plan.md` § State |
+| 2026-10-29 | capture-realign: scaffold adoption, fixture centralization, inherited-evidence preflight, wrapper alignment, and error-guard context correction | astra | `plan.md` § Sequence; acceptance pending |

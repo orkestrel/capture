@@ -1,3 +1,5 @@
+import * as core from '@src/core'
+import * as server from '@src/server'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createScratch } from '@orkestrel/test/server'
@@ -9,8 +11,8 @@ import {
 	CaptureInvocation,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import {
+	ComposedFixture,
 	FIXTURE_TIMEOUT,
 	withEnvironment,
 	readCaptureHeld,
@@ -19,16 +21,18 @@ import {
 	readCaptureRuns,
 	CAPTURE_USAGE_CASES,
 } from '../../setupServer.js'
-
 describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each(['registry', 'journey'])(
 		'X7 leaves runs unchanged for %s usage after discovery',
 		async (command) => {
-			const fixture = new ComposedFixture({
-				config: CAPTURE_DEFAULTS.config,
-				requests: CAPTURE_DEFAULTS.requests,
-				committed: true,
-			})
+			const fixture = new ComposedFixture(
+				{ core, server },
+				{
+					config: CAPTURE_DEFAULTS.config,
+					requests: CAPTURE_DEFAULTS.requests,
+					committed: true,
+				},
+			)
 			const errors: string[] = []
 			const cli = new CaptureCLI({
 				root: fixture.root,
@@ -62,11 +66,14 @@ describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 		},
 	)
 	it('X7 retains the changed-selection discovery directory on exit 1', async () => {
-		const fixture = new ComposedFixture({
-			config: CAPTURE_DEFAULTS.config,
-			requests: CAPTURE_DEFAULTS.requests,
-			committed: true,
-		})
+		const fixture = new ComposedFixture(
+			{ core, server },
+			{
+				config: CAPTURE_DEFAULTS.config,
+				requests: CAPTURE_DEFAULTS.requests,
+				committed: true,
+			},
+		)
 		try {
 			const before = readCaptureRuns(fixture.root, fixture.requests)
 			const cli = new CaptureCLI({
@@ -90,10 +97,13 @@ describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1x leaves runs unchanged after every usage refusal in every command', async () => {
-		const fixture = new ComposedFixture({
-			config: CAPTURE_DEFAULTS.config,
-			requests: CAPTURE_DEFAULTS.requests,
-		})
+		const fixture = new ComposedFixture(
+			{ core, server },
+			{
+				config: CAPTURE_DEFAULTS.config,
+				requests: CAPTURE_DEFAULTS.requests,
+			},
+		)
 		const cli = new CaptureCLI({
 			root: fixture.root,
 			stdout: () => undefined,
@@ -123,10 +133,13 @@ describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1x retains discovery logs for exit-1 evidence refusals', async () => {
-		const fixture = new ComposedFixture({
-			config: CAPTURE_DEFAULTS.config,
-			requests: CAPTURE_DEFAULTS.requests,
-		})
+		const fixture = new ComposedFixture(
+			{ core, server },
+			{
+				config: CAPTURE_DEFAULTS.config,
+				requests: CAPTURE_DEFAULTS.requests,
+			},
+		)
 		const cli = new CaptureCLI({
 			root: fixture.root,
 			stdout: () => undefined,
@@ -158,10 +171,13 @@ describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1w classifies unavailable absolute path roots as usage before sheet preflight', async () => {
-		const fixture = new ComposedFixture({
-			config: CAPTURE_DEFAULTS.config,
-			requests: CAPTURE_DEFAULTS.requests,
-		})
+		const fixture = new ComposedFixture(
+			{ core, server },
+			{
+				config: CAPTURE_DEFAULTS.config,
+				requests: CAPTURE_DEFAULTS.requests,
+			},
+		)
 		const errors: string[] = []
 		const cli = new CaptureCLI({
 			root: fixture.root,
@@ -200,10 +216,13 @@ describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1v refuses another owner case under every command with no stage or marker', async () => {
-		const fixture = new ComposedFixture({
-			config: CAPTURE_DEFAULTS.config,
-			requests: CAPTURE_DEFAULTS.requests,
-		})
+		const fixture = new ComposedFixture(
+			{ core, server },
+			{
+				config: CAPTURE_DEFAULTS.config,
+				requests: CAPTURE_DEFAULTS.requests,
+			},
+		)
 		const errors: string[] = []
 		const cli = new CaptureCLI({
 			root: fixture.root,
@@ -234,10 +253,13 @@ describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1v treats outside path flags as usage after refusing a held marker first', async () => {
-		const fixture = new ComposedFixture({
-			config: CAPTURE_DEFAULTS.config,
-			requests: CAPTURE_DEFAULTS.requests,
-		})
+		const fixture = new ComposedFixture(
+			{ core, server },
+			{
+				config: CAPTURE_DEFAULTS.config,
+				requests: CAPTURE_DEFAULTS.requests,
+			},
+		)
 		const outside = createScratch({ prefix: 'capture-flag-outside-' })
 		const errors: string[] = []
 		const cli = new CaptureCLI({
@@ -335,10 +357,13 @@ describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('routes every command report through the injected writers and retains exit codes', async () => {
-		const fixture = new ComposedFixture({
-			config: CAPTURE_DEFAULTS.config,
-			requests: CAPTURE_DEFAULTS.requests,
-		})
+		const fixture = new ComposedFixture(
+			{ core, server },
+			{
+				config: CAPTURE_DEFAULTS.config,
+				requests: CAPTURE_DEFAULTS.requests,
+			},
+		)
 		const stdout: string[] = []
 		const stderr: string[] = []
 		const cli = new CaptureCLI({

@@ -1,3 +1,6 @@
+import { captureError } from '@orkestrel/test'
+import * as core from '@src/core'
+import * as server from '@src/server'
 import { execFileSync } from 'node:child_process'
 import {
 	existsSync,
@@ -21,9 +24,11 @@ import {
 } from '@src/core'
 import { CaptureIntegrity, computeCaptureHash, computeRegistryDigest } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { IntegrityFixture } from '../../fixtures/capture/IntegrityFixture.js'
-import { REFUSED_PATHS, readThrown } from '../../setup.js'
+import { REFUSED_PATHS } from '../../setup.js'
 import {
+	readCaptureFixtureJSON,
+	readCaptureFixtureStatuses,
+	IntegrityFixture,
 	BOARD,
 	COLLECTION_MEMBERS,
 	COLLECTION_POPULATIONS,
@@ -40,7 +45,6 @@ import {
 	VARIANTS,
 	readFixtureManifest,
 } from '../../setupServer.js'
-
 // A host that cannot link a file cannot build the hard-link alias the duplicate-image case needs;
 // supportsFileLinks creates one link and reads the file through it.
 const LINKED = supportsFileLinks()
@@ -51,7 +55,7 @@ const MAIL_LIGHT = { selector: 'pages:mail', variants: ['light-390'] }
 it.runIf(supportsDirectoryLinks())(
 	'refuses a bounded input behind an outside directory junction before a stage runs',
 	async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		const outside = createScratch({ prefix: 'capture-input-junction-' })
 		try {
 			fixture.seed()
@@ -81,7 +85,7 @@ describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT },
 	it.each(['state', 'case', 'portfolio'] as const)(
 		'H1t names an unknown %s before deriving reader variants',
 		async (flag) => {
-			const fixture = new IntegrityFixture()
+			const fixture = new IntegrityFixture({ core, server })
 			try {
 				fixture.seed()
 				const error: unknown = await fixture.engine
@@ -99,11 +103,11 @@ describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT },
 		},
 	)
 	it('H1s caps actual Git stderr with an omitted-character count', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			fixture.write('.git/config', `[core]\nrepositoryformatversion = ${'invalid'.repeat(1000)}\n`)
-			const failure = readThrown(() => fixture.engine.changed('HEAD'))
+			const failure = captureError(() => fixture.engine.changed('HEAD'))
 			expect(failure).toMatchObject({ code: 'HOST' })
 			expect(failure instanceof Error ? failure.message : '').toContain('Git read failed')
 			expect(failure instanceof Error ? failure.message : '').toContain('more characters')
@@ -113,7 +117,7 @@ describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT },
 		}
 	})
 	it('H1s gives selection refusals bounded declared candidates', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			for (const selection of [
@@ -136,7 +140,7 @@ describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT },
 		}
 	})
 	it('keeps Unicode names intact through bounded NUL-separated Git output', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			fixture.write('src/mail/café view.ts', '// unicode path\n')
@@ -149,7 +153,7 @@ describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT },
 	})
 
 	it('classifies tracked, deleted, renamed, untracked, shared, test, and outside paths without losing spaces', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			renameSync(
@@ -193,7 +197,7 @@ describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT },
 	})
 
 	it('includes commits after an ancestor ref and working changes while HEAD reads only uncommitted work', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			execFileSync('git', ['branch', 'baseline'], { cwd: fixture.root, windowsHide: true })
@@ -228,7 +232,7 @@ describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT },
 	})
 
 	it('reduces a selected descendant covered by a selected ancestor from accepted receipts', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed({ population: 'nested' })
 			fixture.write('src/mail/view.ts', '// changed\n')
@@ -247,14 +251,14 @@ describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT },
 	})
 
 	it('requires an accepted registry, preserves Git ref failures, and reports an unchanged tree', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			expect(() => fixture.engine.changed('HEAD')).toThrow(
 				'Missing accepted registry; run the explicit complete-registry refresh',
 			)
 			fixture.seed()
 			expect(fixture.engine.changed('HEAD')).toEqual({ changes: [], owners: [] })
-			const error = readThrown(() => fixture.engine.changed('missing-ref'))
+			const error = captureError(() => fixture.engine.changed('missing-ref'))
 			expect(isCaptureError(error) ? error.code : undefined).toBe('HOST')
 			expect(String(error)).toContain('fatal:')
 			const diagnostic = executeSync(
@@ -273,23 +277,12 @@ describe('CaptureIntegrity changed Git selection', { timeout: FIXTURE_TIMEOUT },
 	})
 })
 
-function readJSON(fixture: IntegrityFixture, file: string): unknown {
-	return parseJSON(fixture.read(file).toString('utf8'))
-}
-
-async function readStatuses(
-	fixture: IntegrityFixture,
-	selection: { readonly selector: string; readonly variants: readonly string[] },
-): Promise<readonly string[]> {
-	return (await fixture.engine.check(selection)).entries.map((entry) => entry.status)
-}
-
 describe(
 	'CaptureIntegrity real filesystem and producer protocol',
 	{ timeout: FIXTURE_TIMEOUT },
 	() => {
 		it('commits current images with exact provenance and measured selected populations from an unmanifested workspace', async () => {
-			const fixture = new IntegrityFixture()
+			const fixture = new IntegrityFixture({ core, server })
 			try {
 				fixture.seed()
 				expect(readFixtureManifest(fixture.root)).toBeUndefined()
@@ -333,9 +326,13 @@ describe(
 		it.each(STALE_CHANGES)(
 			'classifies $change beside a current control',
 			async ({ change, status }) => {
-				const fixture = await IntegrityFixture.current()
+				const fixture = await IntegrityFixture.current({ core, server })
 				try {
-					expect(await readStatuses(fixture, MAIL_LIGHT)).toEqual(['current', 'current', 'current'])
+					expect(await readCaptureFixtureStatuses(fixture, MAIL_LIGHT)).toEqual([
+						'current',
+						'current',
+						'current',
+					])
 					if (change === 'missing') rmSync(resolve(fixture.root, MAIL_IMAGE))
 					if (change === 'image-bytes')
 						fixture.write(MAIL_IMAGE, Buffer.concat([PNG, Buffer.from('changed')]))
@@ -348,7 +345,7 @@ describe(
 					if (change === 'shared-add') fixture.write('src/shared/new.ts', '// shared added\n')
 					if (change === 'shared-remove') rmSync(resolve(fixture.root, 'src/shared/theme.ts'))
 					if (change === 'unstamped' || change === 'obsolete-owner') {
-						const manifest = readJSON(fixture, fixture.options.manifest)
+						const manifest = readCaptureFixtureJSON(fixture, fixture.options.manifest)
 						if (!isCaptureManifest(manifest)) throw new Error('Missing baseline manifest')
 						fixture.write(
 							fixture.options.manifest,
@@ -385,7 +382,7 @@ describe(
 		)
 
 		it('retains all mismatch reasons and applies duplicate before orphan, missing, unstamped and stale sources', async () => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				expect(
 					(await fixture.engine.check(MAIL_LIGHT)).entries.every(
@@ -413,7 +410,10 @@ describe(
 					'stale-shared',
 				)
 				expect(
-					await readStatuses(fixture, { selector: 'examples:board', variants: ['light-390'] }),
+					await readCaptureFixtureStatuses(fixture, {
+						selector: 'examples:board',
+						variants: ['light-390'],
+					}),
 				).toEqual(['stale-shared'])
 			} finally {
 				fixture.destroy()
@@ -421,7 +421,7 @@ describe(
 		})
 
 		it('reports renamed, flat legacy and unknown PNGs as orphans without moving or deleting them', async () => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				expect(
 					(await fixture.engine.check({ selector: 'all', variants: ['light-390'] })).entries.every(
@@ -462,7 +462,7 @@ describe(
 		it.skipIf(!LINKED)(
 			'detects actual hard-link aliases as duplicate physical images',
 			async () => {
-				const fixture = await IntegrityFixture.current()
+				const fixture = await IntegrityFixture.current({ core, server })
 				try {
 					expect(
 						(await fixture.engine.check(MAIL_LIGHT)).entries.every(
@@ -482,7 +482,10 @@ describe(
 						'current',
 					)
 					expect(
-						await readStatuses(fixture, { selector: 'examples:board', variants: ['light-390'] }),
+						await readCaptureFixtureStatuses(fixture, {
+							selector: 'examples:board',
+							variants: ['light-390'],
+						}),
 					).toEqual(['current'])
 					const manifest = fixture.read('tmp/captures/states/manifest.json')
 					await expect(fixture.engine.stamp(stage)).rejects.toThrow(
@@ -503,7 +506,7 @@ describe(
 		)
 
 		it('warns on behavioral bytes and membership, keeps pixels current, and invalidates state lookup', async () => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				const lookup = { selector: 'pages:mail', state: 'mail-screen', variants: ['light-390'] }
 				expect((await fixture.engine.lookup(lookup)).case).toBe(MAIL)
@@ -534,7 +537,7 @@ describe(
 		})
 
 		it('names the exact case in the lookup refresh command with its quotes preserved', async () => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				fixture.write('behavior/journeys.ts', '// body changed\n')
 				await expect(
@@ -553,7 +556,7 @@ describe(
 		})
 
 		it('projects a singleton after explicit lookup and leaves sibling image stamps and full observations intact', async () => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				const before = parseJSON(readFixtureManifest(fixture.root) ?? '')
 				if (!isCaptureManifest(before)) throw new Error('Missing baseline manifest')
@@ -571,7 +574,7 @@ describe(
 				expect(after.entries['examples/board-screen--light-390.png']).toEqual(
 					before.entries['examples/board-screen--light-390.png'],
 				)
-				const run = readJSON(fixture, result.projects[0]?.record.file ?? '')
+				const run = readCaptureFixtureJSON(fixture, result.projects[0]?.record.file ?? '')
 				if (!isCaptureRun(run)) throw new Error('Missing singleton record')
 				expect(run.observed).toEqual(['mail-screen', 'mail-reader'])
 				expect(run.declarations.map((entry) => entry.case)).toContain(BOARD)
@@ -582,7 +585,7 @@ describe(
 		})
 
 		it('requires state selector, case and producing variant agreement without executing a repair', async () => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				const before = readFixtureManifest(fixture.root)
 				await expect(
@@ -641,7 +644,7 @@ describe(
 		})
 
 		it('keeps a separate raw Vue registry and reports its valid PNG as unstamped', async () => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				const browser = fixture.read(fixture.options.registry)
 				fixture.seed({ vue: true, variants: ['light-390'] })
@@ -681,7 +684,7 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 	it.each(FIXTURE_FAULTS)(
 		'preserves exact prior manifest bytes for %s after a passing stage control',
 		async (fault) => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				expect(
 					(await fixture.engine.check(MAIL_LIGHT)).entries.every(
@@ -698,7 +701,7 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 	)
 
 	it('validates every rest sibling before committing and retains the successful narrow stage', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			const before = readFixtureManifest(fixture.root)
 			await expect(
@@ -730,7 +733,7 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 	})
 
 	it('checks the abort signal after a real successful child and preserves prior manifest bytes', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			const controller = new AbortController()
 			const stage = fixture.stage({ signal: controller.signal })
@@ -757,7 +760,7 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 	})
 
 	it('requires the empty final record for an inapplicable selected project and publishes no empty transaction', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			const before = readFixtureManifest(fixture.root)
 			const result = await fixture.capture({ selector: 'examples:files', variants: ['dark-390'] })
@@ -778,7 +781,7 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 	})
 
 	it('attests full desktop collection from current phone inputs and refuses an unattested variant after input drift', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed({ variants: ['light-390', 'dark-390'] })
 			const registry = fixture.read(fixture.options.registry)
@@ -808,9 +811,9 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 	})
 
 	it('refuses attribution outside the predeclared input population even when the registry and record agree', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
-			const registry = readJSON(fixture, fixture.options.registry)
+			const registry = readCaptureFixtureJSON(fixture, fixture.options.registry)
 			if (!isCaptureRegistry(registry)) throw new Error('Missing complete registry')
 			const entries = registry.entries.map((entry) => ({
 				...entry,
@@ -839,7 +842,7 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 	})
 
 	it('publishes journey lookup separately without changing any image entry or PNG bytes', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			const before = readFixtureManifest(fixture.root)
 			const image = fixture.read(MAIL_IMAGE)
@@ -860,7 +863,7 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 	})
 
 	it('retires an older journey journal after capture merges newer input hashes', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			const lookup = { selector: 'pages:mail', state: 'mail-screen', variants: ['light-390'] }
 			await fixture.capture({ command: 'journey', selector: 'pages:mail' })
@@ -876,11 +879,11 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 	})
 
 	it('publishes one lookup input map across producing variants and resolves every passing state', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			const result = await fixture.capture({ command: 'journey', variants: VARIANTS })
-			const journal = readJSON(fixture, fixture.options.lookups)
+			const journal = readCaptureFixtureJSON(fixture, fixture.options.lookups)
 			if (!isCaptureLookupJournal(journal)) throw new Error('Missing lookup journal')
 			expect(Object.values(journal.inputs)).toEqual([fixture.hashes()])
 			expect(journal.lookups).toHaveLength(result.lookups.length)
@@ -912,12 +915,12 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 		['wrong variant', 'Lookup differs from its passing declaration'],
 		['missing case', 'Lookup differs from its passing declaration'],
 	])('refuses %s in a compact journal and preserves published evidence', async (fault, message) => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			await fixture.capture({ command: 'journey', selector: 'pages:mail' })
 			const lookup = { ...MAIL_LIGHT, state: 'mail-screen' }
 			expect((await fixture.engine.lookup(lookup)).case).toBe(MAIL)
-			const journal = readJSON(fixture, fixture.options.lookups)
+			const journal = readCaptureFixtureJSON(fixture, fixture.options.lookups)
 			if (!isCaptureLookupJournal(journal)) throw new Error('Missing lookup journal')
 			if (fault === 'unauthorized run') {
 				for (const file of new Set(journal.lookups.map((entry) => entry.run.file)))
@@ -963,12 +966,12 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 	it.each(COLLECTION_POPULATIONS)(
 		'refuses %s lookup declarations that disagree with the registry despite matching run and report bytes',
 		async (population) => {
-			const fixture = new IntegrityFixture()
+			const fixture = new IntegrityFixture({ core, server })
 			try {
 				fixture.seed()
 				const stage = fixture.stage({ command: 'journey' })
 				await fixture.engine.stamp(stage)
-				const journal = readJSON(fixture, fixture.options.lookups)
+				const journal = readCaptureFixtureJSON(fixture, fixture.options.lookups)
 				if (!isCaptureLookupJournal(journal)) throw new Error('Missing lookup journal')
 				const outcome = fixture.execute({
 					request: stage.request,
@@ -1001,7 +1004,7 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 	)
 
 	it('keeps test-only complete-registry refresh distinct from pixel currency and refreshes lookup explicitly', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			const lookup = { selector: 'pages:mail', state: 'mail-screen', variants: ['light-390'] }
 			const manifest = readFixtureManifest(fixture.root)
@@ -1022,7 +1025,7 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 	})
 
 	it('never rewrites complete anchors during scoped refresh', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			const before = fixture.read(fixture.options.registry)
 			fixture.write('behavior/journeys.ts', '// changed body\n')
@@ -1041,7 +1044,7 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 
 describe('CaptureIntegrity pass-scoped file readings', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('hashes each shared source once before execution, once in the record pass and once in the final check', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			const shared = [
 				'src/shared/theme.ts',
@@ -1086,7 +1089,7 @@ describe('CaptureIntegrity pass-scoped file readings', { timeout: FIXTURE_TIMEOU
 	})
 
 	it('refuses a shared source changed after the record pass read it and before the final check', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			const file = 'src/shared/theme.ts'
 			const original = computeCaptureHash(fixture.read(file))
@@ -1132,7 +1135,7 @@ describe('CaptureIntegrity pass-scoped file readings', { timeout: FIXTURE_TIMEOU
 	})
 
 	it('refuses an unattributed bounded input changed after the record pass read it and before the final check', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			// The file matches the bounded inputs but no destination's attribution, so no stable check reads it.
 			const file = 'src/extra.ts'
@@ -1175,7 +1178,7 @@ describe('CaptureIntegrity pass-scoped file readings', { timeout: FIXTURE_TIMEOU
 	})
 
 	it('refuses a staged image changed after the record pass read it and before commit', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			const image = computeCaptureHash(PNG)
 			const log: string[] = []
@@ -1216,7 +1219,7 @@ describe('CaptureIntegrity pass-scoped file readings', { timeout: FIXTURE_TIMEOU
 	})
 
 	it('refuses a declaration input changed after a read measured it', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			const file = 'behavior/journeys.ts'
 			const original = computeCaptureHash(fixture.read(file))
@@ -1247,7 +1250,7 @@ describe(
 	{ timeout: FIXTURE_TIMEOUT },
 	() => {
 		it.each(REFUSED_PATHS)('refuses %j before opening a path', (path) => {
-			const fixture = new IntegrityFixture()
+			const fixture = new IntegrityFixture({ core, server })
 			try {
 				expect(() => new CaptureIntegrity({ ...fixture.options, manifest: path })).toThrow(
 					'Invalid serialized path',
@@ -1258,7 +1261,7 @@ describe(
 		})
 
 		it('checks the physical record independently of request identity before spawning', async () => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				const before = readFixtureManifest(fixture.root)
 				const stage = fixture.stage()
@@ -1281,7 +1284,7 @@ describe(
 		})
 
 		it('refuses a real directory symlink or junction escape at the nearest existing parent', () => {
-			const fixture = new IntegrityFixture()
+			const fixture = new IntegrityFixture({ core, server })
 			const outside = createScratch({ prefix: 'outside-' })
 			try {
 				outside.write('sentinel.txt', 'unchanged\n')
@@ -1299,7 +1302,7 @@ describe(
 		})
 
 		it('refuses capture redirection into a source directory even inside the workspace', async () => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				expect(
 					(await fixture.engine.check(MAIL_LIGHT)).entries.every(
@@ -1328,9 +1331,9 @@ describe(
 		})
 
 		it('refuses case-colliding manifest keys whatever the host folds', async () => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
-				const value = readJSON(fixture, fixture.options.manifest)
+				const value = readCaptureFixtureJSON(fixture, fixture.options.manifest)
 				if (!isCaptureManifest(value)) throw new Error('Missing baseline manifest')
 				const stamp = value.entries['pages/mail-screen--light-390.png']
 				if (stamp === undefined) throw new Error('Missing baseline stamp')
@@ -1351,7 +1354,7 @@ describe(
 		})
 
 		it('refuses invalid inherited schema and altered raw receipts without publishing', async () => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				const original = fixture.read(fixture.options.manifest)
 				fixture.write(fixture.options.manifest, '{}\n')
@@ -1369,7 +1372,7 @@ describe(
 		})
 
 		it('refuses a relative integrity root, an empty input population, and an unknown primary root', () => {
-			const fixture = new IntegrityFixture()
+			const fixture = new IntegrityFixture({ core, server })
 			try {
 				expect(() => new CaptureIntegrity({ ...fixture.options, root: 'relative' })).toThrow(
 					'Integrity root must be absolute',
@@ -1416,7 +1419,7 @@ describe(
 
 describe('CaptureIntegrity refusal conditions', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('classifies each refusal under its condition and keeps the failure recognizable', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			await expect(
 				fixture.engine.check({ selector: 'unknown', variants: ['light-390'] }),
@@ -1428,14 +1431,16 @@ describe('CaptureIntegrity refusal conditions', { timeout: FIXTURE_TIMEOUT }, ()
 				code: 'EVIDENCE',
 			})
 			await expect(fixture.capture({ fault: 'identity' })).rejects.toSatisfy(isCaptureError)
-			const quiet = new IntegrityFixture()
+			const quiet = new IntegrityFixture({ core, server })
 			try {
 				await expect(quiet.engine.read(MAIL_LIGHT)).rejects.toMatchObject({ code: 'EVIDENCE' })
 				expect(
-					readThrown(() => new CaptureIntegrity({ ...quiet.options, manifest: '../escape.json' })),
+					captureError(
+						() => new CaptureIntegrity({ ...quiet.options, manifest: '../escape.json' }),
+					),
 				).toMatchObject({ code: 'CONTAINMENT' })
 				expect(
-					readThrown(() => new CaptureIntegrity({ ...quiet.options, inputs: [] })),
+					captureError(() => new CaptureIntegrity({ ...quiet.options, inputs: [] })),
 				).toMatchObject({ code: 'HOST' })
 			} finally {
 				quiet.destroy()
@@ -1446,7 +1451,7 @@ describe('CaptureIntegrity refusal conditions', { timeout: FIXTURE_TIMEOUT }, ()
 	})
 
 	it('keeps the original refusal as the cause of a read or lookup refusal', async () => {
-		const fixture = await IntegrityFixture.current()
+		const fixture = await IntegrityFixture.current({ core, server })
 		try {
 			const failure: unknown = await fixture.engine
 				.lookup({ selector: 'examples:board', state: 'mail-screen', variants: ['light-390'] })
@@ -1461,7 +1466,7 @@ describe('CaptureIntegrity refusal conditions', { timeout: FIXTURE_TIMEOUT }, ()
 
 describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('reads complete declarations without PNGs or passing lookups and discovers actual sparse output variants', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			const before = fixture.read(fixture.options.registry)
@@ -1488,7 +1493,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 	})
 
 	it('revalidates a body-only edit by full collection for only its actually executed variant without promoting unpassed cases to lookups', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			const anchor = fixture.read(fixture.options.registry)
@@ -1527,7 +1532,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 	it.each(PRODUCT_INPUTS)(
 		'keeps pixel stale reasons after %s changes while declaration reads require a fresh collection',
 		async (file) => {
-			const fixture = await IntegrityFixture.current()
+			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				fixture.write(file, '// changed product bytes\n')
 				const status = file.includes('/shared/') ? 'stale-shared' : 'stale-own'
@@ -1555,7 +1560,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 	)
 
 	it('tracks both added and removed bounded input members and refuses a stale collection after the next edit', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			fixture.write('behavior/added.ts', '// membership addition\n')
@@ -1580,7 +1585,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 	})
 
 	it('persists a zero-passing full collection in the existing journey journal without images or manifest replacement', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			const anchor = fixture.read(fixture.options.registry)
@@ -1593,7 +1598,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 			expect(result.projects.map((project) => project.passed)).toEqual([[]])
 			expect(result.lookups).toEqual([])
 			expect(result.entries).toEqual([])
-			const journal = readJSON(fixture, fixture.options.lookups)
+			const journal = readCaptureFixtureJSON(fixture, fixture.options.lookups)
 			if (!isCaptureLookupJournal(journal)) throw new Error('Missing collection journal')
 			expect(journal.lookups).toEqual([])
 			expect(journal.collections).toHaveLength(1)
@@ -1613,7 +1618,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 	it.each(COLLECTION_POPULATIONS)(
 		'refuses a real %s full collection while preserving the complete anchor and journal',
 		async (population) => {
-			const fixture = new IntegrityFixture()
+			const fixture = new IntegrityFixture({ core, server })
 			try {
 				fixture.seed()
 				await fixture.capture({ command: 'journey', selector: 'examples:board' })
@@ -1637,7 +1642,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 	it.each(COLLECTION_MEMBERS)(
 		'pins exact %s bytes even when the collection has no passing lookup',
 		async (member) => {
-			const fixture = new IntegrityFixture()
+			const fixture = new IntegrityFixture({ core, server })
 			try {
 				fixture.seed()
 				fixture.write('behavior/journeys.ts', '// body edit\n')
@@ -1648,7 +1653,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 				})
 				const dark = { selector: 'pages:mail', variants: ['dark-390'] }
 				expect((await fixture.engine.read(dark)).entries).toHaveLength(3)
-				const journal = readJSON(fixture, fixture.options.lookups)
+				const journal = readCaptureFixtureJSON(fixture, fixture.options.lookups)
 				if (!isCaptureLookupJournal(journal)) throw new Error('Missing collection journal')
 				const receipt = journal.collections?.[0]
 				if (receipt === undefined) throw new Error('Missing collection receipt')
@@ -1668,7 +1673,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 	it.each(COLLECTION_POPULATIONS)(
 		'refuses %s authenticated collection declarations at read time independently of producer publication checks',
 		async (population) => {
-			const fixture = new IntegrityFixture()
+			const fixture = new IntegrityFixture({ core, server })
 			try {
 				fixture.seed()
 				const stage = fixture.stage({
@@ -1677,7 +1682,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 					variants: ['dark-390'],
 				})
 				await fixture.engine.stamp(stage)
-				const journal = readJSON(fixture, fixture.options.lookups)
+				const journal = readCaptureFixtureJSON(fixture, fixture.options.lookups)
 				if (!isCaptureLookupJournal(journal)) throw new Error('Missing collection journal')
 				const receipt = journal.collections?.[0]
 				if (receipt === undefined) throw new Error('Missing collection receipt')
@@ -1721,13 +1726,13 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 	)
 
 	it('does not infer collection receipts from historical lookups', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			fixture.write('behavior/journeys.ts', '// body edit\n')
 			await fixture.capture({ command: 'journey', selector: 'pages:mail' })
 			expect((await fixture.engine.read(MAIL_LIGHT)).entries).toHaveLength(3)
-			const journal = readJSON(fixture, fixture.options.lookups)
+			const journal = readCaptureFixtureJSON(fixture, fixture.options.lookups)
 			if (!isCaptureLookupJournal(journal)) throw new Error('Missing lookup journal')
 			fixture.write(
 				fixture.options.lookups,
@@ -1747,7 +1752,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 	})
 
 	it('admits a desktop collection only after that actual producer runs and retains its anchor lineage across a body edit', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed({ variants: ['light-390', 'dark-390'] })
 			const desktop = { selector: 'examples:files', variants: ['dark-320'] }
@@ -1778,7 +1783,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 	it.each(READ_REFUSALS)(
 		'refuses an unknown or empty read without creating evidence: $reason',
 		async ({ selection, reason }) => {
-			const fixture = new IntegrityFixture()
+			const fixture = new IntegrityFixture({ core, server })
 			try {
 				fixture.seed()
 				const registry = fixture.read(fixture.options.registry)
@@ -1793,7 +1798,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 	)
 
 	it('retains an empty-passing non-anchor lineage with only its origin and latest collection', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed({ variants: ['light-390', 'dark-390'] })
 			await fixture.capture({
@@ -1812,7 +1817,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 					(await fixture.engine.read({ selector: 'pages:mail', variants: ['light-1280'] })).entries,
 				).toHaveLength(3)
 			}
-			const journal = readJSON(fixture, fixture.options.lookups)
+			const journal = readCaptureFixtureJSON(fixture, fixture.options.lookups)
 			if (!isCaptureLookupJournal(journal)) throw new Error('Missing collection journal')
 			expect(journal.lookups).toEqual([])
 			expect(journal.collections).toHaveLength(2)
@@ -1823,7 +1828,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 	})
 
 	it('reads separate Vue declarations while preserving unstamped direct images and refusing browser selections', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed({ vue: true, variants: ['light-390'] })
 			const vue = new CaptureIntegrity({

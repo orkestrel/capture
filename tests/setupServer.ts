@@ -1,5 +1,9 @@
+import type * as CaptureCore from '@src/core'
+import type { createRequestFixture } from './setup.js'
+import type { ChildProcess } from 'node:child_process'
 import type {
 	CaptureDeclaration,
+	CaptureReceipt,
 	CaptureDestination,
 	CaptureRegistry,
 	CaptureRequest,
@@ -8,18 +12,37 @@ import type {
 } from '@src/core'
 import type { ExecuteResult } from '@orkestrel/process'
 import type { ScratchInterface } from '@orkestrel/test/server'
-import type { CaptureReadOptions, CaptureRequestOptions, CapturePicture } from '@src/server'
+import type {
+	CaptureReadOptions,
+	CaptureRequestOptions,
+	CapturePicture,
+	CaptureExecutionResult,
+	CaptureIntegrityInterface,
+	CaptureIntegrityOptions,
+	CaptureReceiptInput,
+	CaptureStageOptions,
+	CaptureStageResult,
+	CaptureCommand,
+	CaptureChildTerminationHandler,
+	CaptureWriteHandler,
+	CaptureOwnershipHost,
+	CaptureInvocation,
+	CaptureDiscovery,
+	CaptureReaderOptions,
+} from '@src/server'
 import type * as CaptureBuild from '@src/server'
 import { createHash, randomUUID } from 'node:crypto'
-import { fork } from 'node:child_process'
+import { execFileSync, fork, spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import {
 	cpSync,
 	existsSync,
 	globSync,
+	linkSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
+	rmSync,
 	statSync,
 	utimesSync,
 	writeFileSync,
@@ -40,9 +63,8 @@ import {
 	parseJSON,
 } from '@orkestrel/contract'
 import { execute, executeSync, detach, killTree } from '@orkestrel/process/server'
-import { retryUntil, waitForCondition } from '@orkestrel/test'
+import { retryUntil, waitForCondition, waitForEvent, requireValue } from '@orkestrel/test'
 import { createScratch, isRunning } from '@orkestrel/test/server'
-
 // The plain Node writer imports this module; consumer readers load source guards only when called.
 
 /** Anchors consumer fixture and tool paths to this checkout rather than a child workspace. */
@@ -84,11 +106,11 @@ export function createThumbnailPicture(
 	width: number,
 	height: number,
 ): CapturePicture {
+	const sequence = new CaptureThumbnailSequence()
 	const pixels = new Uint8Array(width * height * 3)
-	let seed = 12345
-	for (let y = 0; y < height; y += 1) {
-		for (let x = 0; x < width; x += 1) {
-			seed = (seed * 1664525 + 1013904223) >>> 0
+	for (const y of Array.from({ length: Math.ceil(height) }, (_, index) => index)) {
+		for (const x of Array.from({ length: Math.ceil(width) }, (_, index) => index)) {
+			const seed = sequence.next().value
 			const bright =
 				feature === 'rule'
 					? x % 97 === 5 || y % 89 === 3
@@ -112,23 +134,28 @@ export function averageThumbnailPicture(
 ): CapturePicture {
 	const width = Math.max(1, Math.ceil(picture.width / factor))
 	const height = Math.min(Math.max(1, Math.ceil(picture.height / factor)), limit)
-	const pixels = new Uint8Array(width * height * 3)
-	for (let y = 0; y < height; y += 1) {
-		for (let x = 0; x < width; x += 1) {
-			const columns = Math.min(factor, picture.width - x * factor)
-			const rows = Math.min(factor, picture.height - y * factor)
-			for (let channel = 0; channel < 3; channel += 1) {
-				let sum = 0
-				for (let row = 0; row < rows; row += 1)
-					for (let column = 0; column < columns; column += 1)
-						sum +=
-							picture.pixels[
-								((y * factor + row) * picture.width + x * factor + column) * 3 + channel
-							] ?? 0
-				pixels[(y * width + x) * 3 + channel] = Math.round(sum / (rows * columns))
-			}
-		}
-	}
+	const pixels = Uint8Array.from({ length: width * height * 3 }, (_, index) => {
+		const channel = index % 3
+		const x = Math.floor(index / 3) % width
+		const y = Math.floor(index / (width * 3))
+		const columns = Math.min(factor, picture.width - x * factor)
+		const rows = Math.min(factor, picture.height - y * factor)
+		const rowIndices = Array.from({ length: rows }, (_row, row) => row)
+		const columnIndices = Array.from({ length: columns }, (_column, column) => column)
+		const sum = rowIndices.reduce(
+			(total, row) =>
+				columnIndices.reduce(
+					(value, column) =>
+						value +
+						(picture.pixels[
+							((y * factor + row) * picture.width + x * factor + column) * 3 + channel
+						] ?? 0),
+					total,
+				),
+			0,
+		)
+		return Math.round(sum / (rows * columns))
+	})
 	return { width, height, pixels }
 }
 
@@ -162,25 +189,7 @@ export async function importCaptureBuild(): Promise<typeof CaptureBuild> {
 /** Stops a recorded fixture process tree and confirms exit, returning false when it was already gone. */
 export async function stopCaptureTree(pid: number): Promise<boolean> {
 	if (!isRunning(pid)) return false
-	let accepted = true
-	if (process.platform === 'win32') accepted = await killTree(pid, 5_000)
-	else {
-		try {
-			process.kill(-pid, 'SIGKILL')
-		} catch (error) {
-			if (
-				!isError(error) ||
-				!('code' in error) ||
-				(error.code !== 'ESRCH' && error.code !== 'EPERM')
-			)
-				return false
-			try {
-				process.kill(pid, 'SIGKILL')
-			} catch (direct) {
-				if (!isError(direct) || !('code' in direct) || direct.code !== 'ESRCH') return false
-			}
-		}
-	}
+	const accepted = process.platform === 'win32' ? await killTree(pid, 5_000) : stopCaptureGroup(pid)
 	return await waitForCondition('the fixture process tree root exits', () => !isRunning(pid), {
 		budget: 5_000,
 	}).then(
@@ -2020,7 +2029,8 @@ export const BRAND_ENTRIES = Object.freeze({
  * that the guard accepts a subclass and refuses a look-alike, a transparent proxy, and a plain object
  * that only carries the brand. The two paths arrive as arguments.
  */
-export const BRAND_DRIVER = `import { createRequire } from 'node:module'
+export const BRAND_DRIVER = `import { strictEqual } from 'node:assert'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -2028,11 +2038,13 @@ const [installed, copy] = process.argv.slice(2)
 const first = await import(pathToFileURL(join(installed, ${JSON.stringify(BRAND_ENTRIES.import)})).href)
 const second = await import(pathToFileURL(join(copy, ${JSON.stringify(BRAND_ENTRIES.import)})).href)
 const required = createRequire(import.meta.url)(join(installed, ${JSON.stringify(BRAND_ENTRIES.require)}))
+const constructors = [first.CaptureError, second.CaptureError, required.CaptureError]
+strictEqual(new Set(constructors).size, constructors.length)
 const error = new first.CaptureError('first', { code: 'USAGE' })
 class Narrowed extends first.CaptureError {}
 const brand = Symbol.for('@orkestrel/capture.CaptureError')
 process.stdout.write(JSON.stringify({
-	distinct: [first.CaptureError !== second.CaptureError, first.CaptureError !== required.CaptureError],
+	distinct: [first.CaptureError !== second.CaptureError, first.CaptureError !== required.CaptureError, second.CaptureError !== required.CaptureError],
 	own: first.isCaptureError(error),
 	copyReadsInstalled: second.isCaptureError(error),
 	installedReadsCopy: first.isCaptureError(new second.CaptureError('second', { code: 'HOST' })),
@@ -2047,7 +2059,7 @@ process.stdout.write(JSON.stringify({
 
 /** Holds the observations the brand driver must print, in the order it prints them. */
 export const BRAND_EXPECTED = Object.freeze({
-	distinct: [true, true],
+	distinct: [true, true, true],
 	own: true,
 	copyReadsInstalled: true,
 	installedReadsCopy: true,
@@ -2342,3 +2354,1306 @@ export function readConsumerReport(
 	if (!isRecord(report)) throw new Error(`Missing ${prefix} report in ${stdout}`)
 	return report
 }
+
+/** Supplies the real source modules from the test host without importing them in plain Node fixture children. */
+export interface CaptureFixtureModules {
+	readonly core: typeof CaptureCore
+	readonly server: typeof CaptureBuild
+}
+
+/**
+ * Owns a real isolated Git workspace, producer children, and the engine under test.
+ *
+ * @remarks
+ * The producer is a plain Node child that writes the reporter, the final records, and the frames
+ * from inert fixture data. It validates nothing the engine owns, so every refusal the tests read
+ * comes from the engine.
+ */
+export class IntegrityFixture {
+	readonly modules: CaptureFixtureModules
+	readonly root: string
+	readonly options: CaptureIntegrityOptions
+	readonly engine: CaptureIntegrityInterface
+	readonly #scratch: ScratchInterface
+	readonly #imports: CaptureReceiptInput[] = []
+
+	/**
+	 * Creates the passing baseline used beside every filesystem and record control.
+	 *
+	 * @returns A caller-owned fixture with actual successful child stamps
+	 */
+	static async current(modules: CaptureFixtureModules): Promise<IntegrityFixture> {
+		const fixture = new IntegrityFixture(modules)
+		try {
+			fixture.seed()
+			await fixture.capture()
+			return fixture
+		} catch (error) {
+			fixture.destroy()
+			throw error
+		}
+	}
+
+	/** Creates a private committed Git workspace holding the fixture's sources. */
+	constructor(modules: CaptureFixtureModules, parent?: string) {
+		this.modules = modules
+		if (parent !== undefined) mkdirSync(parent, { recursive: true })
+		this.#scratch = createScratch({
+			prefix: 'integrity-',
+			...(parent === undefined ? {} : { parent }),
+		})
+		this.root = this.#scratch.path
+		try {
+			for (const path of [
+				'src/mail/view.ts',
+				'src/board/view.ts',
+				'src/shared/theme.ts',
+				'behavior/journeys.ts',
+			])
+				this.write(path, `// ${path}\n`)
+			this.write('outside.ts', '// deliberately outside the bounded inputs\n')
+			this.write('fixture with spaces.config.ts', 'export default {}\n')
+			this.write('.gitignore', 'tmp/\n')
+			execFileSync('git', ['init', '--quiet'], { cwd: this.root, windowsHide: true })
+			execFileSync('git', ['add', '.'], { cwd: this.root, windowsHide: true })
+			execFileSync(
+				'git',
+				[
+					'-c',
+					'user.name=Integrity Fixture',
+					'-c',
+					'user.email=fixture@example.invalid',
+					'commit',
+					'--quiet',
+					'--no-gpg-sign',
+					'-m',
+					'fixture',
+				],
+				{ cwd: this.root, windowsHide: true },
+			)
+			this.options = {
+				root: this.root,
+				inputs: INPUTS,
+				directory: 'tmp/captures/states',
+				registry: 'tmp/captures/states/registry.json',
+				manifest: 'tmp/captures/states/manifest.json',
+				lookups: 'tmp/captures/states/lookups.json',
+				portfolios: PORTFOLIOS,
+			}
+			this.engine = this.modules.server.createCaptureIntegrity(this.options)
+		} catch (error) {
+			// A throwing constructor returns no instance, so no caller's finally block can destroy it.
+			this.#scratch.destroy()
+			throw error
+		}
+	}
+
+	/** Lists every complete-run receipt the producer imported, in the order it seeded them. */
+	get imports(): readonly CaptureReceiptInput[] {
+		return this.#imports
+	}
+
+	/**
+	 * Writes exact bytes within the owned scratch tree.
+	 *
+	 * @param file - The fixture-relative path
+	 * @param bytes - The desired bytes
+	 */
+	write(file: string, bytes: string | Uint8Array): void {
+		const path = resolve(this.root, file)
+		mkdirSync(dirname(path), { recursive: true })
+		writeFileSync(path, bytes)
+	}
+
+	/**
+	 * Reads exact bytes without decoding or normalizing them.
+	 *
+	 * @param file - The fixture-relative path
+	 * @returns The original bytes
+	 */
+	read(file: string): Buffer {
+		return readFileSync(resolve(this.root, file))
+	}
+
+	/**
+	 * Reads the native glob population through a separate SHA-256 implementation.
+	 *
+	 * @returns Exact file membership and byte hashes
+	 */
+	hashes(): Readonly<Record<string, string>> {
+		return Object.fromEntries(
+			globSync([...INPUTS], { cwd: this.root })
+				.map((file) => file.replaceAll('\\', '/'))
+				.filter((file) => statSync(resolve(this.root, file)).isFile())
+				.toSorted()
+				.map((file) => [file, createHash('sha256').update(this.read(file)).digest('hex')]),
+		)
+	}
+
+	/**
+	 * Runs an actual producer child and imports its complete report and raw declarations.
+	 *
+	 * @param options - The complete variants and optional separate portfolio or collision control
+	 * @throws Thrown when the producer fails or the bounded inputs drift while it runs.
+	 */
+	seed(options: FixtureSeed = {}): void {
+		const variants = options.variants ?? VARIANTS
+		const id = randomUUID()
+		const report = `tmp/evidence/${id}/report.json`
+		const records = Object.fromEntries(
+			variants.map((variant) => [variant, `tmp/evidence/${id}/${variant}.json`]),
+		)
+		const inputs = this.hashes()
+		const outcome = this.execute({
+			...options,
+			variants,
+			report,
+			records,
+			capture: options.vue ?? false,
+		})
+		if (outcome.code !== 0 || outcome.signal !== null)
+			throw new Error('Complete fixture producer failed')
+		if (JSON.stringify(inputs) !== JSON.stringify(this.hashes()))
+			throw new Error('Fixture inputs drifted while seeding')
+		const text = this.read(report).toString('utf8')
+		const receipts: readonly CaptureReceipt[] = variants.map((variant) => {
+			const run: unknown = parseJSON(this.read(records[variant] ?? '').toString('utf8'))
+			if (!this.modules.core.isCaptureRun(run)) throw new Error('Invalid complete fixture record')
+			return {
+				version: this.modules.core.CAPTURE_VERSION,
+				variant,
+				time: run.time,
+				report: { file: report, digest: createHash('sha256').update(text).digest('hex') },
+				inputs,
+				declarations: run.declarations,
+				registry: run.registry,
+				complete: run.complete,
+			}
+		})
+		const imports = receipts.map((receipt) => ({ receipt, report: text, outcome, capped: false }))
+		this.#imports.push(...imports)
+		// Collision controls deliberately bypass the importer so check() sees the malformed external population.
+		const raw = {
+			version: this.modules.core.CAPTURE_VERSION,
+			receipts,
+			entries: receipts.flatMap((receipt) => receipt.registry),
+		}
+		const registry = options.duplicate
+			? { ...raw, digest: this.modules.server.computeRegistryDigest(raw) }
+			: this.modules.server.buildCaptureRegistry(imports)
+		this.write(
+			`tmp/captures/${options.vue ? 'vue' : 'states'}/registry.json`,
+			JSON.stringify(registry),
+		)
+	}
+
+	/**
+	 * Builds a complete stage contract without running it, for boundary mutations.
+	 *
+	 * @param options - The selected work and optional producer fault
+	 * @returns The stage passed directly to the engine
+	 */
+	stage(options: FixtureStage = {}): CaptureStageOptions {
+		const id = randomUUID()
+		const variants = options.variants ?? ['light-390']
+		const stage = options.command === 'journey' ? 'selected' : 'narrow'
+		const report = `tmp/stages/${id}/${stage}.json`
+		const request: CaptureRequest = {
+			version: this.modules.core.CAPTURE_VERSION,
+			id,
+			stage,
+			pid: process.pid,
+			config: 'fixture with spaces.config.ts',
+			command: options.command ?? 'capture',
+			selector: options.selector ?? 'all',
+			...(options.case === undefined ? {} : { case: options.case }),
+			...(options.state === undefined ? {} : { state: options.state }),
+			variants,
+			args: [`--outputFile.json=${resolve(this.root, report)}`],
+		}
+		const projects = variants.map((variant) => ({
+			name: `journey:${variant}`,
+			variant,
+			inputs: INPUTS,
+			record: `tmp/captures/states/runs/${id}/${stage}/${variant}.json`,
+		}))
+		const input: FixtureWrite = {
+			...(options.ending === undefined ? {} : { ending: options.ending }),
+			request,
+			variants,
+			report,
+			capture: request.command === 'capture',
+			...(options.fault === undefined ? {} : { fault: options.fault }),
+			...(options.picture === undefined ? {} : { picture: options.picture }),
+			...(options.population === undefined ? {} : { population: options.population }),
+			...(options.journal === undefined ? {} : { journal: options.journal }),
+			records: Object.fromEntries(projects.map((project) => [project.variant, project.record])),
+		}
+		return {
+			request,
+			report,
+			projects,
+			...(options.signal === undefined ? {} : { signal: options.signal }),
+			execute: async () => this.execute(input),
+		}
+	}
+
+	/**
+	 * Executes the engine over a fresh external child.
+	 *
+	 * @param options - The selected work and optional producer fault
+	 * @returns The engine's committed result
+	 */
+	async capture(options: FixtureStage = {}): Promise<CaptureStageResult> {
+		return this.engine.stamp(this.stage(options))
+	}
+
+	/**
+	 * Executes the protocol producer without replacing any engine operation.
+	 *
+	 * @param input - The child transport
+	 * @returns The actual child exit and signal
+	 * @throws Thrown when the child cannot start, or fails without an injected fault that explains it.
+	 */
+	execute(input: FixtureWrite): CaptureExecutionResult {
+		const file = `tmp/fixture-input-${randomUUID()}.json`
+		this.write(file, JSON.stringify(input))
+		const child = spawnSync(
+			process.execPath,
+			[resolve(import.meta.dirname, 'fixtures/capture/Writer.ts'), resolve(this.root, file)],
+			{
+				cwd: this.root,
+				windowsHide: true,
+				encoding: 'utf8',
+				timeout: 15000,
+			},
+		)
+		if (child.error !== undefined) throw child.error
+		if (child.status !== 0 && input.fault !== 'failed-child' && input.fault !== 'signal')
+			throw new Error(child.stderr)
+		return { code: child.status, signal: child.signal }
+	}
+
+	/** Releases the scratch workspace this instance created. */
+	destroy(): void {
+		this.#scratch.destroy()
+	}
+}
+
+/**
+ * Owns an integrity workspace that also holds a wrapper and a Vitest stand-in, and runs the real
+ * runner, the real engine, and the registry refresh over it in this process.
+ *
+ * @remarks
+ * The runner and the engine are the subjects, so both run here for real with their output captured
+ * through the writers. The producer is a real Node child that writes real files and the wrapper is a
+ * real module that Vite loads from the workspace. Nothing stands in for the engine.
+ */
+export class ComposedFixture extends IntegrityFixture {
+	/** Holds the workspace-relative wrapper path the workspace carries and its runs load. */
+	readonly config: string
+	/** Holds the workspace-relative request directory the stand-in reads and the runs write. */
+	readonly requests: string
+
+	/**
+	 * Creates the committed workspace and writes the wrapper and the Vitest stand-in it spawns.
+	 *
+	 * @param options - The wrapper path and request directory to use in place of the fixture's own, as
+	 * an executable's built-in defaults need, the variant the wrapper stages alone first, and whether
+	 * to commit the wrapper as the Git baseline for changed-selection proofs
+	 */
+	constructor(
+		modules: CaptureFixtureModules,
+		options: {
+			readonly config?: string
+			readonly requests?: string
+			readonly first?: string
+			readonly committed?: boolean
+		} = {},
+	) {
+		super(modules)
+		this.config = options.config ?? READER_CONFIG
+		this.requests = options.requests ?? COMPOSED_REQUESTS
+		try {
+			this.write(this.config, createComposedWrapper(this.root, options.first))
+			this.write('node_modules/vitest/vitest.mjs', createStandIn())
+			this.write('node_modules/vitest/package.json', JSON.stringify({ version: '4.1.12' }))
+			if (options.committed) {
+				execFileSync('git', ['add', '--', this.config], { cwd: this.root, windowsHide: true })
+				execFileSync(
+					'git',
+					[
+						'-c',
+						'user.name=Fixture',
+						'-c',
+						'user.email=fixture@example.invalid',
+						'commit',
+						'--quiet',
+						'--no-gpg-sign',
+						'-m',
+						'wrapper baseline',
+					],
+					{ cwd: this.root, windowsHide: true },
+				)
+			}
+		} catch (error) {
+			// A throwing constructor returns no instance, so no caller's finally block can destroy it.
+			this.destroy()
+			throw error
+		}
+	}
+
+	/** Lists the requests observed by actual execution children, excluding discovery. */
+	get stages(): readonly CaptureRequest[] {
+		const file = resolve(this.root, 'tmp/stage-children.jsonl')
+		if (!existsSync(file)) return []
+		return readFileSync(file, 'utf8')
+			.split(/\r\n|\n/u)
+			.filter((line) => line !== '')
+			.map((line) => {
+				const request: unknown = parseJSON(line)
+				if (!this.modules.core.isCaptureRequest(request))
+					throw new Error('Invalid recorded stage request')
+				return request
+			})
+	}
+
+	/**
+	 * Runs one runner command over the workspace with the real engine.
+	 *
+	 * @param command - The runner command
+	 * @param argv - The command line after the subcommand
+	 * @param options - The environment, how to interrupt once the child is up, and the discovery deadline
+	 * @returns The exit and what the runner printed
+	 */
+	async run(
+		command: CaptureCommand,
+		argv: readonly string[],
+		options: ComposedExecution = {},
+	): Promise<ComposedRun> {
+		const { createCaptureRunner } = this.modules.server
+		const stdout: string[] = []
+		const stderr: string[] = []
+		const code = await this.#watch(
+			async () =>
+				await createCaptureRunner({
+					command,
+					root: this.root,
+					config: this.config,
+					requests: this.requests,
+					argv,
+					stdout: (text) => stdout.push(text),
+					stderr: (text) => stderr.push(text),
+					...(options.deadline === undefined ? {} : { deadline: options.deadline }),
+				}).execute(),
+			options,
+		)
+		return { code, stdout: stdout.join(''), stderr: stderr.join('') }
+	}
+
+	/**
+	 * Runs the registry refresh over the workspace.
+	 *
+	 * @param argv - The command line after the subcommand
+	 * @param options - The environment, how to interrupt once the child is up, and the discovery deadline
+	 * @returns The exit and what the refresh printed
+	 */
+	async refresh(
+		argv: readonly string[] = [],
+		options: ComposedExecution = {},
+	): Promise<ComposedRun> {
+		const { createCaptureRegistrar } = this.modules.server
+		const stdout: string[] = []
+		const stderr: string[] = []
+		const code = await this.#watch(
+			async () =>
+				await createCaptureRegistrar({
+					root: this.root,
+					config: this.config,
+					requests: this.requests,
+					argv,
+					stdout: (text) => stdout.push(text),
+					stderr: (text) => stderr.push(text),
+					...(options.deadline === undefined ? {} : { deadline: options.deadline }),
+				}).execute(),
+			options,
+		)
+		return { code, stdout: stdout.join(''), stderr: stderr.join('') }
+	}
+
+	/**
+	 * Reads the process ids the producer reported once its stage child and descendant were up.
+	 *
+	 * @returns The child and, when it had one, its descendant; empty before the producer reported ready
+	 */
+	readReady(): readonly number[] {
+		const ready = resolve(this.root, 'ready.json')
+		if (!existsSync(ready)) return []
+		const result: unknown = parseJSON(readFileSync(ready, 'utf8'))
+		if (!isRecord(result)) return []
+		return [result.pid, result.descendant].filter((pid): pid is number => typeof pid === 'number')
+	}
+
+	async #watch(start: () => Promise<number>, options: ComposedExecution): Promise<number> {
+		const ready = resolve(this.root, 'ready.json')
+		rmSync(ready, { force: true })
+		const running = withEnvironment(options.environment ?? {}, start)
+		if (options.interrupt !== undefined) {
+			await waitForCaptureStatus(ready, ['pid'])
+			// A real signal reaches the installed handler only on a POSIX host, so a proof that asks for
+			// one runs only there; the emitted signal runs the same handler on every host.
+			if (options.interrupt === 'emit') process.emit('SIGINT')
+			else process.kill(process.pid, 'SIGINT')
+		}
+		const code = await running
+		const pids = this.readReady()
+		if (pids.length > 0)
+			await waitForCondition(
+				'the producer and its descendant have exited',
+				() => pids.every((pid) => !isRunning(pid)),
+				{ budget: 20_000 },
+			)
+		return code
+	}
+}
+
+/** Carries what one reader execution printed and the exit it returned. */
+export interface ReaderRun {
+	readonly status: number
+	readonly stdout: string
+	readonly stderr: string
+}
+
+/**
+ * Owns an integrity workspace that also holds a wrapper, and runs the real readers over it in this process.
+ *
+ * @remarks
+ * The readers are the subject, so they run here with their output captured through their writers. The
+ * producer is still a real Node child writing real files, and the wrapper is a real module that the
+ * Vitest stand-in imports when a reader discovers it, so the readers import no Vite.
+ */
+export class ReaderFixture extends IntegrityFixture {
+	/** Creates the committed workspace and writes the wrapper the readers discover and the stand-in that answers. */
+	constructor(modules: CaptureFixtureModules) {
+		// Vite's environment loader only imports files beneath this checkout; each checks module
+		// must also sit inside the consumer root whose containment the reader validates.
+		super(modules, resolve(CAPTURE_WORKSPACE_ROOT, 'tmp'))
+		try {
+			this.write(READER_CONFIG, createReaderWrapper(this.root))
+			this.write('node_modules/vitest/vitest.mjs', createStandIn())
+			this.write('node_modules/vitest/package.json', JSON.stringify({ version: '4.1.12' }))
+			for (const file of [
+				'fixture-checks/Checks.ts',
+				...READER_CHECK_REFUSALS.map((entry) => entry.file),
+			]) {
+				const source = resolve(CAPTURE_WORKSPACE_ROOT, 'tests/fixtures/capture', basename(file))
+				if (existsSync(source)) this.write(file, readFileSync(source))
+			}
+		} catch (error) {
+			// A throwing constructor returns no instance, so no caller's finally block can destroy it.
+			this.destroy()
+			throw error
+		}
+	}
+
+	/**
+	 * Runs one reader over the workspace and gathers its output.
+	 *
+	 * @param command - The reader to run
+	 * @param args - The selector and flags after the entry name; the wrapper and artifact directory are added
+	 * @returns The exit, the output, and the refusals
+	 * @throws Thrown when the contact sheets are requested without an output directory.
+	 */
+	async run(command: ReaderCommand, args: readonly string[]): Promise<ReaderRun> {
+		const stdout: string[] = []
+		const stderr: string[] = []
+		const parsed = this.modules.server.readCaptureReaderArguments(args, this.root, {
+			config: READER_CONFIG,
+			journeys: READER_JOURNEYS,
+		})
+		const reader = buildCaptureReaderWriters(parsed.reader, stdout, stderr)
+		if (command === 'preflight') {
+			const { createCapturePreflight } = this.modules.server
+			const status = await createCapturePreflight(reader).execute()
+			return { status, stdout: stdout.join(''), stderr: stderr.join('') }
+		}
+		if (parsed.output === undefined) throw new Error('Contact sheets require --output')
+		const { createCaptureSheets } = this.modules.server
+		const status = await createCaptureSheets({ reader, output: parsed.output }).execute()
+		return { status, stdout: stdout.join(''), stderr: stderr.join('') }
+	}
+}
+
+/**
+ * Owns a scratch workspace and the invocations created over it, with their output captured.
+ *
+ * @remarks
+ * Each invocation writes through the fixture's two logs, so a proof reads exactly what the
+ * invocation reported without replacing any stream.
+ */
+export class InvocationFixture {
+	readonly #modules: CaptureFixtureModules
+	readonly scratch: ScratchInterface
+	readonly invocation: CaptureInvocation
+	readonly stdout: string[] = []
+	readonly stderr: string[] = []
+
+	/** Creates the scratch workspace and the first invocation over it. */
+	constructor(modules: CaptureFixtureModules) {
+		this.#modules = modules
+		this.scratch = createScratch({ prefix: 'invocation-' })
+		this.invocation = this.next()
+	}
+
+	/**
+	 * Creates another invocation over the same workspace and output logs.
+	 *
+	 * @returns A new invocation with its own identity
+	 */
+	next(
+		writers: {
+			readonly stdout?: CaptureWriteHandler
+			readonly stderr?: CaptureWriteHandler
+			readonly terminate?: CaptureChildTerminationHandler
+			readonly ownership?: Partial<CaptureOwnershipHost>
+		} = {},
+	): CaptureInvocation {
+		const { CaptureInvocation } = this.#modules.server
+		return new CaptureInvocation({
+			command: 'journey',
+			root: this.scratch.path,
+			requests: RUNNER_REQUESTS,
+			stdout: writers.stdout ?? this.stdout.push.bind(this.stdout),
+			stderr: writers.stderr ?? this.stderr.push.bind(this.stderr),
+			...(writers.terminate === undefined ? {} : { terminate: writers.terminate }),
+			...(writers.ownership === undefined ? {} : { ownership: writers.ownership }),
+		})
+	}
+
+	/** Removes the scratch workspace. */
+	destroy(): void {
+		this.scratch.destroy()
+	}
+}
+
+/**
+ * Runs a short-lived process to its end and returns the process id it held.
+ *
+ * @returns The id of a process that has exited
+ * @throws Thrown when the host spawns no process or still reads the id as running.
+ */
+export async function readExitedPid(): Promise<number> {
+	const entry = resolve(import.meta.dirname, 'fixtures/capture/Reporter.ts')
+	const child = spawn(process.execPath, [entry], {
+		windowsHide: true,
+		stdio: 'ignore',
+	})
+	await waitForEvent<readonly [number | null, NodeJS.Signals | null]>(
+		(receive) => {
+			child.once('close', receive)
+			return () => child.off('close', receive)
+		},
+		'the reporter closes',
+		{ budget: 20_000 },
+	)
+	if (child.pid === undefined) throw new Error('The reporter fixture spawned no process')
+	if (isRunning(child.pid)) throw new Error('The exited fixture still reads as running')
+	return child.pid
+}
+
+/**
+ * Starts a process that stays alive until stopped and waits until it reports ready.
+ *
+ * @returns The running process
+ */
+export async function startSleeper(): Promise<ChildProcess> {
+	const entry = resolve(import.meta.dirname, 'fixtures/capture/Sleeper.ts')
+	const child = spawn(process.execPath, [entry], {
+		windowsHide: true,
+		stdio: ['ignore', 'pipe', 'ignore'],
+	})
+	await waitForEvent<readonly [unknown]>(
+		(receive) => {
+			child.stdout.once('data', receive)
+			return () => child.stdout.off('data', receive)
+		},
+		'the sleeper is ready',
+		{ budget: 20_000 },
+	)
+	return child
+}
+
+/**
+ * Ends a process a fixture started and waits for its streams to close.
+ *
+ * @param child - The process to end
+ */
+export async function stopFixtureChild(child: ChildProcess): Promise<void> {
+	const closed = waitForEvent<readonly [number | null, NodeJS.Signals | null]>(
+		(receive) => {
+			child.once('close', receive)
+			return () => child.off('close', receive)
+		},
+		'the fixture process closes',
+		{ budget: 20_000 },
+	)
+	child.kill()
+	await closed
+}
+
+/**
+ * Assembles a PNG file from scanlines the caller filtered itself, so a proof controls every byte.
+ *
+ * @param options - The header fields and the scanlines. Each row opens with its filter byte.
+ * `depth` defaults to 8, `color` to 2 (RGB), `interlace` to 0, and `split` to one IDAT chunk.
+ * @returns The PNG bytes
+ */
+export function createPngBytes(options: {
+	readonly width: number
+	readonly height: number
+	readonly rows: ReadonlyArray<readonly number[]>
+	readonly depth?: number
+	readonly color?: number
+	readonly interlace?: number
+	readonly split?: boolean
+}): Buffer {
+	const compressed = deflateSync(Buffer.from(options.rows.flat()))
+	const middle = options.split === true ? Math.floor(compressed.length / 2) : compressed.length
+	return Buffer.concat([
+		Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+		encodeFixtureChunk(
+			'IHDR',
+			Buffer.concat([
+				encodeFixtureWord(options.width),
+				encodeFixtureWord(options.height),
+				Buffer.from([options.depth ?? 8, options.color ?? 2, 0, 0, options.interlace ?? 0]),
+			]),
+		),
+		encodeFixtureChunk('IDAT', compressed.subarray(0, middle)),
+		...(options.split === true ? [encodeFixtureChunk('IDAT', compressed.subarray(middle))] : []),
+		encodeFixtureChunk('IEND', Buffer.alloc(0)),
+	])
+}
+
+/** Adds output logs to the reader options of one fixture call. */
+export function buildCaptureReaderWriters(
+	reader: CaptureReaderOptions,
+	stdout: string[],
+	stderr: string[],
+): CaptureReaderOptions {
+	return {
+		...reader,
+		stdout: (text) => stdout.push(text),
+		stderr: (text) => stderr.push(text),
+	}
+}
+
+/** Owns the cursor of the deterministic thumbnail noise sequence. */
+export class CaptureThumbnailSequence {
+	#seed = 12345
+
+	/** Returns the next unsigned sample of the fixture's linear congruential sequence. */
+	next(): IteratorYieldResult<number> {
+		this.#seed = (this.#seed * 1664525 + 1013904223) >>> 0
+		return { value: this.#seed, done: false }
+	}
+}
+
+/** Signals a fixture's process group and falls back to its root when the group is unavailable. */
+export function stopCaptureGroup(pid: number): boolean {
+	try {
+		process.kill(-pid, 'SIGKILL')
+	} catch (error) {
+		if (!isError(error) || !('code' in error) || (error.code !== 'ESRCH' && error.code !== 'EPERM'))
+			return false
+		try {
+			process.kill(pid, 'SIGKILL')
+		} catch (direct) {
+			if (!isError(direct) || !('code' in direct) || direct.code !== 'ESRCH') return false
+		}
+	}
+	return true
+}
+
+export function readCaptureSheetIndex(
+	fixture: ReaderFixture,
+	directory: string,
+): Record<string, unknown> {
+	const index = parseJSON(fixture.read(`${directory}/index.json`).toString('utf8'))
+	if (typeof index !== 'object' || index === null) throw new Error('Missing sheet index')
+	return Object.fromEntries(Object.entries(index))
+}
+
+export function buildCaptureSheetArguments(command: string, name: string): readonly string[] {
+	return command === 'contact-sheets' ? ['--output', `tmp/${name}`] : []
+}
+
+export function describeCaptureReaderRun(run: {
+	readonly status: number
+	readonly stdout: string
+	readonly stderr: string
+}) {
+	return {
+		code: run.status,
+		failure: run.status === 0 ? undefined : run.stdout + run.stderr,
+	}
+}
+
+export function readCaptureInvocationId(stdout: string): string {
+	return /runs[\\/]([0-9a-f-]{36})[\\/]/u.exec(stdout)?.[1] ?? ''
+}
+
+export function readCaptureStageRequest(
+	fixture: ComposedFixture,
+	stdout: string,
+	stage: string,
+	variant: string,
+) {
+	const id = readCaptureInvocationId(stdout)
+	const file = `${COMPOSED_DIRECTORY}/runs/${id}/${stage}/${variant}.json`
+	const record: unknown = parseJSON(fixture.read(file).toString('utf8'))
+	return fixture.modules.core.isCaptureRun(record) ? record.request : undefined
+}
+
+export function readCaptureTagFilter(args: readonly string[] = []): string | undefined {
+	return args[args.indexOf('--tags-filter') + 1]
+}
+
+export function removeCaptureFixtureFile(fixture: ComposedFixture, file: string): void {
+	rmSync(resolve(fixture.root, file), { force: true })
+}
+
+export function readCaptureChildReceipt(fixture: ComposedFixture): unknown {
+	return parseJSON(fixture.read('receipt.json').toString('utf8'))
+}
+
+export function readCaptureRunnerStatuses(stdout: string): readonly unknown[] {
+	const line = stdout.split(/\r\n|\n/u).find((entry) => entry.startsWith('INTEGRITY '))
+	const result: unknown = parseJSON(line?.slice('INTEGRITY '.length) ?? '')
+	return isRecord(result) && Array.isArray(result.entries)
+		? result.entries.map((entry: unknown) => (isRecord(entry) ? entry.status : undefined))
+		: []
+}
+
+/** Names the structured integrity report line a runner prints. */
+export const CAPTURE_INTEGRITY_PREFIX = 'INTEGRITY '
+
+export function readCaptureIntegrityReports(stdout: string): readonly unknown[] {
+	return stdout
+		.split(/\r\n|\n/u)
+		.filter((line) => line.startsWith(CAPTURE_INTEGRITY_PREFIX))
+		.map((line) => parseJSON(line.slice(CAPTURE_INTEGRITY_PREFIX.length)))
+}
+
+export function readCaptureIntegrationStatuses(stdout: string): readonly unknown[] {
+	const report = requireValue(
+		readCaptureIntegrityReports(stdout).at(0),
+		'The stale command printed no reading',
+	)
+	if (!isRecord(report) || !Array.isArray(report.entries))
+		throw new Error('The stale reading carries no entries')
+	return report.entries.map((entry: unknown) => (isRecord(entry) ? entry.status : undefined))
+}
+
+export function readCaptureFixtureJSON(fixture: IntegrityFixture, file: string): unknown {
+	return parseJSON(fixture.read(file).toString('utf8'))
+}
+
+export async function readCaptureFixtureStatuses(
+	fixture: IntegrityFixture,
+	selection: { readonly selector: string; readonly variants: readonly string[] },
+): Promise<readonly string[]> {
+	return (await fixture.engine.check(selection)).entries.map((entry) => entry.status)
+}
+
+export function readCapturePublishedRegistry(fixture: ComposedFixture): CaptureRegistry {
+	const registry: unknown = parseJSON(
+		fixture.read(`${COMPOSED_DIRECTORY}/registry.json`).toString('utf8'),
+	)
+	if (!fixture.modules.core.isCaptureRegistry(registry))
+		throw new Error('The published registry fails its own guard')
+	return registry
+}
+
+export function readCaptureVariantReceipt(registry: CaptureRegistry, variant: string) {
+	return requireValue(
+		registry.receipts.find((receipt) => receipt.variant === variant),
+		`The registry holds no receipt for ${variant}`,
+	)
+}
+
+export function readCaptureRegistrySummary(stdout: string): unknown {
+	const line = requireValue(
+		stdout.split(/\r\n|\n/u).find((text) => text.startsWith('REGISTRY ')),
+		'The refresh printed no summary line',
+	)
+	return parseJSON(line.slice('REGISTRY '.length))
+}
+
+/** Creates a host reader or remover that refuses its initial operation until the fixture deactivates it. */
+export function createCaptureReadFault(
+	operation: 'read' | 'remove',
+	code: string,
+	calls: string[],
+	inactive: AbortSignal,
+) {
+	return (file: string) => {
+		if (!inactive.aborted) calls.push(code)
+		if (!inactive.aborted && calls.length === 1) throw Object.assign(new Error(code), { code })
+		if (operation === 'read') return readFileSync(file, 'utf8')
+		rmSync(file, { force: true })
+	}
+}
+
+/** Creates a permanent host fault that records every refused operation. */
+export function createCapturePermanentFault(calls: string[], code: string) {
+	return () => {
+		calls.push(code)
+		throw Object.assign(new Error(code), { code })
+	}
+}
+
+/** Creates a link or read host fault that refuses its initial call and then uses the real filesystem. */
+export function createCaptureLinkFault(operation: 'link' | 'read', code: string, calls: string[]) {
+	return (...paths: string[]) => {
+		calls.push(operation)
+		if (calls.length === 1) throw Object.assign(new Error(code), { code })
+		if (operation === 'read') return readFileSync(paths[0] ?? '', 'utf8')
+		linkSync(paths[0] ?? '', paths[1] ?? '')
+	}
+}
+
+/** Refuses a host operation with the persistent busy condition. */
+export function throwCaptureBusy(): never {
+	throw Object.assign(new Error('busy'), { code: 'EBUSY' })
+}
+
+/** Records a child's identity and refuses its subsequent output. */
+export function writeCaptureRefusedOutput(fixture: InvocationFixture, text: string): void {
+	if (text.startsWith('pid=')) fixture.stdout.push(text)
+	else throw new Error('writer refused')
+}
+
+/** Supplies malformed PNG encodings and their exact refusal messages. */
+export const CAPTURE_PNG_REFUSALS = [
+	['a short file', () => PNG.subarray(0, 20), 'Invalid capture PNG header'],
+	[
+		'a wrong signature',
+		() => Buffer.concat([Buffer.from([0]), PNG.subarray(1)]),
+		'Invalid capture PNG header',
+	],
+	[
+		'an indexed image',
+		() => createPngBytes({ width: 1, height: 1, rows: [[0, 0]], color: 3 }),
+		'Unsupported capture PNG encoding',
+	],
+	[
+		'sixteen-bit samples',
+		() => createPngBytes({ width: 1, height: 1, rows: [[0, 0, 0, 0, 0, 0, 0]], depth: 16 }),
+		'Unsupported capture PNG encoding',
+	],
+	[
+		'an interlaced image',
+		() => createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3]], interlace: 1 }),
+		'Unsupported capture PNG encoding',
+	],
+	[
+		'a zero width',
+		() => createPngBytes({ width: 0, height: 1, rows: [[0]] }),
+		'Unsupported capture PNG encoding',
+	],
+	[
+		'dimensions beyond a safe length',
+		() => createPngBytes({ width: 4294967295, height: 4294967295, rows: [[0]] }),
+		'Invalid capture PNG dimensions',
+	],
+	[
+		'an unknown filter',
+		() => createPngBytes({ width: 1, height: 1, rows: [[5, 1, 2, 3]] }),
+		'Unsupported capture PNG filter',
+	],
+	[
+		'a short stream',
+		() => createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2]] }),
+		'Capture PNG scanline length differs',
+	],
+] as const
+
+/** Supplies malformed selectors to each argument reader using the real server module. */
+export function buildCaptureArgumentFaults(
+	server: typeof CaptureBuild,
+): ReadonlyArray<() => unknown> {
+	return [
+		() =>
+			server.readCaptureArguments(
+				['all', '--variant', 'bad/name'],
+				'journey',
+				'/repo',
+				'vite.config.ts',
+			),
+		() =>
+			server.readCaptureArguments(
+				['all', '--state', 'bad/name'],
+				'capture',
+				'/repo',
+				'vite.config.ts',
+			),
+		() => server.readCaptureRegistryArguments(['--variant', 'bad/name'], '/repo', 'vite.config.ts'),
+	]
+}
+
+export function createCaptureImportInput(
+	receipt: CaptureReceipt,
+	value: unknown,
+	overrides: Partial<CaptureReceiptInput> = {},
+) {
+	const report = JSON.stringify(value)
+	return {
+		receipt: {
+			...receipt,
+			report: {
+				file: 'tmp/captures/states/runs/run-1/journey-selected.json',
+				digest: createHash('sha256').update(report).digest('hex'),
+			},
+		},
+		report,
+		outcome: { code: 0, signal: null },
+		capped: false,
+		...overrides,
+	}
+}
+
+/** Holds the discovery challenge the plain Node producer answers. */
+export const CAPTURE_DISCOVERY_REQUEST = Object.freeze({
+	id: 'run-1',
+	nonce: 'nonce-1',
+	config: READER_CONFIG,
+})
+
+export function readCaptureWrapperProjects(text: string): unknown {
+	const marker = 'export default '
+	return parseJSON(text.slice(marker.length))
+}
+
+export function prepareCaptureProducer(
+	scratch: ScratchInterface,
+	command: 'journey' | 'capture',
+	builder: typeof createRequestFixture,
+): { readonly report: string; readonly args: readonly string[] } {
+	const report = resolve(scratch.path, 'tmp/report.json')
+	const args = [`--outputFile.json=${report}`]
+	const request = builder({
+		pid: process.pid,
+		command,
+		selector: 'all',
+		variants: ['light-390'],
+		args,
+	})
+	scratch.write(
+		`${COMPOSED_REQUESTS}/journey-selection-${String(process.pid)}.json`,
+		JSON.stringify(request),
+	)
+	return { report, args }
+}
+
+// The runner hands its Vitest the request's arguments on the command line, so the stand-in gets them too.
+export function launchCaptureProducer(
+	scratch: ScratchInterface,
+	environment: Readonly<Record<string, string>> = {},
+	args: readonly string[] = [],
+) {
+	return spawnSync(process.execPath, [COMPOSED_PRODUCER, ...args], {
+		cwd: scratch.path,
+		env: {
+			...process.env,
+			CAPTURE_REQUESTS: resolve(scratch.path, COMPOSED_REQUESTS),
+			CAPTURE_PRODUCER_DIRECTORY: COMPOSED_DIRECTORY,
+			...environment,
+		},
+		encoding: 'utf8',
+		windowsHide: true,
+		timeout: 20_000,
+	})
+}
+
+export function prepareCaptureDiscovery(scratch: ScratchInterface): string {
+	scratch.write(READER_CONFIG, createComposedWrapper(scratch.path))
+	scratch.write(
+		`${COMPOSED_REQUESTS}/journey-selection-${String(process.pid)}.json`,
+		JSON.stringify({
+			version: 1,
+			phase: 'discover',
+			pid: process.pid,
+			args: [],
+			...CAPTURE_DISCOVERY_REQUEST,
+		}),
+	)
+	return resolve(scratch.path, READER_CONFIG)
+}
+
+export function launchCaptureDiscovery(scratch: ScratchInterface, config: string, fault?: string) {
+	return spawnSync(
+		process.execPath,
+		[COMPOSED_PRODUCER, 'list', '--filesOnly', '--config', config],
+		{
+			cwd: scratch.path,
+			env: {
+				...process.env,
+				CAPTURE_REQUESTS: resolve(scratch.path, COMPOSED_REQUESTS),
+				...(fault === undefined ? {} : { CAPTURE_PRODUCER_DISCOVERY: fault }),
+			},
+			encoding: 'utf8',
+			windowsHide: true,
+			timeout: 20_000,
+		},
+	)
+}
+
+export function readCaptureDiscoveryAnswer(scratch: ScratchInterface): unknown {
+	return parseJSON(scratch.read(`${COMPOSED_REQUESTS}/runs/run-1/description.json`) ?? '')
+}
+
+export interface CaptureDiscoveredFixture {
+	readonly description?: Awaited<ReturnType<CaptureDiscovery['describe']>>
+	readonly error?: unknown
+	readonly output: string
+	readonly invocation: CaptureInvocation
+}
+
+// Each case builds a Git workspace and spawns a real Node child, so the default budget is thin.
+export async function discoverCaptureFixture(
+	fixture: ComposedFixture,
+	options: {
+		readonly fault?: string
+		readonly deadline?: number
+		readonly config?: string
+		readonly interrupt?: boolean
+	} = {},
+): Promise<CaptureDiscoveredFixture> {
+	const output: string[] = []
+	const { CaptureInvocation, CaptureDiscovery } = fixture.modules.server
+	const invocation = new CaptureInvocation({
+		command: 'journey',
+		root: fixture.root,
+		requests: fixture.requests,
+		stdout: (text) => output.push(text),
+		stderr: (text) => output.push(text),
+	})
+	const discovery = new CaptureDiscovery({
+		root: fixture.root,
+		config: resolve(fixture.root, options.config ?? fixture.config),
+		invocation,
+		...(options.deadline === undefined ? {} : { deadline: options.deadline }),
+	})
+	invocation.attach()
+	try {
+		return await withEnvironment(
+			options.fault === undefined ? {} : { CAPTURE_PRODUCER_DISCOVERY: options.fault },
+			async () => {
+				const running = discovery.describe().then(
+					(description) => ({ description, output: output.join(''), invocation }),
+					(error: unknown) => ({ error, output: output.join(''), invocation }),
+				)
+				if (options.interrupt === true) {
+					await waitForCondition(
+						'the discovery child reports ready',
+						() => fixture.readReady().length > 0,
+						{
+							budget: 20_000,
+						},
+					)
+					process.emit('SIGINT')
+				}
+				return await running
+			},
+		)
+	} finally {
+		await invocation.release()
+	}
+}
+
+export const CAPTURE_TRANSPORT: FixtureWrite = {
+	variants: ['light-390'],
+	report: 'tmp/out/report.json',
+	records: { 'light-390': 'tmp/out/light-390.json' },
+	capture: true,
+}
+
+export function writeCaptureTransport(
+	fixture: IntegrityFixture,
+	builder: typeof createRequestFixture,
+	overrides: Partial<FixtureWrite> = {},
+): CaptureExecutionResult {
+	return fixture.execute({
+		...CAPTURE_TRANSPORT,
+		request: builder({ command: 'journey', selector: 'all', args: [] }),
+		...overrides,
+	})
+}
+
+export function executeCaptureBinary(
+	fixture: ComposedFixture,
+	args: readonly string[],
+	environment: Readonly<Record<string, string>> = {},
+	root = fixture.root,
+) {
+	const entry = resolve(CAPTURE_WORKSPACE_ROOT, 'dist/bin/main.js')
+	const child = spawnSync(process.execPath, [entry, ...args], {
+		cwd: root,
+		env: { ...process.env, ...environment },
+		encoding: 'utf8',
+		windowsHide: true,
+		timeout: 60_000,
+	})
+	if (child.error !== undefined) throw child.error
+	return { status: child.status, stdout: child.stdout, stderr: child.stderr }
+}
+
+export const CAPTURE_REAL_SERVER = resolve(CAPTURE_WORKSPACE_ROOT, 'dist/src/server/index.js')
+export const CAPTURE_REAL_VITEST = resolve(CAPTURE_WORKSPACE_ROOT, 'node_modules/vitest/vitest.mjs')
+export const CAPTURE_REAL_CONFIG = 'configs/journey.config.ts'
+export const CAPTURE_REAL_REQUESTS = 'tmp/capture'
+
+export const CAPTURE_REAL_WRAPPER = `import { writeFileSync } from 'node:fs'
+import { answerCaptureDiscovery, buildCaptureDiscoveryConfig } from '@orkestrel/capture/server'
+
+const projects = ['wide', 'narrow'].map((variant) => ({
+	test: {
+		name: { label: 'journey:' + variant, color: 'green' },
+		tags: [{ name: 'owner:app' }, { name: 'owner:app:mail' }],
+		provide: {
+			directory: 'out/frames',
+			record: 'out/frames/runs/a/' + variant + '.json',
+			inputs: ['configs/**'],
+			variant,
+			variants: [{ name: 'wide', width: 1024, height: 768 }, { name: 'narrow', width: 390, height: 844 }],
+			final: 'closes the run',
+			first: 'narrow',
+			portfolios: [{ portfolio: 'frames', directory: 'out/frames', scoped: true }],
+		},
+	},
+}))
+const answered = await answerCaptureDiscovery({
+	ppid: process.ppid,
+	argv: process.argv.slice(1),
+	config: ${JSON.stringify(CAPTURE_REAL_CONFIG)},
+	projects,
+})
+if (!answered) writeFileSync('initialized.txt', 'output initialized')
+export default answered
+	? buildCaptureDiscoveryConfig()
+	: { test: { projects, include: ['specs/**/*.test.ts'], setupFiles: ['specs/setup.ts'] } }
+`
+
+// A wrapper that never calls the answer, as a consumer that has not adopted the contract would write.
+export const CAPTURE_REAL_SILENT =
+	"export default { test: { projects: [], include: ['specs/**/*.test.ts'] } }\n"
+
+export function createCaptureRealWorkspace(wrapper: string) {
+	const scratch = createScratch({ prefix: 'real-' })
+	scratch.write(
+		'node_modules/vitest/vitest.mjs',
+		`import ${JSON.stringify(pathToFileURL(CAPTURE_REAL_VITEST).href)}\n`,
+	)
+	scratch.write(
+		'node_modules/@orkestrel/capture/package.json',
+		JSON.stringify({
+			name: '@orkestrel/capture',
+			type: 'module',
+			exports: { './server': './server.js' },
+		}),
+	)
+	scratch.write(
+		'node_modules/@orkestrel/capture/server.js',
+		`export * from ${JSON.stringify(pathToFileURL(CAPTURE_REAL_SERVER).href)}\n`,
+	)
+	scratch.write(CAPTURE_REAL_CONFIG, wrapper)
+	scratch.write(
+		'specs/sentinel.test.ts',
+		"import { writeFileSync } from 'node:fs'\nimport { test } from 'vitest'\nwriteFileSync('collected.txt', 'collected')\ntest('collected', () => undefined)\n",
+	)
+	scratch.write(
+		'specs/setup.ts',
+		"import { writeFileSync } from 'node:fs'\nwriteFileSync('setup.txt', 'setup')\n",
+	)
+	return scratch
+}
+
+export async function executeCaptureRealDiscovery(
+	create: typeof CaptureBuild.createCaptureRunner,
+	root: string,
+	argv: readonly string[],
+) {
+	const stdout: string[] = []
+	const stderr: string[] = []
+	const code = await create({
+		command: 'journey',
+		root,
+		config: CAPTURE_REAL_CONFIG,
+		requests: CAPTURE_REAL_REQUESTS,
+		argv,
+		stdout: (text) => stdout.push(text),
+		stderr: (text) => stderr.push(text),
+	}).execute()
+	return { code, stdout: stdout.join(''), stderr: stderr.join('') }
+}
+
+// Every child the runner spawns announces its process id, so the count tells discovery's one child from an execution child.
+
+export function readCaptureFixtureFiles(root: string, directory: string): readonly string[] {
+	return existsSync(resolve(root, directory)) ? readdirSync(resolve(root, directory)) : []
+}
+
+export const CAPTURE_SERVER_VALUES = [
+	'CAPTURE_DEFAULTS',
+	'CAPTURE_DISCOVERY',
+	'CAPTURE_REQUESTS_FLAG',
+	'CAPTURE_COMMAND_OPTIONS',
+	'CAPTURE_REGISTRY_LINE',
+	'CAPTURE_REGISTRY_STAGE',
+	'CAPTURE_SUBCOMMANDS',
+	'CAPTURE_USAGE',
+	'CaptureDiscovery',
+	'CaptureIntegrity',
+	'CapturePreflight',
+	'CaptureRegistrar',
+	'CaptureSheets',
+	'answerCaptureDiscovery',
+	'buildCaptureDiscoveryConfig',
+	'createCaptureDiscovery',
+	'createCaptureRegistrar',
+	'readCaptureDescription',
+	'readCaptureEntry',
+	'resolveCaptureRequests',
+	'resolveCaptureWrapperProject',
+	'readCaptureInputs',
+	'readCaptureRegistryArguments',
+	'readCaptureRunning',
+	'writeCaptureDocument',
+	'buildCaptureDigest',
+	'buildCaptureIntegrityOptions',
+	'buildCaptureRegistry',
+	'collectCaptureErrors',
+	'scanCaptureFrames',
+	'collectCaptureIdentical',
+	'composeCapturePictures',
+	'computeCaptureHash',
+	'createCapturePreflight',
+	'createCaptureSheets',
+	'readCaptureReaderArguments',
+	'readCaptureViewport',
+	'computeRegistryDigest',
+	'createCaptureIntegrity',
+	'decodeCapturePicture',
+	'encodeCaptureChunk',
+	'encodeCapturePicture',
+	'encodeCaptureWord',
+	'inflateCaptureStream',
+	'matchesCaptureSignature',
+	'normalizeSlashes',
+	'predictCaptureByte',
+	'readCaptureChunks',
+	'readCaptureOptions',
+	'shrinkCapturePicture',
+	'unfilterCaptureRow',
+]

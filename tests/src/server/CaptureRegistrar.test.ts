@@ -1,20 +1,21 @@
-import type { CaptureReceipt, CaptureRegistry } from '@src/core'
+import * as core from '@src/core'
+import * as server from '@src/server'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, rmSync, readdirSync, symlinkSync, watch } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
 import { requireValue, waitForCondition, waitForDelay } from '@orkestrel/test'
 import { createScratch, isRunning, supportsDirectoryLinks } from '@orkestrel/test/server'
-import { isCaptureRegistry } from '@src/core'
 import { CaptureRegistrar, CAPTURE_OWNER_FILE } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import {
+	readCapturePublishedRegistry,
+	readCaptureVariantReceipt,
+	readCaptureRegistrySummary,
+	ComposedFixture,
 	readExitedPid,
 	startSleeper,
 	stopFixtureChild,
-} from '../../fixtures/capture/ProcessFixture.js'
-import {
 	COMPOSED_DIRECTORY,
 	COMPOSED_REQUESTS,
 	FIXTURE_TIMEOUT,
@@ -22,14 +23,12 @@ import {
 	REGISTRY_REFUSALS,
 	VARIANTS,
 } from '../../setupServer.js'
-
 const REGISTRY = `${COMPOSED_DIRECTORY}/registry.json`
-const SUMMARY = 'REGISTRY '
 
 it(
 	'H1v preserves the registrar usage result when release fails',
 	async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		const errors: string[] = []
 		try {
 			const code = await new CaptureRegistrar({
@@ -61,7 +60,7 @@ it(
 it.runIf(supportsDirectoryLinks())(
 	'H1r rechecks registry containment after stage children redirect its root',
 	async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		const outside = createScratch({ prefix: 'capture-registry-redirect-' })
 		const events: string[] = []
 		const watcher = watch(outside.path, { recursive: true }, (_event, name) =>
@@ -87,31 +86,27 @@ it.runIf(supportsDirectoryLinks())(
 	FIXTURE_TIMEOUT,
 )
 
-function readRegistry(fixture: ComposedFixture): CaptureRegistry {
-	const registry: unknown = parseJSON(fixture.read(REGISTRY).toString('utf8'))
-	if (!isCaptureRegistry(registry)) throw new Error('The published registry fails its own guard')
-	return registry
-}
-
-function readReceipt(registry: CaptureRegistry, variant: string): CaptureReceipt {
-	return requireValue(
-		registry.receipts.find((receipt) => receipt.variant === variant),
-		`The registry holds no receipt for ${variant}`,
-	)
-}
-
-function readSummary(stdout: string): unknown {
-	const line = requireValue(
-		stdout.split('\n').find((text) => text.startsWith(SUMMARY)),
-		'The refresh printed no summary line',
-	)
-	return parseJSON(line.slice(SUMMARY.length))
-}
-
 // Each case spawns a Git repository and one Node producer per variant, which the default budget leaves thin.
 describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('refuses inherited evidence before starting any registry stage and names the refused file', async () => {
+		for (const file of ['lookups.json', 'manifest.json']) {
+			const fixture = new ComposedFixture({ core, server })
+			try {
+				fixture.write(`${COMPOSED_DIRECTORY}/${file}`, '{"version":0}')
+				const run = await fixture.refresh()
+				expect(run.code).toBe(1)
+				expect(fixture.stages).toEqual([])
+				expect(run.stderr).toContain(file)
+				expect(run.stderr).toContain('inspect')
+				expect(run.stderr).not.toContain('complete-registry refresh')
+			} finally {
+				fixture.destroy()
+			}
+		}
+	})
+
 	it('refuses an outside publication root before a producer writes', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		const outside = createScratch({ prefix: 'capture-publication-' })
 		try {
 			fixture.write(
@@ -139,7 +134,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.runIf(supportsDirectoryLinks())(
 		'refuses a redirected publication ancestor before a producer writes',
 		async () => {
-			const fixture = new ComposedFixture()
+			const fixture = new ComposedFixture({ core, server })
 			const outside = createScratch({ prefix: 'capture-publication-link-' })
 			try {
 				fixture.write('tmp/keep.txt', 'inside')
@@ -155,11 +150,11 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 		},
 	)
 	it('publishes one receipt per producing variant from a complete capture-free journey each', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			const run = await fixture.refresh()
 			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
-			const registry = readRegistry(fixture)
+			const registry = readCapturePublishedRegistry(fixture)
 			expect(registry.receipts.map((receipt) => receipt.variant)).toEqual([...VARIANTS])
 			for (const receipt of registry.receipts) {
 				expect(receipt.complete).toBe(true)
@@ -172,7 +167,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 					createHash('sha256').update(fixture.read(receipt.report.file)).digest('hex'),
 				)
 			}
-			expect(readSummary(run.stdout)).toEqual({
+			expect(readCaptureRegistrySummary(run.stdout)).toEqual({
 				file: REGISTRY,
 				digest: registry.digest,
 				variants: [...VARIANTS],
@@ -185,7 +180,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('runs capture-free: no frame is written, no candidate or request remains', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			const run = await fixture.refresh()
 			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
@@ -199,12 +194,12 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('publishes a registry the engine reads back for a selected owner', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			const run = await fixture.refresh()
 			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
 			const read = await fixture.engine.read({ selector: 'pages:mail' })
-			expect(read.registry).toBe(readRegistry(fixture).digest)
+			expect(read.registry).toBe(readCapturePublishedRegistry(fixture).digest)
 			expect(read.entries.length).toBeGreaterThan(0)
 		} finally {
 			fixture.destroy()
@@ -214,7 +209,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each(REGISTRY_REFUSALS)(
 		'refuses a producer that injects $fault and publishes nothing',
 		async ({ fault, reason }) => {
-			const fixture = new ComposedFixture()
+			const fixture = new ComposedFixture({ core, server })
 			try {
 				const run = await fixture.refresh([], { environment: { CAPTURE_PRODUCER_MODE: fault } })
 				expect(run.code).toBe(1)
@@ -228,7 +223,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 	)
 
 	it('keeps the earlier registry bytes when a later refresh fails', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			expect((await fixture.refresh()).code).toBe(0)
 			const before = fixture.read(REGISTRY)
@@ -243,22 +238,24 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refreshes only the named variants and keeps the other receipts as they were', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			expect((await fixture.refresh()).code).toBe(0)
-			const first = readRegistry(fixture)
+			const first = readCapturePublishedRegistry(fixture)
 			const run = await fixture.refresh(['--variant', 'dark-390'])
 			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
-			const next = readRegistry(fixture)
+			const next = readCapturePublishedRegistry(fixture)
 			expect(next.receipts.map((receipt) => receipt.variant).toSorted()).toEqual(
 				[...VARIANTS].toSorted(),
 			)
 			for (const variant of VARIANTS.filter((name) => name !== 'dark-390'))
-				expect(readReceipt(next, variant)).toEqual(readReceipt(first, variant))
-			expect(readReceipt(next, 'dark-390').report.file).not.toBe(
-				readReceipt(first, 'dark-390').report.file,
+				expect(readCaptureVariantReceipt(next, variant)).toEqual(
+					readCaptureVariantReceipt(first, variant),
+				)
+			expect(readCaptureVariantReceipt(next, 'dark-390').report.file).not.toBe(
+				readCaptureVariantReceipt(first, 'dark-390').report.file,
 			)
-			expect(readSummary(run.stdout)).toMatchObject({
+			expect(readCaptureRegistrySummary(run.stdout)).toMatchObject({
 				refreshed: ['dark-390'],
 				digest: next.digest,
 			})
@@ -268,11 +265,12 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses a partial refresh whose kept receipt names an altered reporter, before any journey runs', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			expect((await fixture.refresh()).code).toBe(0)
 			const before = fixture.read(REGISTRY)
-			const file = readReceipt(readRegistry(fixture), 'light-1280').report.file
+			const registry = readCapturePublishedRegistry(fixture)
+			const file = readCaptureVariantReceipt(registry, 'light-1280').report.file
 			fixture.write(file, `${fixture.read(file).toString('utf8')} `)
 			const run = await fixture.refresh(['--variant', 'dark-390'])
 			expect(run.code).toBe(1)
@@ -287,21 +285,21 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses a partial refresh beside a registry it cannot read, naming the full refresh', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			fixture.write(REGISTRY, '{"version":1}\n')
 			const run = await fixture.refresh(['--variant', 'dark-390'])
 			expect(run.code).toBe(1)
 			expect(run.stderr).toContain('refresh every producing variant to replace it')
 			expect((await fixture.refresh()).code).toBe(0)
-			expect(readRegistry(fixture).receipts).toHaveLength(VARIANTS.length)
+			expect(readCapturePublishedRegistry(fixture).receipts).toHaveLength(VARIANTS.length)
 		} finally {
 			fixture.destroy()
 		}
 	})
 
 	it('refuses while another runner holds a request file, and prunes the file of a dead one', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		const sleeper = await startSleeper()
 		try {
 			const held = `${COMPOSED_REQUESTS}/journey-selection-${String(sleeper.pid)}.json`
@@ -327,7 +325,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('ends the running child on an interrupt and publishes nothing', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			const before = process.listenerCount('SIGINT')
 			const run = await fixture.refresh([], {
@@ -352,13 +350,13 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each([['--mode', 'vue'], ['--mode=vue']])(
 		'forwards the mode to the wrapper process through the recorded request',
 		async (...argv) => {
-			const fixture = new ComposedFixture()
+			const fixture = new ComposedFixture({ core, server })
 			try {
 				const run = await fixture.refresh(argv)
 				expect(run.code === 0 ? 0 : run.stderr).toBe(0)
-				const registry = readRegistry(fixture)
+				const registry = readCapturePublishedRegistry(fixture)
 				const id = requireValue(
-					readReceipt(registry, 'light-1280').report.file.split('/').at(3),
+					readCaptureVariantReceipt(registry, 'light-1280').report.file.split('/').at(3),
 					'The report path names no invocation',
 				)
 				const record: unknown = parseJSON(
@@ -380,7 +378,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 	)
 
 	it('refuses an unknown variant and a selector as usage before it starts any journey', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			const unknown = await fixture.refresh(['--variant', 'nope'])
 			expect(unknown.code).toBe(64)

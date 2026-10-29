@@ -85,6 +85,8 @@ From [`errors.ts`](../src/core/errors.ts). The executable maps a `USAGE` conditi
 | `CaptureError`   | class    | Reports one capture failure under a stable condition axis. |
 | `isCaptureError` | function | Checks whether an unknown value is a capture error.        |
 
+The error guard accepts branded subclasses and errors from another installed copy. Its context may be absent, an object, or a callable object, including a class instance. It requires an own brand whose value is the tested error itself, so it refuses a transparent proxy and a plain branded object. It does not require an exact error name.
+
 ### Validators
 
 Total guards from [`validators.ts`](../src/core/validators.ts). Each returns `false` for a value that throws on read, a cycle, or a non-record, and never throws.
@@ -661,6 +663,8 @@ const exit = await registrar.execute() // 0 when the registry was published
 ```
 
 **Flags.** `--variant` repeats and names the producing variants to refresh; without it every variant the wrapper declares is refreshed. `--config` replaces the wrapper. `--mode` is forwarded to the wrapper's Vitest process as `--mode <name>` and recorded in the request, so a wrapper that selects another registry by mode is refreshed by naming it. The command takes no selector, and every flag takes one value.
+
+**Inherited evidence.** Before any stage, the command reads an existing manifest and lookup journal and checks their schemas. An unreadable or unsupported document refuses the refresh and names the file to inspect and repair before retrying. Publication still authenticates inherited evidence through the integrity engine.
 
 **Stages.** The stage for a variant is named `registry-<variant>`, so each variant's records sit under `<directory>/runs/<id>/registry-<variant>/`. The command takes the project's declared input population and its content hashes before the child starts and again after, and refuses when they differ. It then reads the reporter and the final record, requires the record to carry the stage's own request, to fall between the start of the refresh and the end of the reporter, to agree with every collected declaration, and to be complete, and builds one receipt from them: the variant, the record's time, the reporter's path and digest, the input hashes, and the record's declarations and registry.
 

@@ -1,21 +1,12 @@
 import { CAPTURE_ERROR_BRAND, CAPTURE_ERROR_CODES, CaptureError, isCaptureError } from '@src/core'
 import { createHostileValues } from '@orkestrel/test'
 import { describe, expect, it } from 'vitest'
-
-// Stands for the same package installed a second time: another class, the same brand key.
-class ForeignCaptureError extends Error {
-	override readonly name = 'CaptureError'
-	readonly code = 'HOST'
-	readonly context = undefined
-
-	constructor(message: string) {
-		super(message)
-		Object.defineProperty(this, Symbol.for('@orkestrel/capture.CaptureError'), { value: this })
-	}
-}
-
-class SpecialCaptureError extends CaptureError {}
-
+import {
+	CaptureContextFixture,
+	createCaptureCallableContext,
+	ForeignCaptureError,
+	SpecialCaptureError,
+} from '../../setup.js'
 describe('CaptureError', () => {
 	it('carries its message, condition, context, and cause', () => {
 		const cause = new Error('underlying')
@@ -53,6 +44,18 @@ describe('CaptureError', () => {
 })
 
 describe('isCaptureError', () => {
+	it('accepts a class instance as context', () => {
+		const error = new CaptureError('Refused', { code: 'HOST' })
+		Object.defineProperty(error, 'context', { value: new CaptureContextFixture() })
+		expect(isCaptureError(error)).toBe(true)
+	})
+
+	it('accepts a callable object as context', () => {
+		const error = new CaptureError('Refused', { code: 'HOST' })
+		Object.defineProperty(error, 'context', { value: createCaptureCallableContext() })
+		expect(isCaptureError(error)).toBe(true)
+	})
+
 	it.each(CAPTURE_ERROR_CODES)('accepts an error carrying %s', (code) => {
 		expect(isCaptureError(new CaptureError('Refused', { code }))).toBe(true)
 	})

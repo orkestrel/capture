@@ -1,11 +1,13 @@
+import * as core from '@src/core'
+import * as server from '@src/server'
 import { existsSync, mkdirSync, renameSync, readdirSync, symlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { parseJSON } from '@orkestrel/contract'
 import { createScratch, supportsDirectoryLinks } from '@orkestrel/test/server'
 import { CaptureSheets, decodeCapturePicture } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { ReaderFixture } from '../../fixtures/capture/ReaderFixture.js'
 import {
+	readCaptureSheetIndex,
+	ReaderFixture,
 	FIXTURE_TIMEOUT,
 	MAIL,
 	MIXED_PICTURES,
@@ -13,18 +15,11 @@ import {
 	READER_JOURNEYS,
 	VARIANTS,
 } from '../../setupServer.js'
-
 const REFUSAL = 'Contact sheets require a new contained directory'
-
-function readIndex(fixture: ReaderFixture, directory: string): Record<string, unknown> {
-	const index = parseJSON(fixture.read(`${directory}/index.json`).toString('utf8'))
-	if (typeof index !== 'object' || index === null) throw new Error('Missing sheet index')
-	return Object.fromEntries(Object.entries(index))
-}
 
 describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('H1x flags a partial final thumbnail row at the height limit', async () => {
-		const fixture = new ReaderFixture()
+		const fixture = new ReaderFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({
@@ -44,7 +39,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 				'tmp/edge-sheets',
 			])
 			expect(result.status).toBe(0)
-			const text = JSON.stringify(readIndex(fixture, 'tmp/edge-sheets'))
+			const text = JSON.stringify(readCaptureSheetIndex(fixture, 'tmp/edge-sheets'))
 			expect(text).toContain('"factor":3,"clipped":true')
 			expect(fixture.read('tmp/edge-sheets/index.md').toString('utf8')).toContain(
 				'source 641 x 1201; displayed 214 x 400; clipped',
@@ -56,7 +51,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 	it.runIf(supportsDirectoryLinks())(
 		'H1r revalidates the sheet parent at directory creation',
 		async () => {
-			const fixture = new ReaderFixture()
+			const fixture = new ReaderFixture({ core, server })
 			const outside = createScratch({ prefix: 'capture-sheet-write-' })
 			const reads: string[] = []
 			const errors: string[] = []
@@ -96,7 +91,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 	it.runIf(supportsDirectoryLinks())(
 		'refuses output inside a capture directory reached through an alias',
 		async () => {
-			const fixture = new ReaderFixture()
+			const fixture = new ReaderFixture({ core, server })
 			try {
 				fixture.seed()
 				await fixture.capture({ selector: 'pages:mail', picture: true })
@@ -121,7 +116,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 		},
 	)
 	it('writes sparse auxiliary-portfolio sheets and indexes the full source dimensions', async () => {
-		const fixture = new ReaderFixture()
+		const fixture = new ReaderFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({ selector: 'examples:files', picture: true })
@@ -161,7 +156,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 	})
 
 	it('writes mixed observations and source dimensions into the sheet documents', async () => {
-		const fixture = new ReaderFixture()
+		const fixture = new ReaderFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({ selector: 'pages:mail', case: MAIL, picture: MIXED_PICTURES })
@@ -202,7 +197,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 	})
 
 	it('states that a uniform selection reports no mixed geometry', async () => {
-		const fixture = new ReaderFixture()
+		const fixture = new ReaderFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({ selector: 'pages:mail', picture: true })
@@ -223,7 +218,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 	})
 
 	it('shrinks wide frames by a whole factor and clips tall ones at the height limit', async () => {
-		const fixture = new ReaderFixture()
+		const fixture = new ReaderFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({
@@ -244,7 +239,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 				'tmp/shrunk-sheets',
 			])
 			expect(result.status).toBe(0)
-			const text = JSON.stringify(readIndex(fixture, 'tmp/shrunk-sheets'))
+			const text = JSON.stringify(readCaptureSheetIndex(fixture, 'tmp/shrunk-sheets'))
 			expect(text).toContain('"factor":1,"clipped":true')
 			expect(text).toContain('"displayed":{"width":128,"height":400}')
 			expect(text).toContain('"factor":3,"clipped":false')
@@ -256,13 +251,13 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 	})
 
 	it('pairs the groups of one portfolio, owner, and state into rows of two', async () => {
-		const fixture = new ReaderFixture()
+		const fixture = new ReaderFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({ variants: [...VARIANTS], picture: true })
 			const result = await fixture.run('contact-sheets', ['all', '--output', 'tmp/all-sheets'])
 			expect(result.status).toBe(0)
-			const index = readIndex(fixture, 'tmp/all-sheets')
+			const index = readCaptureSheetIndex(fixture, 'tmp/all-sheets')
 			const sheets = index.sheets
 			if (!Array.isArray(sheets)) throw new Error('Missing sheets')
 			expect(sheets).toHaveLength(1)
@@ -291,7 +286,7 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 			prepare: false,
 		},
 	])('refuses $title before writing anything', async ({ output, prepare }) => {
-		const fixture = new ReaderFixture()
+		const fixture = new ReaderFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({ selector: 'pages:mail', picture: true })

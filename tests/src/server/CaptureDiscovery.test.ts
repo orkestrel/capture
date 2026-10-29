@@ -1,11 +1,14 @@
+import * as core from '@src/core'
+import * as server from '@src/server'
 import { existsSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { waitForCondition } from '@orkestrel/test'
 import { isRunning } from '@orkestrel/test/server'
 import { CaptureDiscovery, CaptureInvocation, createCaptureDiscovery } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import {
+	discoverCaptureFixture,
+	ComposedFixture,
 	COMPOSED_FIRST,
 	COMPOSED_OWNERS,
 	FIXTURE_DISCOVERY_FAULTS,
@@ -15,72 +18,12 @@ import {
 	INPUTS,
 	READER_FINAL,
 	VARIANTS,
-	withEnvironment,
 } from '../../setupServer.js'
-
-interface Discovered {
-	readonly description?: Awaited<ReturnType<CaptureDiscovery['describe']>>
-	readonly error?: unknown
-	readonly output: string
-	readonly invocation: CaptureInvocation
-}
-
-// Each case builds a Git workspace and spawns a real Node child, so the default budget is thin.
-async function discover(
-	fixture: ComposedFixture,
-	options: {
-		readonly fault?: string
-		readonly deadline?: number
-		readonly config?: string
-		readonly interrupt?: boolean
-	} = {},
-): Promise<Discovered> {
-	const output: string[] = []
-	const invocation = new CaptureInvocation({
-		command: 'journey',
-		root: fixture.root,
-		requests: fixture.requests,
-		stdout: (text) => output.push(text),
-		stderr: (text) => output.push(text),
-	})
-	const discovery = new CaptureDiscovery({
-		root: fixture.root,
-		config: resolve(fixture.root, options.config ?? fixture.config),
-		invocation,
-		...(options.deadline === undefined ? {} : { deadline: options.deadline }),
-	})
-	invocation.attach()
-	try {
-		return await withEnvironment(
-			options.fault === undefined ? {} : { CAPTURE_PRODUCER_DISCOVERY: options.fault },
-			async () => {
-				const running = discovery.describe().then(
-					(description) => ({ description, output: output.join(''), invocation }),
-					(error: unknown) => ({ error, output: output.join(''), invocation }),
-				)
-				if (options.interrupt === true) {
-					await waitForCondition(
-						'the discovery child reports ready',
-						() => fixture.readReady().length > 0,
-						{
-							budget: 20_000,
-						},
-					)
-					process.emit('SIGINT')
-				}
-				return await running
-			},
-		)
-	} finally {
-		await invocation.release()
-	}
-}
-
 describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('describes every wrapper project in declaration order, with the host data and viewport it declares', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
-			const { description, error, invocation, output } = await discover(fixture)
+			const { description, error, invocation, output } = await discoverCaptureFixture(fixture)
 			expect(error).toBeUndefined()
 			expect(description?.projects.map((entry) => entry.project.variant)).toEqual([...VARIANTS])
 			expect(description?.projects.map((entry) => entry.project.name)).toEqual(
@@ -114,9 +57,9 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('hands the child the request directory it publishes to, so the wrapper side names none', async () => {
-		const fixture = new ComposedFixture({ requests: 'var/elsewhere' })
+		const fixture = new ComposedFixture({ core, server }, { requests: 'var/elsewhere' })
 		try {
-			const { error, description } = await discover(fixture)
+			const { error, description } = await discoverCaptureFixture(fixture)
 			expect(error).toBeUndefined()
 			expect(description?.projects).toHaveLength(VARIANTS.length)
 		} finally {
@@ -125,10 +68,10 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('is a second, independent exchange for a second invocation of the same workspace', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
-			const first = await discover(fixture)
-			const second = await discover(fixture)
+			const first = await discoverCaptureFixture(fixture)
+			const second = await discoverCaptureFixture(fixture)
 			expect(first.error).toBeUndefined()
 			expect(second.error).toBeUndefined()
 			expect(first.invocation.id).not.toBe(second.invocation.id)
@@ -142,9 +85,9 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 		'when the wrapper %s',
 		(fault) => {
 			it('is refused with the refusal that names the fault, and leaves no request behind', async () => {
-				const fixture = new ComposedFixture()
+				const fixture = new ComposedFixture({ core, server })
 				try {
-					const { error, description } = await discover(fixture, { fault })
+					const { error, description } = await discoverCaptureFixture(fixture, { fault })
 					expect(description).toBeUndefined()
 					expect(error).toMatchObject({ code: 'HOST' })
 					expect(error instanceof Error ? error.message : '').toContain(
@@ -159,9 +102,9 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 	)
 
 	it('ends a wrapper that never answers at the deadline, and refuses it by name', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
-			const { error, description, invocation } = await discover(fixture, {
+			const { error, description, invocation } = await discoverCaptureFixture(fixture, {
 				fault: 'hang',
 				deadline: 1_500,
 			})
@@ -182,9 +125,9 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('ends the child and refuses as an interrupted run when an interrupt arrives mid-exchange', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
-			const { error, description, invocation } = await discover(fixture, {
+			const { error, description, invocation } = await discoverCaptureFixture(fixture, {
 				fault: 'hang',
 				interrupt: true,
 				deadline: 10_000,
@@ -203,9 +146,11 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses a wrapper that does not exist before any child starts', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
-			const { error, output } = await discover(fixture, { config: 'configs/missing.config.ts' })
+			const { error, output } = await discoverCaptureFixture(fixture, {
+				config: 'configs/missing.config.ts',
+			})
 			expect(error).toMatchObject({ code: 'USAGE' })
 			expect(error instanceof Error ? error.message : '').toContain(
 				'Cannot find the journey wrapper: configs/missing.config.ts',
@@ -217,9 +162,11 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses a wrapper outside the workspace before any child starts', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
-			const { error, output } = await discover(fixture, { config: '../outside.config.ts' })
+			const { error, output } = await discoverCaptureFixture(fixture, {
+				config: '../outside.config.ts',
+			})
 			expect(error).toMatchObject({
 				code: 'USAGE',
 				message: expect.stringContaining('--config resolves outside the repository'),
@@ -231,10 +178,10 @@ describe('CaptureDiscovery', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses a workspace with no installed Vitest before any child starts', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			rmSync(resolve(fixture.root, 'node_modules'), { recursive: true, force: true })
-			const { error, output } = await discover(fixture)
+			const { error, output } = await discoverCaptureFixture(fixture)
 			expect(error).toMatchObject({ code: 'HOST' })
 			expect(error instanceof Error ? error.message : '').toContain(
 				"Cannot find the consumer's installed Vitest",

@@ -1040,36 +1040,25 @@ export function shrinkCapturePicture(
 ): CapturePicture {
 	const width = Math.max(1, Math.ceil(picture.width / factor))
 	const height = Math.min(Math.max(1, Math.ceil(picture.height / factor)), limit)
-	const pixels = new Uint8Array(width * height * 3)
-	const sums = new Float64Array(width * 3)
-	for (let y = 0; y < height; y += 1) {
-		sums.fill(0)
+	// One shared offset list; each output channel sums its block with no per-pixel allocation.
+	const span = Array.from({ length: Math.ceil(factor) }, (_, index) => index)
+	const pixels = Uint8Array.from({ length: width * height * 3 }, (_, index) => {
+		const channel = index % 3
+		const x = Math.floor(index / 3) % width
+		const y = Math.floor(index / 3 / width)
 		const rows = Math.min(factor, picture.height - y * factor)
-		for (let row = 0; row < rows; row += 1) {
-			let source = (y * factor + row) * picture.width * 3
-			for (let x = 0; x < width; x += 1) {
-				const columns = Math.min(factor, picture.width - x * factor)
-				let red = 0
-				let green = 0
-				let blue = 0
-				for (let column = 0; column < columns; column += 1) {
-					red += picture.pixels[source] ?? 0
-					green += picture.pixels[source + 1] ?? 0
-					blue += picture.pixels[source + 2] ?? 0
-					source += 3
-				}
-				const target = x * 3
-				sums[target] = (sums[target] ?? 0) + red
-				sums[target + 1] = (sums[target + 1] ?? 0) + green
-				sums[target + 2] = (sums[target + 2] ?? 0) + blue
-			}
-		}
-		for (let x = 0; x < width; x += 1) {
-			const count = rows * Math.min(factor, picture.width - x * factor)
-			for (let channel = 0; channel < 3; channel += 1)
-				pixels[(y * width + x) * 3 + channel] = Math.round((sums[x * 3 + channel] ?? 0) / count)
-		}
-	}
+		const columns = Math.min(factor, picture.width - x * factor)
+		const sum = span.reduce((total, row) => {
+			if (row >= rows) return total
+			const start = (y * factor + row) * picture.width * 3 + x * Math.ceil(factor) * 3 + channel
+			return span.reduce(
+				(block, column) =>
+					column >= columns ? block : block + (picture.pixels[start + column * 3] ?? 0),
+				total,
+			)
+		}, 0)
+		return Math.round(sum / (rows * columns))
+	})
 	return { width, height, pixels }
 }
 

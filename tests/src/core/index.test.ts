@@ -1,70 +1,14 @@
 import * as entry from '@src/core'
 import { describe, expect, it } from 'vitest'
-
-const VALUES = [
-	'CAPTURE_ERROR_BRAND',
-	'CAPTURE_ERROR_CODES',
-	'CAPTURE_LOOKUPS_FILE',
-	'CAPTURE_MANIFEST_FILE',
-	'CAPTURE_PNG_SIGNATURE',
-	'CAPTURE_REGISTRY_FILE',
-	'CAPTURE_REQUEST_PREFIX',
-	'CAPTURE_STATUS_PRECEDENCE',
-	'CAPTURE_VERSION',
-	'CaptureError',
-	'collectCaptureChanges',
-	'collectCaptureDuplicates',
-	'describeCaptureDeclaration',
-	'describeCaptureDestination',
-	'describeCaptureError',
-	'describeCaptureIdentity',
-	'describeCaptureRequest',
-	'isCaptureArtifact',
-	'isCaptureBox',
-	'isCaptureCollection',
-	'isCaptureDeclaration',
-	'isCaptureDestination',
-	'isCaptureDigest',
-	'isCaptureEntry',
-	'isCaptureError',
-	'isCaptureGeometry',
-	'isCaptureHash',
-	'isCaptureHashes',
-	'isCaptureIdentity',
-	'isCaptureLookup',
-	'isCaptureLookupJournal',
-	'isCaptureManifest',
-	'isCapturePath',
-	'isCapturePattern',
-	'isCaptureReceipt',
-	'isCaptureRegistry',
-	'isCaptureRequest',
-	'isCaptureRun',
-	'isCaptureSegment',
-	'isCaptureSelector',
-	'isCaptureSources',
-	'isCaptureStamp',
-	'isCaptureStoredManifest',
-	'matchesCaptureMembers',
-	'matchesCaptureSelector',
-	'readCaptureDirty',
-	'readCaptureReport',
-	'requireCaptureUnique',
-	'resolveCaptureKey',
-	'resolveCaptureOwner',
-	'resolveCaptureStatus',
-	'resolveLookupKey',
-	'validateCaptureReceipt',
-	'validateCaptureRun',
-]
+import { CAPTURE_CORE_VALUES } from '../../setup.js'
 
 describe('src core entry', () => {
 	it('publishes exactly the declared values and no host-bound helper', () => {
-		expect(Object.keys(entry).toSorted()).toEqual(VALUES.toSorted())
+		expect(Object.keys(entry).toSorted()).toEqual(CAPTURE_CORE_VALUES.toSorted())
 	})
 
 	it('resolves every published value', () => {
-		for (const name of VALUES) {
+		for (const name of CAPTURE_CORE_VALUES) {
 			expect(Reflect.get(entry, name), `${name} resolved to undefined`).toBeDefined()
 		}
 	})

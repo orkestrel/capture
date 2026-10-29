@@ -1,13 +1,18 @@
-import type { ScratchInterface } from '@orkestrel/test/server'
-import type { CaptureExecutionResult } from '@src/server'
-import type { FixtureWrite } from './setupServer.js'
-import { spawn, spawnSync } from 'node:child_process'
+import * as core from '@src/core'
+import * as server from '@src/server'
+import { spawn } from 'node:child_process'
 import { existsSync, utimesSync, statSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { crc32, inflateSync } from 'node:zlib'
 import { isArray, isRecord, parseJSON } from '@orkestrel/contract'
-import { createHostileValues, waitForCondition, waitForAbort, waitForDelay } from '@orkestrel/test'
+import {
+	captureError,
+	createHostileValues,
+	waitForCondition,
+	waitForAbort,
+	waitForDelay,
+} from '@orkestrel/test'
 import { createScratch, isRunning } from '@orkestrel/test/server'
 import { createTimeout } from '@orkestrel/timeout'
 import { isCaptureRun, readCaptureReport } from '@src/core'
@@ -19,9 +24,17 @@ import {
 	readCaptureViewport,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { IntegrityFixture } from './fixtures/capture/IntegrityFixture.js'
-import { createDeclarationFixture, createRequestFixture, readThrown } from './setup.js'
+import { createDeclarationFixture, createRequestFixture } from './setup.js'
 import {
+	CAPTURE_TRANSPORT,
+	writeCaptureTransport,
+	prepareCaptureDiscovery,
+	launchCaptureDiscovery,
+	readCaptureDiscoveryAnswer,
+	prepareCaptureProducer,
+	launchCaptureProducer,
+	readCaptureWrapperProjects,
+	IntegrityFixture,
 	readConsumerReport,
 	CaptureConsumer,
 	CAPTURE_WORKSPACE_ROOT,
@@ -86,7 +99,6 @@ import {
 	withEnvironment,
 	writeFixtureDescription,
 } from './setupServer.js'
-
 describe('H1 shared infrastructure', () => {
 	it('X7 round 4 stops a real detached fixture and returns false once it has exited', async () => {
 		const child = spawn(
@@ -119,7 +131,7 @@ describe('H1 shared infrastructure', () => {
 		const parent = resolve(scratch.path, 'absent', 'tmp')
 		try {
 			expect(existsSync(parent)).toBe(false)
-			const fixture = new IntegrityFixture(parent)
+			const fixture = new IntegrityFixture({ core, server }, parent)
 			try {
 				expect(fixture.root.startsWith(parent)).toBe(true)
 				expect(existsSync(resolve(fixture.root, 'src/mail/view.ts'))).toBe(true)
@@ -177,8 +189,6 @@ describe('H1 shared infrastructure', () => {
 				"import { writeFileSync } from 'node:fs'\nwriteFileSync('hung-child.json', JSON.stringify({ pid: process.pid, parent: process.ppid }))\nsetInterval(() => undefined, 1000)\nawait new Promise(() => undefined)\nexport default {}\n",
 			)
 			const execution = consumer.execute(['registry'])
-			let parent: number | undefined
-			let pid: number | undefined
 			try {
 				const record = await waitForCaptureStatus(ready, ['parent', 'pid'])
 				if (
@@ -187,21 +197,24 @@ describe('H1 shared infrastructure', () => {
 					typeof record.parent !== 'number'
 				)
 					throw new Error('Missing hung child pids')
-				parent = record.parent
-				pid = record.pid
-				expect(isRunning(parent)).toBe(true)
-				expect(isRunning(pid)).toBe(true)
-				timeout.start()
-				await waitForAbort(timeout.signal)
-				await waitForCondition(
-					'the consumer and its hung child exit on timeout',
-					() => parent !== undefined && pid !== undefined && !isRunning(parent) && !isRunning(pid),
-					{ budget: 5000 },
-				)
-				expect(await execution).toMatchObject({ aborted: true })
+				const parent = record.parent
+				const pid = record.pid
+				try {
+					expect(isRunning(parent)).toBe(true)
+					expect(isRunning(pid)).toBe(true)
+					timeout.start()
+					await waitForAbort(timeout.signal)
+					await waitForCondition(
+						'the consumer and its hung child exit on timeout',
+						() => !isRunning(parent) && !isRunning(pid),
+						{ budget: 5000 },
+					)
+					expect(await execution).toMatchObject({ aborted: true })
+				} finally {
+					if (isRunning(parent)) await stopCaptureTree(parent)
+					if (isRunning(pid)) await stopCaptureTree(pid)
+				}
 			} finally {
-				if (parent !== undefined && isRunning(parent)) await stopCaptureTree(parent)
-				if (pid !== undefined && isRunning(pid)) await stopCaptureTree(pid)
 				await execution.catch(() => undefined)
 				timeout.clear()
 				consumer.destroy()
@@ -267,24 +280,6 @@ describe('H1 shared infrastructure', () => {
 		expect(countCaptureChildren('')).toBe(0)
 	})
 })
-
-const TRANSPORT: FixtureWrite = {
-	variants: ['light-390'],
-	report: 'tmp/out/report.json',
-	records: { 'light-390': 'tmp/out/light-390.json' },
-	capture: true,
-}
-
-function writeTransport(
-	fixture: IntegrityFixture,
-	overrides: Partial<FixtureWrite> = {},
-): CaptureExecutionResult {
-	return fixture.execute({
-		...TRANSPORT,
-		request: createRequestFixture({ command: 'journey', selector: 'all', args: [] }),
-		...overrides,
-	})
-}
 
 describe('fixtureDeclarations', () => {
 	it('declares the five browser cases with the files case eligible for two variants only', () => {
@@ -366,10 +361,10 @@ describe('fixtureDestinations', () => {
 
 describe('isFixtureWrite', () => {
 	it('accepts a complete transport with each optional field', () => {
-		expect(isFixtureWrite(TRANSPORT)).toBe(true)
+		expect(isFixtureWrite(CAPTURE_TRANSPORT)).toBe(true)
 		expect(
 			isFixtureWrite({
-				...TRANSPORT,
+				...CAPTURE_TRANSPORT,
 				request: createRequestFixture(),
 				fault: 'identity',
 				population: 'partial',
@@ -382,18 +377,18 @@ describe('isFixtureWrite', () => {
 	})
 
 	it.each([
-		['a missing report', { ...TRANSPORT, report: undefined }],
-		['a non-boolean capture flag', { ...TRANSPORT, capture: 'yes' }],
-		['a record path that is not text', { ...TRANSPORT, records: { 'light-390': 1 } }],
-		['an unknown fault', { ...TRANSPORT, fault: 'unknown' }],
-		['an unknown population', { ...TRANSPORT, population: 'everything' }],
-		['an unknown journal', { ...TRANSPORT, journal: 'missing' }],
-		['an unknown artifact terminator', { ...TRANSPORT, ending: '\r' }],
+		['a missing report', { ...CAPTURE_TRANSPORT, report: undefined }],
+		['a non-boolean capture flag', { ...CAPTURE_TRANSPORT, capture: 'yes' }],
+		['a record path that is not text', { ...CAPTURE_TRANSPORT, records: { 'light-390': 1 } }],
+		['an unknown fault', { ...CAPTURE_TRANSPORT, fault: 'unknown' }],
+		['an unknown population', { ...CAPTURE_TRANSPORT, population: 'everything' }],
+		['an unknown journal', { ...CAPTURE_TRANSPORT, journal: 'missing' }],
+		['an unknown artifact terminator', { ...CAPTURE_TRANSPORT, ending: '\r' }],
 		[
 			'a request without a selector',
-			{ ...TRANSPORT, request: { ...createRequestFixture(), selector: 1 } },
+			{ ...CAPTURE_TRANSPORT, request: { ...createRequestFixture(), selector: 1 } },
 		],
-		['a non-text variant', { ...TRANSPORT, variants: ['light-390', 7] }],
+		['a non-text variant', { ...CAPTURE_TRANSPORT, variants: ['light-390', 7] }],
 	])('refuses %s', (_name, value) => {
 		expect(isFixtureWrite(value)).toBe(false)
 	})
@@ -425,9 +420,10 @@ describe('isFixtureRequest', () => {
 
 describe('writeFixtureOutputs', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('writes a passing reporter, a complete final record, and the frames of every eligible state', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
-			expect(writeTransport(fixture)).toEqual({ code: 0, signal: null })
+			const result = writeCaptureTransport(fixture, createRequestFixture)
+			expect(result).toEqual({ code: 0, signal: null })
 			const report = readCaptureReport(
 				parseJSON(fixture.read('tmp/out/report.json').toString('utf8')),
 			)
@@ -449,7 +445,7 @@ describe('writeFixtureOutputs', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('heads a capture artifact complete once every state-placing case ran, and scoped otherwise', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			const artifact = 'tmp/journey/runs/run-1/narrow/light-390.txt'
 			for (const [request, header] of [
@@ -458,7 +454,7 @@ describe('writeFixtureOutputs', { timeout: FIXTURE_TIMEOUT }, () => {
 				[{ selector: 'pages:mail', case: MAIL }, 'coverage=case-scoped'],
 			] as const) {
 				expect(
-					writeTransport(fixture, {
+					writeCaptureTransport(fixture, createRequestFixture, {
 						capture: true,
 						request: createRequestFixture({ command: 'capture', args: [], ...request }),
 					}),
@@ -471,11 +467,11 @@ describe('writeFixtureOutputs', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('writes no frame when it is not capturing and none for a stale-image fault', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
-			writeTransport(fixture, { capture: false })
+			writeCaptureTransport(fixture, createRequestFixture, { capture: false })
 			expect(existsSync(resolve(fixture.root, 'tmp/captures/states'))).toBe(false)
-			writeTransport(fixture, { fault: 'stale-image' })
+			writeCaptureTransport(fixture, createRequestFixture, { fault: 'stale-image' })
 			expect(existsSync(resolve(fixture.root, 'tmp/captures/states'))).toBe(false)
 		} finally {
 			fixture.destroy()
@@ -483,22 +479,26 @@ describe('writeFixtureOutputs', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('injects the record and exit faults the engine refuses', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
-			expect(writeTransport(fixture, { fault: 'failed-child' }).code).toBe(7)
-			writeTransport(fixture, { fault: 'invalid-record' })
+			const failed = writeCaptureTransport(fixture, createRequestFixture, {
+				fault: 'failed-child',
+			})
+			expect(failed.code).toBe(7)
+			writeCaptureTransport(fixture, createRequestFixture, { fault: 'invalid-record' })
 			expect(fixture.read('tmp/out/light-390.json').toString('utf8')).toBe('{')
-			expect(writeTransport(fixture, { fault: 'signal' })).not.toEqual({ code: 0, signal: null })
+			const signal = writeCaptureTransport(fixture, createRequestFixture, { fault: 'signal' })
+			expect(signal).not.toEqual({ code: 0, signal: null })
 		} finally {
 			fixture.destroy()
 		}
 	})
 
 	it('omits the last variant record for a missing-record fault', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			expect(
-				writeTransport(fixture, {
+				writeCaptureTransport(fixture, createRequestFixture, {
 					variants: ['light-390', 'dark-390'],
 					records: { 'light-390': 'tmp/out/light.json', 'dark-390': 'tmp/out/dark.json' },
 					capture: false,
@@ -515,7 +515,7 @@ describe('writeFixtureOutputs', { timeout: FIXTURE_TIMEOUT }, () => {
 
 describe('readFixtureManifest', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('answers undefined before the first capture and the exact text after it', () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			expect(readFixtureManifest(fixture.root)).toBeUndefined()
 			fixture.write('tmp/captures/states/manifest.json', '{"exact":true}\n')
@@ -607,11 +607,8 @@ describe('wire fixtures', () => {
 		expect(readCaptureProject(createProjectFixture({ provide: { first: 'wide' } }))).toMatchObject({
 			first: 'wide',
 		})
-		expect(
-			readThrown(() => readCaptureProject(createProjectFixture({ provide: { final: undefined } }))),
-		).toMatchObject({
-			code: 'HOST',
-		})
+		const missing = createProjectFixture({ provide: { final: undefined } })
+		expect(captureError(() => readCaptureProject(missing))).toMatchObject({ code: 'HOST' })
 	})
 })
 
@@ -717,7 +714,7 @@ describe('encodeFixturePicture', () => {
 
 describe('the picture option of the producer child', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('writes the requested geometry per state and the default for the rest', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({ selector: 'pages:mail', case: MAIL, picture: MIXED_PICTURES })
@@ -735,7 +732,7 @@ describe('the picture option of the producer child', { timeout: FIXTURE_TIMEOUT 
 	})
 
 	it('keeps the tiny default frame without a picture and for a false picture', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({ selector: 'pages:mail', case: MAIL })
@@ -750,7 +747,7 @@ describe('the picture option of the producer child', { timeout: FIXTURE_TIMEOUT 
 	it.each(INVALID_PICTURE_WIDTHS)(
 		'refuses invalid fixture pixel width %s before publication beside a valid restoration',
 		async (width) => {
-			const fixture = new IntegrityFixture()
+			const fixture = new IntegrityFixture({ core, server })
 			try {
 				fixture.seed()
 				const anchor = fixture.read(fixture.options.registry)
@@ -787,7 +784,7 @@ describe('the picture option of the producer child', { timeout: FIXTURE_TIMEOUT 
 	)
 
 	it('refuses geometry for an undeclared fixture state without adding an output', async () => {
-		const fixture = new IntegrityFixture()
+		const fixture = new IntegrityFixture({ core, server })
 		try {
 			fixture.seed()
 			await expect(
@@ -818,13 +815,9 @@ describe('the picture option of the producer child', { timeout: FIXTURE_TIMEOUT 
 })
 
 describe('createReaderWrapper', () => {
-	function readProjects(text: string): unknown {
-		const marker = 'export default '
-		return parseJSON(text.slice(marker.length))
-	}
-
 	it.each(UNIFORM_DECLARATIONS)('preserves $title in every project', ({ uniform }) => {
-		const projects = readProjects(createReaderWrapper('/workspace', ['light-390'], uniform))
+		const wrapper = createReaderWrapper('/workspace', ['light-390'], uniform)
+		const projects = readCaptureWrapperProjects(wrapper)
 		if (!isRecord(projects) || !isRecord(projects.test) || !isArray(projects.test.projects))
 			throw new Error('Missing projects')
 		for (const project of projects.test.projects)
@@ -834,7 +827,7 @@ describe('createReaderWrapper', () => {
 	})
 
 	it('declares one project per producing variant with the host data every project shares', () => {
-		const projects = readProjects(createReaderWrapper('/workspace'))
+		const projects = readCaptureWrapperProjects(createReaderWrapper('/workspace'))
 		if (!isRecord(projects) || !isRecord(projects.test) || !isArray(projects.test.projects))
 			throw new Error('Missing projects')
 		expect(projects.test.projects).toHaveLength(VARIANTS.length)
@@ -849,7 +842,7 @@ describe('createReaderWrapper', () => {
 	})
 
 	it('declares only the producing variants it is given', () => {
-		const projects = readProjects(createReaderWrapper('/workspace', ['dark-390']))
+		const projects = readCaptureWrapperProjects(createReaderWrapper('/workspace', ['dark-390']))
 		if (!isRecord(projects) || !isRecord(projects.test) || !isArray(projects.test.projects))
 			throw new Error('Missing projects')
 		expect(projects.test.projects).toHaveLength(1)
@@ -921,51 +914,11 @@ describe('the producer child of a composed workspace', { timeout: FIXTURE_TIMEOU
 	const REQUESTS = 'tmp/requests'
 	const DIRECTORY = 'tmp/captures/states'
 
-	function prepare(
-		scratch: ScratchInterface,
-		command: 'journey' | 'capture',
-	): { readonly report: string; readonly args: readonly string[] } {
-		const report = resolve(scratch.path, 'tmp/report.json')
-		const args = [`--outputFile.json=${report}`]
-		const request = createRequestFixture({
-			pid: process.pid,
-			command,
-			selector: 'all',
-			variants: ['light-390'],
-			args,
-		})
-		scratch.write(
-			`${REQUESTS}/journey-selection-${String(process.pid)}.json`,
-			JSON.stringify(request),
-		)
-		return { report, args }
-	}
-
-	// The runner hands its Vitest the request's arguments on the command line, so the stand-in gets them too.
-	function launch(
-		scratch: ScratchInterface,
-		environment: Readonly<Record<string, string>> = {},
-		args: readonly string[] = [],
-	) {
-		return spawnSync(process.execPath, [COMPOSED_PRODUCER, ...args], {
-			cwd: scratch.path,
-			env: {
-				...process.env,
-				CAPTURE_REQUESTS: resolve(scratch.path, REQUESTS),
-				CAPTURE_PRODUCER_DIRECTORY: DIRECTORY,
-				...environment,
-			},
-			encoding: 'utf8',
-			windowsHide: true,
-			timeout: 20_000,
-		})
-	}
-
 	it('writes the reporter and the final record of the stage its parent requested, capture-free for a journey', () => {
 		const scratch = createScratch({ prefix: 'producer-' })
 		try {
-			const { report, args } = prepare(scratch, 'journey')
-			const child = launch(scratch, {}, args)
+			const { report, args } = prepareCaptureProducer(scratch, 'journey', createRequestFixture)
+			const child = launchCaptureProducer(scratch, {}, args)
 			expect(child.status === 0 ? 0 : child.stderr).toBe(0)
 			expect(
 				readCaptureReport(parseJSON(scratch.read(report) ?? '')).assertions.length,
@@ -984,8 +937,8 @@ describe('the producer child of a composed workspace', { timeout: FIXTURE_TIMEOU
 	it('writes frames for a capture and a larger picture on request', () => {
 		const scratch = createScratch({ prefix: 'producer-' })
 		try {
-			const { args } = prepare(scratch, 'capture')
-			const child = launch(scratch, { CAPTURE_PRODUCER_PICTURE: '1' }, args)
+			const { args } = prepareCaptureProducer(scratch, 'capture', createRequestFixture)
+			const child = launchCaptureProducer(scratch, { CAPTURE_PRODUCER_PICTURE: '1' }, args)
 			expect(child.status === 0 ? 0 : child.stderr).toBe(0)
 			const run: unknown = parseJSON(
 				scratch.read(`${DIRECTORY}/runs/run-1/narrow/light-390.json`) ?? '',
@@ -1001,8 +954,10 @@ describe('the producer child of a composed workspace', { timeout: FIXTURE_TIMEOU
 	it('injects the protocol fault the environment names', () => {
 		const scratch = createScratch({ prefix: 'producer-' })
 		try {
-			const { args } = prepare(scratch, 'journey')
-			expect(launch(scratch, { CAPTURE_PRODUCER_MODE: 'failed-child' }, args).status).toBe(7)
+			const { args } = prepareCaptureProducer(scratch, 'journey', createRequestFixture)
+			const environment = { CAPTURE_PRODUCER_MODE: 'failed-child' }
+			const child = launchCaptureProducer(scratch, environment, args)
+			expect(child.status).toBe(7)
 		} finally {
 			scratch.destroy()
 		}
@@ -1011,7 +966,7 @@ describe('the producer child of a composed workspace', { timeout: FIXTURE_TIMEOU
 	it('refuses a parent that wrote no request', () => {
 		const scratch = createScratch({ prefix: 'producer-' })
 		try {
-			const child = launch(scratch)
+			const child = launchCaptureProducer(scratch)
 			expect(child.status).not.toBe(0)
 			expect(child.stderr).toContain('journey-selection')
 		} finally {
@@ -1021,7 +976,7 @@ describe('the producer child of a composed workspace', { timeout: FIXTURE_TIMEOU
 
 	it('reports ready and then stays alive until it is ended, in hang mode', async () => {
 		const scratch = createScratch({ prefix: 'producer-' })
-		const { args } = prepare(scratch, 'journey')
+		const { args } = prepareCaptureProducer(scratch, 'journey', createRequestFixture)
 		const child = spawn(process.execPath, [COMPOSED_PRODUCER, ...args], {
 			cwd: scratch.path,
 			env: {
@@ -1055,43 +1010,12 @@ describe('the discovery answer of a composed workspace', { timeout: FIXTURE_TIME
 	const REQUESTS = 'tmp/requests'
 	const REQUEST = { id: 'run-1', nonce: 'nonce-1', config: READER_CONFIG }
 
-	function prepare(scratch: ScratchInterface): string {
-		scratch.write(READER_CONFIG, createComposedWrapper(scratch.path))
-		scratch.write(
-			`${REQUESTS}/journey-selection-${String(process.pid)}.json`,
-			JSON.stringify({ version: 1, phase: 'discover', pid: process.pid, args: [], ...REQUEST }),
-		)
-		return resolve(scratch.path, READER_CONFIG)
-	}
-
-	function launch(scratch: ScratchInterface, config: string, fault?: string) {
-		return spawnSync(
-			process.execPath,
-			[COMPOSED_PRODUCER, 'list', '--filesOnly', '--config', config],
-			{
-				cwd: scratch.path,
-				env: {
-					...process.env,
-					CAPTURE_REQUESTS: resolve(scratch.path, REQUESTS),
-					...(fault === undefined ? {} : { CAPTURE_PRODUCER_DISCOVERY: fault }),
-				},
-				encoding: 'utf8',
-				windowsHide: true,
-				timeout: 20_000,
-			},
-		)
-	}
-
-	function read(scratch: ScratchInterface): unknown {
-		return parseJSON(scratch.read(`${REQUESTS}/runs/run-1/description.json`) ?? '')
-	}
-
 	it('writes the projects of the wrapper, unjudged, with the echoes of the request, its parent, and itself', () => {
 		const scratch = createScratch({ prefix: 'discovery-' })
 		try {
-			const child = launch(scratch, prepare(scratch))
+			const child = launchCaptureDiscovery(scratch, prepareCaptureDiscovery(scratch))
 			expect(child.status === 0 ? 0 : child.stderr).toBe(0)
-			const description = read(scratch)
+			const description = readCaptureDiscoveryAnswer(scratch)
 			expect(description).toMatchObject({ version: 1, ...REQUEST, parent: process.pid })
 			expect(isRecord(description) ? description.pid : undefined).toEqual(expect.any(Number))
 			const projects = isRecord(description) ? description.projects : undefined
@@ -1116,9 +1040,9 @@ describe('the discovery answer of a composed workspace', { timeout: FIXTURE_TIME
 	])('injects the $fault fault into the $field it echoes', ({ fault, field, expected }) => {
 		const scratch = createScratch({ prefix: 'discovery-' })
 		try {
-			const child = launch(scratch, prepare(scratch), fault)
+			const child = launchCaptureDiscovery(scratch, prepareCaptureDiscovery(scratch), fault)
 			expect(child.status === 0 ? 0 : child.stderr).toBe(0)
-			const description = read(scratch)
+			const description = readCaptureDiscoveryAnswer(scratch)
 			expect(isRecord(description) ? description[field] : undefined).toEqual(expected)
 		} finally {
 			scratch.destroy()
@@ -1128,9 +1052,10 @@ describe('the discovery answer of a composed workspace', { timeout: FIXTURE_TIME
 	it('injects a parent that is not the process which spawned it', () => {
 		const scratch = createScratch({ prefix: 'discovery-' })
 		try {
-			const child = launch(scratch, prepare(scratch), 'other-parent')
+			const config = prepareCaptureDiscovery(scratch)
+			const child = launchCaptureDiscovery(scratch, config, 'other-parent')
 			expect(child.status === 0 ? 0 : child.stderr).toBe(0)
-			const written = read(scratch)
+			const written = readCaptureDiscoveryAnswer(scratch)
 			expect(isRecord(written) ? written.parent : undefined).not.toBe(process.pid)
 		} finally {
 			scratch.destroy()
@@ -1140,8 +1065,9 @@ describe('the discovery answer of a composed workspace', { timeout: FIXTURE_TIME
 	it('injects a writer that is not the child the runner spawned, and keeps the real parent', () => {
 		const scratch = createScratch({ prefix: 'discovery-' })
 		try {
-			const child = launch(scratch, prepare(scratch), 'other-child')
-			const written = read(scratch)
+			const config = prepareCaptureDiscovery(scratch)
+			const child = launchCaptureDiscovery(scratch, config, 'other-child')
+			const written = readCaptureDiscoveryAnswer(scratch)
 			expect(isRecord(written) ? written.pid : undefined).not.toBe(child.pid)
 			expect(isRecord(written) ? written.parent : undefined).toBe(process.pid)
 		} finally {
@@ -1152,7 +1078,8 @@ describe('the discovery answer of a composed workspace', { timeout: FIXTURE_TIME
 	it('exits 7 after writing the answer when it is told to fail', () => {
 		const scratch = createScratch({ prefix: 'discovery-' })
 		try {
-			expect(launch(scratch, prepare(scratch), 'failed').status).toBe(7)
+			const child = launchCaptureDiscovery(scratch, prepareCaptureDiscovery(scratch), 'failed')
+			expect(child.status).toBe(7)
 			expect(scratch.has(`${REQUESTS}/runs/run-1/description.json`)).toBe(true)
 		} finally {
 			scratch.destroy()
@@ -1162,7 +1089,7 @@ describe('the discovery answer of a composed workspace', { timeout: FIXTURE_TIME
 	it('exits cleanly and writes nothing when it is told to stay silent', () => {
 		const scratch = createScratch({ prefix: 'discovery-' })
 		try {
-			const child = launch(scratch, prepare(scratch), 'silent')
+			const child = launchCaptureDiscovery(scratch, prepareCaptureDiscovery(scratch), 'silent')
 			expect(child.status === 0 ? 0 : child.stderr).toBe(0)
 			expect(scratch.has(`${REQUESTS}/runs/run-1/description.json`)).toBe(false)
 		} finally {
@@ -1172,7 +1099,7 @@ describe('the discovery answer of a composed workspace', { timeout: FIXTURE_TIME
 	it('writes an unreadable document when it is told to malform the answer', () => {
 		const scratch = createScratch({ prefix: 'discovery-' })
 		try {
-			launch(scratch, prepare(scratch), 'malformed')
+			launchCaptureDiscovery(scratch, prepareCaptureDiscovery(scratch), 'malformed')
 			expect(scratch.read(`${REQUESTS}/runs/run-1/description.json`)).toBe('{')
 		} finally {
 			scratch.destroy()
@@ -1181,7 +1108,7 @@ describe('the discovery answer of a composed workspace', { timeout: FIXTURE_TIME
 
 	it('reports ready and then stays alive until it is ended, when it is told to hang', async () => {
 		const scratch = createScratch({ prefix: 'discovery-' })
-		const config = prepare(scratch)
+		const config = prepareCaptureDiscovery(scratch)
 		const child = spawn(
 			process.execPath,
 			[COMPOSED_PRODUCER, 'list', '--filesOnly', '--config', config],
@@ -1224,7 +1151,7 @@ describe('the discovery answer of a composed workspace', { timeout: FIXTURE_TIME
 				config: resolve(scratch.path, 'wrapper.config.mjs'),
 				requests: resolve(scratch.path, REQUESTS),
 			})
-			const description = read(scratch)
+			const description = readCaptureDiscoveryAnswer(scratch)
 			expect(isRecord(description) ? description.projects : undefined).toEqual([
 				project,
 				project,

@@ -1,3 +1,4 @@
+import { captureError } from '@orkestrel/test'
 import {
 	isCapturePath,
 	isCaptureDeclaration,
@@ -32,9 +33,7 @@ import {
 	createSourcesFixture,
 	createStampFixture,
 	createVitestFixture,
-	readThrown,
 } from './setup.js'
-
 describe('capture fixtures', () => {
 	it('lists only paths the portable-path guard refuses', () => {
 		expect(REFUSED_PATHS.length).toBeGreaterThan(0)
@@ -45,11 +44,11 @@ describe('capture fixtures', () => {
 	it('returns what a callback throws and undefined when it returns', () => {
 		const thrown = new Error('boom')
 		expect(
-			readThrown(() => {
+			captureError(() => {
 				throw thrown
 			}),
 		).toBe(thrown)
-		expect(readThrown(() => 'fine')).toBeUndefined()
+		expect(captureError(() => 'fine')).toBeUndefined()
 	})
 
 	it('builds values the protocol guards accept', () => {

@@ -1,17 +1,23 @@
+import * as core from '@src/core'
+import * as server from '@src/server'
 import { mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { isRecord, parseJSON } from '@orkestrel/contract'
+import { parseJSON } from '@orkestrel/contract'
 import { isRunning } from '@orkestrel/test/server'
 import { isCaptureRun } from '@src/core'
 import { CAPTURE_OWNER_FILE, CAPTURE_REFUSAL_LIMIT, createCaptureRunner } from '@src/server'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { ComposedFixture } from '../../fixtures/capture/ComposedFixture.js'
 import {
+	readCaptureInvocationId,
+	readCaptureStageRequest,
+	readCaptureTagFilter,
+	removeCaptureFixtureFile,
+	readCaptureChildReceipt,
+	readCaptureRunnerStatuses,
+	ComposedFixture,
 	readExitedPid,
 	startSleeper,
 	stopFixtureChild,
-} from '../../fixtures/capture/ProcessFixture.js'
-import {
 	BOARD,
 	COMPOSED_DIRECTORY,
 	COMPOSED_FIRST,
@@ -27,7 +33,6 @@ import {
 	VARIANTS,
 	readFixtureManifest,
 } from '../../setupServer.js'
-
 // A stage line is printed only when an execution child is about to start; discovery prints none.
 const STAGE_LINE = /^(?:journey|capture) (?:selected|narrow|rest):/mu
 const INTEGRITY = 'INTEGRITY '
@@ -35,7 +40,7 @@ const INTEGRITY = 'INTEGRITY '
 it(
 	'H1v bounds a changed-owner case before plan resolution or execution',
 	async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			expect((await fixture.refresh()).code).toBe(0)
 			fixture.write('src/mail/view.ts', '// changed mail source\n')
@@ -67,7 +72,7 @@ it(
 it(
 	'H1v scopes exact cases to the selected owner before every execution stage',
 	async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			expect((await fixture.refresh()).code).toBe(0)
 			for (const command of ['journey', 'capture', 'stale'] as const) {
@@ -94,7 +99,7 @@ it(
 it(
 	'H1t refuses a case without a registry with the refresh command before any stage',
 	async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			const result = await fixture.run('journey', ['pages:mail', '--case', 'no such case'])
 			expect(result).toMatchObject({ code: 1, stderr: expect.stringContaining('capture registry') })
@@ -110,7 +115,7 @@ it(
 )
 
 it('keeps a stale evidence refusal at exit 1', async () => {
-	const fixture = new ComposedFixture()
+	const fixture = new ComposedFixture({ core, server })
 	try {
 		const run = await fixture.run('stale', ['all'])
 		expect(run.code).toBe(1)
@@ -123,7 +128,7 @@ it('keeps a stale evidence refusal at exit 1', async () => {
 it(
 	'H1r maps selector errors to usage in every runner command and Git failures to exit 1',
 	async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			expect((await fixture.refresh()).code).toBe(0)
 			for (const command of ['stale', 'journey', 'capture'] as const) {
@@ -149,42 +154,9 @@ it(
 	FIXTURE_TIMEOUT,
 )
 
-function readInvocation(stdout: string): string {
-	return /runs[\\/]([0-9a-f-]{36})[\\/]/u.exec(stdout)?.[1] ?? ''
-}
-
-function readRequest(fixture: ComposedFixture, stdout: string, stage: string, variant: string) {
-	const record: unknown = parseJSON(
-		fixture
-			.read(`${COMPOSED_DIRECTORY}/runs/${readInvocation(stdout)}/${stage}/${variant}.json`)
-			.toString('utf8'),
-	)
-	return isCaptureRun(record) ? record.request : undefined
-}
-
-function readFilter(args: readonly string[] = []): string | undefined {
-	return args[args.indexOf('--tags-filter') + 1]
-}
-
-function rmFile(fixture: ComposedFixture, file: string): void {
-	rmSync(resolve(fixture.root, file), { force: true })
-}
-
-function readReceipt(fixture: ComposedFixture): unknown {
-	return parseJSON(fixture.read('receipt.json').toString('utf8'))
-}
-
-function readStatuses(stdout: string): readonly unknown[] {
-	const line = stdout.split('\n').find((entry) => entry.startsWith(INTEGRITY))
-	const result: unknown = parseJSON(line?.slice(INTEGRITY.length) ?? '')
-	return isRecord(result) && Array.isArray(result.entries)
-		? result.entries.map((entry: unknown) => (isRecord(entry) ? entry.status : undefined))
-		: []
-}
-
 // One seeded workspace serves the command-line and process cases that only read it: the registry
 // exists before any stage can stamp, and the runner and the engine are the real ones throughout.
-const base = new ComposedFixture()
+const base = new ComposedFixture({ core, server })
 
 beforeAll(() => base.seed(), FIXTURE_TIMEOUT)
 
@@ -224,7 +196,7 @@ describe.each(RUNNER_COMMANDS)(
 				QUOTED,
 			])
 			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
-			const request = readRequest(base, run.stdout, stage, COMPOSED_FIRST)
+			const request = readCaptureStageRequest(base, run.stdout, stage, COMPOSED_FIRST)
 			expect(request).toMatchObject({
 				version: 1,
 				stage,
@@ -248,11 +220,12 @@ describe.each(RUNNER_COMMANDS)(
 			expect(pattern.test(`${QUOTED} extra`)).toBe(false)
 			expect(pattern.test(`x${READER_FINAL}`)).toBe(false)
 			expect(run.stdout).toMatch(/^pid=\d+\n/mu)
-			expect(
-				base.read(`${base.requests}/runs/${readInvocation(run.stdout)}/${command}-${stage}.log`),
-			).toBeDefined()
+			const id = readCaptureInvocationId(run.stdout)
+			expect(base.read(`${base.requests}/runs/${id}/${command}-${stage}.log`)).toBeDefined()
 			expect(readCaptureHeld(base.root, base.requests)).toEqual([])
-			expect(readReceipt(base)).toMatchObject({ requests: resolve(base.root, base.requests) })
+			expect(readCaptureChildReceipt(base)).toMatchObject({
+				requests: resolve(base.root, base.requests),
+			})
 		})
 
 		it('runs journeys in one selected stage and frames in narrow then rest stages', async () => {
@@ -269,7 +242,7 @@ describe.each(RUNNER_COMMANDS)(
 				run.stdout.split(/\r\n|\n/u).filter((line) => line.startsWith(INTEGRITY)),
 			).toHaveLength(command === 'journey' ? 1 : 2)
 			const requests = (command === 'journey' ? VARIANTS : []).map((variant) =>
-				readRequest(base, run.stdout, 'selected', variant),
+				readCaptureStageRequest(base, run.stdout, 'selected', variant),
 			)
 			expect(
 				requests.map((request) => [request?.variants, request?.args.includes('--bail=1')]),
@@ -296,9 +269,10 @@ describe.each(RUNNER_COMMANDS)(
 		it('selects an owner and its capture tag, and the union of declared scopes for all', async () => {
 			const owner = await base.run(command, ['examples:files', '--variant', COMPOSED_FIRST])
 			const all = await base.run(command, ['all', '--variant', COMPOSED_FIRST])
-			const filters = [owner, all].map((run) =>
-				readFilter(readRequest(base, run.stdout, stage, COMPOSED_FIRST)?.args),
-			)
+			const filters = [owner, all].map((run) => {
+				const request = readCaptureStageRequest(base, run.stdout, stage, COMPOSED_FIRST)
+				return readCaptureTagFilter(request?.args)
+			})
 			expect(filters).toEqual(
 				command === 'journey'
 					? ['owner:examples:files', '(owner:pages || owner:examples)']
@@ -333,7 +307,7 @@ describe.each(RUNNER_COMMANDS)(
 		})
 
 		it('keeps applicable variants when the first variant held no work', async () => {
-			const fixture = new ComposedFixture({ first: 'light-1280' })
+			const fixture = new ComposedFixture({ core, server }, { first: 'light-1280' })
 			try {
 				fixture.seed()
 				const run = await fixture.run(command, ['examples:files'])
@@ -360,7 +334,7 @@ describe.each(RUNNER_COMMANDS)(
 
 describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('H1s retains a declared focused output variant through stale', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({ variants: [...VARIANTS] })
@@ -372,7 +346,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1s keeps the decided usage exit when release fails', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		const errors: string[] = []
 		try {
 			const code = await createCaptureRunner({
@@ -398,7 +372,8 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1s treats a plan-derived owner missing from wrapper tags as HOST', async () => {
-		const fixture = new ComposedFixture({ committed: true, config: 'outside.config.ts' })
+		const options = { committed: true, config: 'outside.config.ts' }
+		const fixture = new ComposedFixture({ core, server }, options)
 		try {
 			fixture.seed()
 			fixture.write(
@@ -417,7 +392,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1s caps the usage selector list with a remainder count', async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			const owners = Array.from(
 				{ length: CAPTURE_REFUSAL_LIMIT + 3 },
@@ -442,7 +417,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1s caps shared-input paths with a remainder count', async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			fixture.seed()
 			for (const index of Array.from({ length: CAPTURE_REFUSAL_LIMIT + 3 }, (_, value) => value))
@@ -455,7 +430,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('refuses a changed plan without an accepted registry and prints the exact refresh command', async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			const run = await fixture.run('journey', ['--changed', 'HEAD', '--plan'])
 			expect(run.code).toBe(1)
@@ -470,7 +445,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('prints a changed plan with exact commands and starts no execution child', async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			fixture.seed()
 			fixture.write('src/mail/a view.ts', '// untracked own\n')
@@ -498,7 +473,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses shared inputs in plans and runs, lists the paths, and prints own and full journey commands', async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			fixture.seed()
 			fixture.write('src/mail/view.ts', '// own\n')
@@ -530,7 +505,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('reports no journey input for an unchanged source tree and lists outside paths without running', async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			fixture.seed()
 			const unchanged = await fixture.run('journey', ['--changed', 'HEAD'])
@@ -550,7 +525,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses unknown refs and selector-plus-changed before execution', async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			fixture.seed()
 			const unknown = await fixture.run('journey', ['--changed', 'missing-ref', '--plan'])
@@ -566,7 +541,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('prints a refused plan when state lookup would refuse the ordinary frame command', async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			fixture.seed()
 			fixture.write('src/mail/view.ts', '// changed\n')
@@ -589,7 +564,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('runs separate owner invocations in stable order and retains each record', async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			fixture.seed({ variants: ['light-1280'] })
 			fixture.write('src/board/view.ts', '// board\n')
@@ -623,7 +598,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('stops a changed run at the first red owner and names the owners not run and their exact commands', async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			fixture.seed({ variants: ['light-1280'] })
 			fixture.write('src/board/view.ts', '// board\n')
@@ -646,7 +621,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('keeps the narrow then rest stages when changed frames select an owner', async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			fixture.seed()
 			fixture.write('src/mail/view.ts', '// own\n')
@@ -663,7 +638,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('interrupts a changed owner, stops its process tree, and leaves the next owner unrun', async () => {
-		const fixture = new ComposedFixture({ committed: true })
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			fixture.seed({ variants: ['light-1280'] })
 			fixture.write('src/board/view.ts', '// board\n')
@@ -687,7 +662,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 			environment: { Capture: '1' },
 		})
 		expect(run.code === 0 ? 0 : run.stderr).toBe(0)
-		expect(readReceipt(base)).toMatchObject({ capture: [], parent: process.pid })
+		expect(readCaptureChildReceipt(base)).toMatchObject({ capture: [], parent: process.pid })
 	})
 
 	it('replaces an inherited capture variable with one CAPTURE under capture', async () => {
@@ -695,7 +670,10 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 			environment: { Capture: 'old' },
 		})
 		expect(run.code === 0 ? 0 : run.stderr).toBe(0)
-		expect(readReceipt(base)).toMatchObject({ capture: [['CAPTURE', '1']], parent: process.pid })
+		expect(readCaptureChildReceipt(base)).toMatchObject({
+			capture: [['CAPTURE', '1']],
+			parent: process.pid,
+		})
 	})
 
 	it('refuses journey state projection before any execution child starts', async () => {
@@ -717,7 +695,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 		])
 		expect(run.code === 0 ? 0 : run.stderr).toBe(0)
 		expect(run.stdout).toContain(`capture narrow: ${COMPOSED_FIRST}; pages:mail (case-scoped);`)
-		expect(readRequest(base, run.stdout, 'narrow', COMPOSED_FIRST)).toMatchObject({
+		expect(readCaptureStageRequest(base, run.stdout, 'narrow', COMPOSED_FIRST)).toMatchObject({
 			state: 'mail-reader',
 			case: MAIL,
 			variants: [COMPOSED_FIRST],
@@ -763,7 +741,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 		} finally {
 			await stopFixtureChild(live)
 			for (const name of [held, dead])
-				for (const suffix of ['.json', '.json.tmp']) rmFile(base, name + suffix)
+				for (const suffix of ['.json', '.json.tmp']) removeCaptureFixtureFile(base, name + suffix)
 		}
 	})
 
@@ -804,7 +782,7 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 
 describe('CaptureRunner wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('resolves a labeled-object project name and refuses an unsupported one before any execution child', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			fixture.seed()
 			const labeled = await fixture.run('journey', ['pages:mail', '--variant', COMPOSED_FIRST])
@@ -829,7 +807,7 @@ describe('CaptureRunner wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses wrapper projects that disagree on a host declaration before any execution child', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			fixture.seed()
 			fixture.write(
@@ -896,18 +874,19 @@ describe('CaptureRunner wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () => {
 
 describe('CaptureRunner stale command', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('exits 0 for current frames, 1 for a noncurrent frame, and starts no execution child', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({ variants: [...VARIANTS] })
 			const current = await fixture.run('stale', ['pages:mail', '--variant', COMPOSED_FIRST])
 			expect(current.code).toBe(0)
-			expect(new Set(readStatuses(current.stdout))).toEqual(new Set(['current']))
+			expect(new Set(readCaptureRunnerStatuses(current.stdout))).toEqual(new Set(['current']))
 			expect(current.stdout).not.toMatch(STAGE_LINE)
 			fixture.write('src/mail/view.ts', '// edited after the capture\n')
 			const noncurrent = await fixture.run('stale', ['pages:mail', '--variant', COMPOSED_FIRST])
 			expect(noncurrent.code).toBe(1)
-			expect(new Set(readStatuses(noncurrent.stdout))).toEqual(new Set(['stale-own']))
+			const statuses = readCaptureRunnerStatuses(noncurrent.stdout)
+			expect(new Set(statuses)).toEqual(new Set(['stale-own']))
 			expect(noncurrent.stdout).not.toMatch(STAGE_LINE)
 		} finally {
 			fixture.destroy()
@@ -925,8 +904,8 @@ describe('CaptureRunner stale command', { timeout: FIXTURE_TIMEOUT }, () => {
 
 	it('refuses a wrapper-declared variant the registry never attested when the variant is omitted', async () => {
 		const attested = VARIANTS.filter((variant) => variant !== 'light-1280')
-		const fixture = new ComposedFixture()
-		const control = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
+		const control = new ComposedFixture({ core, server })
 		try {
 			fixture.seed({ variants: attested })
 			await fixture.capture({ variants: attested })
@@ -966,7 +945,7 @@ describe('CaptureRunner stale command', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('checks primary and auxiliary Files frames through the runner when the variant is omitted', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			fixture.seed({ population: 'files' })
 			await fixture.capture({ population: 'files', variants: [...VARIANTS] })
@@ -985,7 +964,7 @@ describe('CaptureRunner stale command', { timeout: FIXTURE_TIMEOUT }, () => {
 				'tmp/captures/files-focused/files-reading--dark-320.png',
 			])
 				expect(current.stdout).toContain(`"file":"${file}","state"`)
-			rmFile(fixture, 'tmp/captures/states/examples/files-empty--light-390.png')
+			removeCaptureFixtureFile(fixture, 'tmp/captures/states/examples/files-empty--light-390.png')
 			const missing = await fixture.run('stale', ['examples:files'])
 			expect(missing.code).toBe(1)
 			expect(missing.stdout).toContain(
@@ -1003,7 +982,7 @@ describe('CaptureRunner stale command', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('keeps stale all to the browser scopes and reports Vue only under its own selection', async () => {
-		const fixture = new ComposedFixture()
+		const fixture = new ComposedFixture({ core, server })
 		try {
 			fixture.seed()
 			await fixture.capture({ variants: [...VARIANTS] })

@@ -1,5 +1,6 @@
-import type { CaptureDestination } from '@src/core'
-import type { CaptureImageResult, CaptureProducer } from '@src/server'
+import type { CaptureProducer } from '@src/server'
+import * as server from '@src/server'
+import { captureError } from '@orkestrel/test'
 import { spawnSync } from 'node:child_process'
 import {
 	existsSync,
@@ -98,22 +99,29 @@ import {
 	CAPTURE_MESSAGE_LIMIT,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { createPngBytes } from '../../fixtures/capture/createPngBytes.js'
 import {
-	readExitedPid,
-	startSleeper,
-	stopFixtureChild,
-} from '../../fixtures/capture/ProcessFixture.js'
-import {
+	createCaptureSolidPicture,
+	createCaptureImageFixture,
+	createCaptureDigestImageFixture,
+	readCapturePictureColumn,
+	createCaptureDescriptionFixture,
+	createCaptureDiscoveryRequest,
+	readCaptureRejection,
 	FIXTURE_HASH,
 	createDestinationFixture,
 	createLookupFixture,
 	createReceiptFixture,
 	createRegistryFixture,
 	createVitestFixture,
-	readThrown,
 } from '../../setup.js'
 import {
+	CAPTURE_PNG_REFUSALS,
+	buildCaptureArgumentFaults,
+	createCaptureImportInput,
+	createPngBytes,
+	readExitedPid,
+	startSleeper,
+	stopFixtureChild,
 	ALPHA_PICTURE,
 	ARGUMENT_REFUSALS,
 	FILTERED_PICTURE,
@@ -135,11 +143,6 @@ import {
 	createThumbnailPicture,
 	averageThumbnailPicture,
 } from '../../setupServer.js'
-
-function createSolid(width: number, height: number, value: number) {
-	return { width, height, pixels: new Uint8Array(width * height * 3).fill(value) }
-}
-
 describe('H1 extracted pure leaves', () => {
 	it('H1w derives encoded PNG bytes from one immutable set of decoded bounds', () => {
 		expect(CAPTURE_PNG_LIMITS.bytes).toBe(
@@ -242,7 +245,7 @@ describe('H1 agent-facing refusals', () => {
 		expect(fault.length).toBeLessThan(10_000)
 		expect(fault).toContain('1984 more')
 		const project = readCaptureProject(createProjectFixture())
-		const unknown = readThrown(() => resolveCaptureVariants(['absent'], [project]))
+		const unknown = captureError(() => resolveCaptureVariants(['absent'], [project]))
 		expect(unknown).toMatchObject({
 			message: expect.stringContaining(
 				`valid candidates: [${project.variants.map(preview).join(',')}]`,
@@ -258,13 +261,13 @@ describe('H1 agent-facing refusals', () => {
 	it('H1r gives every same-class refusal a key, preview, shape, and candidates', () => {
 		const variant = 'bad/name'
 		const state = 'bad/state'
-		const registry = readThrown(() =>
+		const registry = captureError(() =>
 			readCaptureRegistryArguments(['--variant', variant], process.cwd(), 'vite.config.ts'),
 		)
-		const selected = readThrown(() =>
+		const selected = captureError(() =>
 			readCaptureArguments(['all', '--state', state], 'capture', process.cwd(), 'vite.config.ts'),
 		)
-		const project = readThrown(() =>
+		const project = captureError(() =>
 			readCaptureProject(createProjectFixture({ provide: { variants: [{ name: variant }] } })),
 		)
 		for (const [error, key, value] of [
@@ -283,7 +286,7 @@ describe('H1 agent-facing refusals', () => {
 	})
 	it('names and caps the invalid variant value at its argument key', () => {
 		const value = 'bad\n' + 'x'.repeat(200)
-		const fault = readThrown(() =>
+		const fault = captureError(() =>
 			readCaptureArguments(['all', '--variant', value], 'journey', process.cwd(), 'vite.config.ts'),
 		)
 		expect(fault).toMatchObject({ code: 'USAGE' })
@@ -295,7 +298,9 @@ describe('H1 agent-facing refusals', () => {
 		expect(fault.message).not.toContain(value)
 	})
 	it('reports every missing and unexpected root member with the indexed key path', () => {
-		const fault = readThrown(() => readCapturePortfolios([{ typo: true, extra: 42 }], 'portfolios'))
+		const fault = captureError(() =>
+			readCapturePortfolios([{ typo: true, extra: 42 }], 'portfolios'),
+		)
 		if (!(fault instanceof Error)) throw new Error('Missing refusal')
 		for (const text of [
 			'portfolios[0]',
@@ -308,7 +313,7 @@ describe('H1 agent-facing refusals', () => {
 			expect(fault.message).toContain(text)
 	})
 	it('reports all absent bounded host fields in one refusal', () => {
-		const fault = readThrown(() =>
+		const fault = captureError(() =>
 			readCaptureProject(
 				createProjectFixture({
 					provide: { directory: undefined, record: undefined, inputs: undefined },
@@ -330,7 +335,7 @@ describe('H1 agent-facing refusals', () => {
 			expect(fault.message).toContain(text)
 	})
 	it('reports every missing and unexpected description field', () => {
-		const fault = readThrown(() =>
+		const fault = captureError(() =>
 			readCaptureDescription(
 				{ extra: true, typo: 42 },
 				{ id: 'a', nonce: 'b', config: 'vite.config.ts', parent: 1, pid: 2 },
@@ -356,24 +361,6 @@ describe('H1 agent-facing refusals', () => {
 		expect(fault).not.toContain(selector)
 	})
 })
-
-function createImportInput(
-	overrides: Partial<Parameters<typeof buildCaptureRegistry>[0][number]> = {},
-) {
-	const report = JSON.stringify(createVitestFixture())
-	return {
-		receipt: createReceiptFixture({
-			report: {
-				file: 'tmp/captures/states/runs/run-1/journey-selected.json',
-				digest: computeCaptureHash(report),
-			},
-		}),
-		report,
-		outcome: { code: 0, signal: null },
-		capped: false,
-		...overrides,
-	}
-}
 
 describe('computeCaptureHash', () => {
 	it.each(HASH_VECTORS)('matches the published SHA-256 digest of $text', ({ text, digest }) => {
@@ -422,7 +409,7 @@ describe('readCaptureOptions', () => {
 		['app', '--'],
 		['--unknown=value'],
 	])('refuses ambiguous or malformed options %j with command usage', (...argv) => {
-		const error = readThrown(() =>
+		const error = captureError(() =>
 			readCaptureOptions(
 				argv,
 				CAPTURE_COMMAND_OPTIONS.journey,
@@ -568,7 +555,7 @@ describe('computeRegistryDigest', () => {
 
 describe('buildCaptureRegistry', () => {
 	it('imports an uncapped successful receipt with an unchanged report', () => {
-		const input = createImportInput()
+		const input = createCaptureImportInput(createReceiptFixture(), createVitestFixture())
 		const registry = buildCaptureRegistry([input])
 		expect(registry.receipts).toEqual([input.receipt])
 		expect(registry.entries).toEqual(input.receipt.registry)
@@ -588,7 +575,11 @@ describe('buildCaptureRegistry', () => {
 		['a signal', { outcome: { code: null, signal: 'SIGTERM' } }],
 		['an incomplete receipt', { receipt: createReceiptFixture({ complete: false }) }],
 	] as const)('refuses %s before importing', (_name, overrides) => {
-		const failure = readThrown(() => buildCaptureRegistry([createImportInput(overrides)]))
+		const failure = captureError(() =>
+			buildCaptureRegistry([
+				createCaptureImportInput(createReceiptFixture(), createVitestFixture(), overrides),
+			]),
+		)
 		expect(failure).toMatchObject({
 			message: 'Registry receipt requires an uncapped successful exit and unchanged report',
 			code: 'EVIDENCE',
@@ -597,14 +588,14 @@ describe('buildCaptureRegistry', () => {
 	})
 
 	it('refuses a report whose bytes changed after the receipt pinned them', () => {
-		const input = createImportInput()
+		const input = createCaptureImportInput(createReceiptFixture(), createVitestFixture())
 		expect(() => buildCaptureRegistry([{ ...input, report: `${input.report} ` }])).toThrow(
 			'Registry receipt requires an uncapped successful exit and unchanged report',
 		)
 	})
 
 	it('refuses an empty import, a repeated variant, and an unparsable report', () => {
-		const input = createImportInput()
+		const input = createCaptureImportInput(createReceiptFixture(), createVitestFixture())
 		expect(() => buildCaptureRegistry([])).toThrow('A registry requires complete-run receipts')
 		expect(() => buildCaptureRegistry([input, input])).toThrow(
 			'Duplicate complete receipt variants',
@@ -612,7 +603,7 @@ describe('buildCaptureRegistry', () => {
 		const broken = '{'
 		expect(() =>
 			buildCaptureRegistry([
-				createImportInput({
+				createCaptureImportInput(createReceiptFixture(), createVitestFixture(), {
 					report: broken,
 					receipt: createReceiptFixture({
 						report: { file: 'tmp/report.json', digest: computeCaptureHash(broken) },
@@ -789,7 +780,7 @@ describe('decodeCapturePicture', () => {
 		}
 	}, 60_000)
 	it('H1r admits a valid encoder stream split across many nonempty data chunks', () => {
-		const png = encodeCapturePicture(createSolid(128, 128, 42), false)
+		const png = encodeCapturePicture(createCaptureSolidPicture(128, 128, 42), false)
 		const payload = png.subarray(41, png.length - 16)
 		const chunks = Array.from({ length: Math.ceil(payload.length / 16) }, (_, index) =>
 			encodeCaptureChunk('IDAT', payload.subarray(index * 16, (index + 1) * 16)),
@@ -803,7 +794,7 @@ describe('decodeCapturePicture', () => {
 					encodeCaptureChunk('IEND', Buffer.alloc(0)),
 				]),
 			),
-		).toEqual(createSolid(128, 128, 42))
+		).toEqual(createCaptureSolidPicture(128, 128, 42))
 	})
 	it('refuses dimensions above the independent pixel budget before inflation', () => {
 		const png = createPngBytes({ width: 32768, height: 641, rows: [[0, 1, 2, 3]] })
@@ -885,56 +876,14 @@ describe('decodeCapturePicture', () => {
 		expect([picture.width, picture.height, picture.pixels.length]).toEqual([1, 1, 3])
 	})
 
-	it.each([
-		['a short file', () => PNG.subarray(0, 20), 'Invalid capture PNG header'],
-		[
-			'a wrong signature',
-			() => Buffer.concat([Buffer.from([0]), PNG.subarray(1)]),
-			'Invalid capture PNG header',
-		],
-		[
-			'an indexed image',
-			() => createPngBytes({ width: 1, height: 1, rows: [[0, 0]], color: 3 }),
-			'Unsupported capture PNG encoding',
-		],
-		[
-			'sixteen-bit samples',
-			() => createPngBytes({ width: 1, height: 1, rows: [[0, 0, 0, 0, 0, 0, 0]], depth: 16 }),
-			'Unsupported capture PNG encoding',
-		],
-		[
-			'an interlaced image',
-			() => createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3]], interlace: 1 }),
-			'Unsupported capture PNG encoding',
-		],
-		[
-			'a zero width',
-			() => createPngBytes({ width: 0, height: 1, rows: [[0]] }),
-			'Unsupported capture PNG encoding',
-		],
-		[
-			'dimensions beyond a safe length',
-			() => createPngBytes({ width: 4294967295, height: 4294967295, rows: [[0]] }),
-			'Invalid capture PNG dimensions',
-		],
-		[
-			'an unknown filter',
-			() => createPngBytes({ width: 1, height: 1, rows: [[5, 1, 2, 3]] }),
-			'Unsupported capture PNG filter',
-		],
-		[
-			'a short stream',
-			() => createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2]] }),
-			'Capture PNG scanline length differs',
-		],
-	] as const)('refuses %s', (_name, build, message) => {
-		const failure = readThrown(() => decodeCapturePicture(build()))
+	it.each(CAPTURE_PNG_REFUSALS)('refuses %s', (_name, build, message) => {
+		const failure = captureError(() => decodeCapturePicture(build()))
 		expect(failure).toMatchObject({ message, code: 'EVIDENCE' })
 	})
 
 	it('refuses a stream that inflates past the declared length or is not deflate data', () => {
 		const long = createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3, 4, 5, 6, 7]] })
-		expect(readThrown(() => decodeCapturePicture(long))).toMatchObject({
+		expect(captureError(() => decodeCapturePicture(long))).toMatchObject({
 			message: 'Capture PNG stream is corrupt or longer than declared',
 			code: 'EVIDENCE',
 		})
@@ -944,7 +893,7 @@ describe('decodeCapturePicture', () => {
 			encodeCaptureChunk('IDAT', Buffer.from([1, 2, 3, 4])),
 			encodeCaptureChunk('IEND', Buffer.alloc(0)),
 		])
-		expect(readThrown(() => decodeCapturePicture(garbage))).toMatchObject({
+		expect(captureError(() => decodeCapturePicture(garbage))).toMatchObject({
 			code: 'EVIDENCE',
 			cause: expect.any(Error),
 		})
@@ -982,7 +931,7 @@ describe('encodeCapturePicture', () => {
 	})
 
 	it('opens with the signature and stores a flat picture larger than it compresses', () => {
-		const flat = createSolid(64, 64, 9)
+		const flat = createCaptureSolidPicture(64, 64, 9)
 		const compressed = encodeCapturePicture(flat)
 		const stored = encodeCapturePicture(flat, false)
 		expect(matchesCaptureSignature(compressed)).toBe(true)
@@ -995,7 +944,7 @@ describe('encodeCapturePicture', () => {
 		['a fractional width', { width: 1.5, height: 1, pixels: new Uint8Array(3) }],
 		['a pixel length that differs', { width: 2, height: 1, pixels: new Uint8Array(3) }],
 	])('refuses %s', (_name, bad) => {
-		expect(readThrown(() => encodeCapturePicture(bad))).toMatchObject({
+		expect(captureError(() => encodeCapturePicture(bad))).toMatchObject({
 			message: 'Invalid capture picture dimensions',
 			code: 'EVIDENCE',
 		})
@@ -1065,7 +1014,7 @@ describe('shrinkCapturePicture', () => {
 		},
 	)
 	it('H1w retains every pixel of a partial edge block with its true divisor', () => {
-		const source = createSolid(19, 19, 0)
+		const source = createCaptureSolidPicture(19, 19, 0)
 		source.pixels.fill(255, (18 * 19 + 18) * 3)
 		const actual = shrinkCapturePicture(source, 9, 400)
 		expect([actual.width, actual.height]).toEqual([3, 3])
@@ -1082,18 +1031,18 @@ describe('shrinkCapturePicture', () => {
 		expect([thumbnail.width, thumbnail.height]).toEqual([320, 256])
 	})
 	it('H1v preserves a thin bright edge above factor four', () => {
-		const source = createSolid(8, 8, 0)
+		const source = createCaptureSolidPicture(8, 8, 0)
 		for (const row of new Array(8).keys()) source.pixels.fill(255, row * 24, row * 24 + 3)
 		const [red] = shrinkCapturePicture(source, 8, 8).pixels
 		expect(Math.abs((red ?? -1) - 32)).toBeLessThanOrEqual(8)
 	})
 	it('H1v preserves solid strips shorter than the reduction factor', () => {
-		const result = shrinkCapturePicture(createSolid(400, 10, 85), 20, 400)
+		const result = shrinkCapturePicture(createCaptureSolidPicture(400, 10, 85), 20, 400)
 		expect([result.width, result.height]).toEqual([20, 1])
 		expect(new Set(result.pixels)).toEqual(new Set([85]))
 	})
 	it('H1t bounds thumbnail work for the 131072 by 160 frame', () => {
-		const source = createSolid(131072, 160, 85)
+		const source = createCaptureSolidPicture(131072, 160, 85)
 		const started = performance.now()
 		const thumbnail = shrinkCapturePicture(source, 410, 400)
 		expect(performance.now() - started).toBeLessThan(1000)
@@ -1112,13 +1061,13 @@ describe('shrinkCapturePicture', () => {
 	})
 
 	it('clips the displayed height and never reduces below one pixel', () => {
-		expect(shrinkCapturePicture(createSolid(2, 8, 5), 1, 3).height).toBe(3)
-		const tiny = shrinkCapturePicture(createSolid(1, 1, 5), 4, 8)
+		expect(shrinkCapturePicture(createCaptureSolidPicture(2, 8, 5), 1, 3).height).toBe(3)
+		const tiny = shrinkCapturePicture(createCaptureSolidPicture(1, 1, 5), 4, 8)
 		expect([tiny.width, tiny.height, ...tiny.pixels]).toEqual([1, 1, 5, 5, 5])
 	})
 
 	it('returns a separately owned picture', () => {
-		const source = createSolid(2, 2, 5)
+		const source = createCaptureSolidPicture(2, 2, 5)
 		const shrunk = shrinkCapturePicture(source, 1, 8)
 		shrunk.pixels.fill(0)
 		expect([...source.pixels]).toEqual(new Array(12).fill(5))
@@ -1127,23 +1076,24 @@ describe('shrinkCapturePicture', () => {
 
 describe('composeCapturePictures', () => {
 	it('places cells side by side on the gray background with the default gap', () => {
-		const sheet = composeCapturePictures([createSolid(2, 1, 10), createSolid(2, 1, 20)], false)
+		const pictures = [createCaptureSolidPicture(2, 1, 10), createCaptureSolidPicture(2, 1, 20)]
+		const sheet = composeCapturePictures(pictures, false)
 		expect([sheet.width, sheet.height]).toEqual([10, 1])
 		const values = Array.from({ length: sheet.width }, (_, x) => sheet.pixels[x * 3])
 		expect(values).toEqual([10, 10, 128, 128, 128, 128, 128, 128, 20, 20])
 	})
 
 	it('stacks rows and leaves gray where a narrower row ends', () => {
-		const sheet = composeCapturePictures([createSolid(2, 1, 10), createSolid(3, 1, 20)], true, 2)
+		const pictures = [createCaptureSolidPicture(2, 1, 10), createCaptureSolidPicture(3, 1, 20)]
+		const sheet = composeCapturePictures(pictures, true, 2)
 		expect([sheet.width, sheet.height]).toEqual([3, 4])
-		const column = (x: number) =>
-			Array.from({ length: sheet.height }, (_, y) => sheet.pixels[(y * sheet.width + x) * 3])
-		expect(column(0)).toEqual([10, 128, 128, 20])
-		expect(column(2)).toEqual([128, 128, 128, 20])
+		expect(readCapturePictureColumn(sheet, 0)).toEqual([10, 128, 128, 20])
+		expect(readCapturePictureColumn(sheet, 2)).toEqual([128, 128, 128, 20])
 	})
 
 	it('pads a shorter cell with gray below it', () => {
-		const sheet = composeCapturePictures([createSolid(1, 2, 10), createSolid(1, 1, 20)], false, 1)
+		const pictures = [createCaptureSolidPicture(1, 2, 10), createCaptureSolidPicture(1, 1, 20)]
+		const sheet = composeCapturePictures(pictures, false, 1)
 		expect([sheet.width, sheet.height]).toEqual([3, 2])
 		expect(
 			Array.from({ length: sheet.height }, (_, y) => sheet.pixels[(y * sheet.width + 2) * 3]),
@@ -1151,7 +1101,7 @@ describe('composeCapturePictures', () => {
 	})
 
 	it('refuses an empty selection', () => {
-		expect(readThrown(() => composeCapturePictures([], false))).toMatchObject({
+		expect(captureError(() => composeCapturePictures([], false))).toMatchObject({
 			message: 'Empty contact-sheet picture selection',
 			code: 'USAGE',
 		})
@@ -1489,7 +1439,7 @@ describe('readCaptureArguments changed selection', () => {
 			['--changed', 'HEAD', '--unknown'],
 			['--changed', '--plan'],
 		]) {
-			const error = readThrown(() =>
+			const error = captureError(() =>
 				readCaptureArguments(argv, 'journey', process.cwd(), 'journey.ts'),
 			)
 			expect(isCaptureError(error) ? error.code : undefined).toBe('USAGE')
@@ -1568,19 +1518,8 @@ describe('buildCaptureArguments', () => {
 		}
 	})
 	it('H1s names the source of candidates before discovery instead of placeholders', () => {
-		for (const run of [
-			() =>
-				readCaptureArguments(
-					['all', '--variant', 'bad/name'],
-					'journey',
-					'/repo',
-					'vite.config.ts',
-				),
-			() =>
-				readCaptureArguments(['all', '--state', 'bad/name'], 'capture', '/repo', 'vite.config.ts'),
-			() => readCaptureRegistryArguments(['--variant', 'bad/name'], '/repo', 'vite.config.ts'),
-		]) {
-			const error = readThrown(run)
+		for (const run of buildCaptureArgumentFaults(server)) {
+			const error = captureError(run)
 			expect(error instanceof Error ? error.message : '').not.toMatch(
 				/<wrapper-declared|<case-declared/u,
 			)
@@ -1787,7 +1726,7 @@ describe('readCaptureArguments', () => {
 	})
 
 	it.each(ARGUMENT_REFUSALS)('refuses $title as a usage failure', ({ command, argv, message }) => {
-		const failure = readThrown(() => readCaptureArguments(argv, command, ROOT, 'x'))
+		const failure = captureError(() => readCaptureArguments(argv, command, ROOT, 'x'))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({ code: 'USAGE', message: expect.stringContaining(message) })
 	})
@@ -1836,7 +1775,7 @@ describe('readCapturePortfolios', () => {
 
 	it('names the subject in a refusal for a missing list', () => {
 		expect(
-			readThrown(() => readCapturePortfolios(undefined, 'standalone portfolios')),
+			captureError(() => readCapturePortfolios(undefined, 'standalone portfolios')),
 		).toMatchObject({
 			message: expect.stringContaining('The wrapper provides no standalone portfolios'),
 			code: 'HOST',
@@ -1903,7 +1842,7 @@ describe('readCaptureProject', () => {
 	})
 
 	it.each(PROJECT_REFUSALS)('refuses $title', ({ overrides, message, code }) => {
-		const failure = readThrown(() => readCaptureProject(createProjectFixture(overrides)))
+		const failure = captureError(() => readCaptureProject(createProjectFixture(overrides)))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({ code })
 		expect(failure instanceof Error ? failure.message : '').toContain(message)
@@ -1912,7 +1851,7 @@ describe('readCaptureProject', () => {
 	it.each([undefined, null, 'journey:wide', 42, []])(
 		'refuses the non-record configuration %s',
 		(value) => {
-			expect(readThrown(() => readCaptureProject(value))).toMatchObject({
+			expect(captureError(() => readCaptureProject(value))).toMatchObject({
 				message: expect.stringContaining('Unsupported journey project name'),
 				code: 'HOST',
 			})
@@ -1947,7 +1886,7 @@ describe('requireCaptureProjects', () => {
 		},
 	])('refuses $title between two projects', ({ patch }) => {
 		expect(
-			readThrown(() => requireCaptureProjects([FIRST, { ...SECOND, ...patch }])),
+			captureError(() => requireCaptureProjects([FIRST, { ...SECOND, ...patch }])),
 		).toMatchObject({
 			message: 'Host project integrity declarations disagree',
 			code: 'HOST',
@@ -1974,27 +1913,27 @@ describe('requireCaptureProjects', () => {
 			uniform: [],
 		})
 		expect(
-			readThrown(() => requireCaptureProjects([first, { ...SECOND, uniform: ['pages'] }])),
+			captureError(() => requireCaptureProjects([first, { ...SECOND, uniform: ['pages'] }])),
 		).toMatchObject({ code: 'HOST', message: 'Host project integrity declarations disagree' })
-		expect(readThrown(() => requireCaptureProjects([first, SECOND]))).toMatchObject({
+		expect(captureError(() => requireCaptureProjects([first, SECOND]))).toMatchObject({
 			code: 'HOST',
 			message: 'Host project integrity declarations disagree',
 		})
 	})
 
 	it('refuses an empty set, a repeated label, and a repeated variant case-folded', () => {
-		expect(readThrown(() => requireCaptureProjects([]))).toMatchObject({
+		expect(captureError(() => requireCaptureProjects([]))).toMatchObject({
 			message: 'No host project declares integrity inputs',
 			code: 'HOST',
 		})
 		expect(
-			readThrown(() => requireCaptureProjects([FIRST, { ...SECOND, name: FIRST.name }])),
+			captureError(() => requireCaptureProjects([FIRST, { ...SECOND, name: FIRST.name }])),
 		).toMatchObject({
 			message: 'Duplicate journey projects: bench:wide, bench:wide',
 			code: 'EVIDENCE',
 		})
 		expect(
-			readThrown(() => requireCaptureProjects([FIRST, { ...SECOND, variant: 'WIDE' }])),
+			captureError(() => requireCaptureProjects([FIRST, { ...SECOND, variant: 'WIDE' }])),
 		).toMatchObject({
 			message: 'Duplicate journey project variants: wide, WIDE',
 			code: 'EVIDENCE',
@@ -2128,7 +2067,7 @@ describe('readCaptureRequest', () => {
 				`journey-selection-${String(PPID)}.json`,
 				JSON.stringify(createWireRequest(PPID, ARGV, patch)),
 			)
-			const failure = readThrown(() =>
+			const failure = captureError(() =>
 				readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV)),
 			)
 			expect(isCaptureError(failure)).toBe(true)
@@ -2144,7 +2083,7 @@ describe('readCaptureRequest', () => {
 		try {
 			const file = scratch.write(`journey-selection-${String(PPID)}.json`, text)
 			expect(
-				readThrown(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
+				captureError(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
 			).toMatchObject({
 				message: `Invalid journey selection request: ${file}`,
 				code: 'HOST',
@@ -2159,7 +2098,7 @@ describe('readCaptureRequest', () => {
 		try {
 			const name = `journey-selection-${String(PPID)}.json`
 			const file = scratch.write(name, JSON.stringify(createWireRequest(PPID + 1000000, ARGV)))
-			const failure = readThrown(() =>
+			const failure = captureError(() =>
 				readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV)),
 			)
 			expect(failure).toMatchObject({
@@ -2181,7 +2120,7 @@ describe('readCaptureRequest', () => {
 		const scratch = createScratch({ prefix: 'request-' })
 		try {
 			scratch.ensure(`journey-selection-${String(PPID)}.json`)
-			const failure = readThrown(() =>
+			const failure = captureError(() =>
 				readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV)),
 			)
 			expect(failure).toMatchObject({ code: 'HOST' })
@@ -2205,7 +2144,7 @@ describe('readCaptureRequest', () => {
 				JSON.stringify(createWireRequest(PPID, ARGV)),
 			)
 			expect(
-				readThrown(() => readCaptureRequest(createWireOptions(scratch.path, PPID, argv))),
+				captureError(() => readCaptureRequest(createWireOptions(scratch.path, PPID, argv))),
 			).toMatchObject({
 				message: `Journey selection request arguments differ from the process arguments: ${file}`,
 				code: 'HOST',
@@ -2225,7 +2164,7 @@ describe('readCaptureRequest', () => {
 				JSON.stringify(createWireRequest(PPID, ARGV, { args: [1, 2, 3] })),
 			)
 			expect(
-				readThrown(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
+				captureError(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
 			).toMatchObject({
 				message: expect.stringContaining('arguments differ from the process arguments'),
 			})
@@ -2266,7 +2205,7 @@ describe('readCaptureRequest', () => {
 				JSON.stringify(createWireRequest(PPID, ARGV, { phase: 'discover' })),
 			)
 			expect(
-				readThrown(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
+				captureError(() => readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))),
 			).toMatchObject({
 				code: 'HOST',
 				message: expect.stringContaining('Invalid journey selection request'),
@@ -2301,7 +2240,7 @@ describe('readCaptureReaderArguments', () => {
 		['app', '--plan'],
 		['app', '--output=a', '--output=b'],
 	])('keeps reader positional and option refusals for %j', (...argv) => {
-		expect(readThrown(() => readCaptureReaderArguments(argv, ROOT, DEFAULTS))).toMatchObject({
+		expect(captureError(() => readCaptureReaderArguments(argv, ROOT, DEFAULTS))).toMatchObject({
 			code: 'USAGE',
 		})
 	})
@@ -2417,7 +2356,7 @@ describe('readCaptureReaderArguments', () => {
 			message: 'Repeated option: --checks',
 		},
 	])('refuses $title as a usage failure', ({ argv, message }) => {
-		const failure = readThrown(() => readCaptureReaderArguments(argv, ROOT, DEFAULTS))
+		const failure = captureError(() => readCaptureReaderArguments(argv, ROOT, DEFAULTS))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({ code: 'USAGE', message: expect.stringContaining(message) })
 	})
@@ -2468,7 +2407,7 @@ describe('readCaptureViewport', () => {
 			message: 'no declared producing viewport',
 		},
 	])('refuses $title as a host fault', ({ test, message }) => {
-		const failure = readThrown(() => readCaptureViewport(test))
+		const failure = captureError(() => readCaptureViewport(test))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({ code: 'HOST', message: expect.stringContaining(message) })
 	})
@@ -2508,7 +2447,7 @@ describe('buildCaptureIntegrityOptions', () => {
 		const project = readCaptureProject(
 			createProjectFixture({ provide: { directory: resolve('/elsewhere/frames') } }),
 		)
-		const failure = readThrown(() => buildCaptureIntegrityOptions(ROOT, project))
+		const failure = captureError(() => buildCaptureIntegrityOptions(ROOT, project))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({
 			code: 'HOST',
@@ -2523,36 +2462,19 @@ describe('scanCaptureFrames', () => {
 		{ project: 'journey:light-1280', name: 'light-1280', width: 1280, height: 800 },
 	]
 
-	function createImage(
-		state: string,
-		width: number,
-		height: number,
-		overrides: Partial<CaptureDestination> = {},
-	): CaptureImageResult {
-		const entry = createDestinationFixture({
-			state,
-			file: `tmp/captures/states/pages/${state}--${overrides.variant ?? 'light-390'}.png`,
-			...overrides,
-		})
-		return {
-			entry,
-			picture: { width, height },
-			thumbnail: createSolid(width, height, 0),
-			digest: state,
-			size: 4096,
-		}
-	}
-
 	it('names the kinds a group mixes, in the order the frames arrive', () => {
 		expect(
-			scanCaptureFrames([createImage('long', 390, 2000), createImage('fit', 390, 844)], PRODUCERS),
+			scanCaptureFrames(
+				[createCaptureImageFixture('long', 390, 2000), createCaptureImageFixture('fit', 390, 844)],
+				PRODUCERS,
+			),
 		).toEqual(['Mixed framing: states/pages:mail@390: page, viewport'])
 		expect(
 			scanCaptureFrames(
 				[
-					createImage('narrow', 200, 300),
-					createImage('fit', 390, 844),
-					createImage('long', 390, 2000),
+					createCaptureImageFixture('narrow', 200, 300),
+					createCaptureImageFixture('fit', 390, 844),
+					createCaptureImageFixture('long', 390, 2000),
 				],
 				PRODUCERS,
 			),
@@ -2561,10 +2483,16 @@ describe('scanCaptureFrames', () => {
 
 	it('reports nothing for a group of one kind, or for no frames', () => {
 		expect(
-			scanCaptureFrames([createImage('a', 390, 844), createImage('b', 390, 844)], PRODUCERS),
+			scanCaptureFrames(
+				[createCaptureImageFixture('a', 390, 844), createCaptureImageFixture('b', 390, 844)],
+				PRODUCERS,
+			),
 		).toEqual([])
 		expect(
-			scanCaptureFrames([createImage('a', 390, 2000), createImage('b', 390, 3000)], PRODUCERS),
+			scanCaptureFrames(
+				[createCaptureImageFixture('a', 390, 2000), createCaptureImageFixture('b', 390, 3000)],
+				PRODUCERS,
+			),
 		).toEqual([])
 		expect(scanCaptureFrames([], PRODUCERS)).toEqual([])
 	})
@@ -2572,7 +2500,10 @@ describe('scanCaptureFrames', () => {
 	it('leaves an auxiliary output variant out of its producer group', () => {
 		expect(
 			scanCaptureFrames(
-				[createImage('fit', 390, 844), createImage('aux', 320, 2000, { variant: 'light-320' })],
+				[
+					createCaptureImageFixture('fit', 390, 844),
+					createCaptureImageFixture('aux', 320, 2000, { variant: 'light-320' }),
+				],
 				PRODUCERS,
 			),
 		).toEqual([])
@@ -2583,10 +2514,10 @@ describe('scanCaptureFrames', () => {
 		expect(
 			scanCaptureFrames(
 				[
-					createImage('a', 390, 844),
-					createImage('b', 390, 844),
-					createImage('c', 390, 2000, board),
-					createImage('d', 390, 3000, board),
+					createCaptureImageFixture('a', 390, 844),
+					createCaptureImageFixture('b', 390, 844),
+					createCaptureImageFixture('c', 390, 2000, board),
+					createCaptureImageFixture('d', 390, 3000, board),
 				],
 				PRODUCERS,
 			),
@@ -2594,9 +2525,9 @@ describe('scanCaptureFrames', () => {
 		expect(
 			scanCaptureFrames(
 				[
-					createImage('a', 390, 844),
-					createImage('c', 390, 2000, board),
-					createImage('d', 390, 844, board),
+					createCaptureImageFixture('a', 390, 844),
+					createCaptureImageFixture('c', 390, 2000, board),
+					createCaptureImageFixture('d', 390, 844, board),
 				],
 				PRODUCERS,
 			),
@@ -2608,10 +2539,10 @@ describe('scanCaptureFrames', () => {
 		expect(
 			scanCaptureFrames(
 				[
-					createImage('a', 390, 844),
-					createImage('b', 390, 2000),
-					createImage('c', 390, 844, focused),
-					createImage('d', 390, 844, focused),
+					createCaptureImageFixture('a', 390, 844),
+					createCaptureImageFixture('b', 390, 2000),
+					createCaptureImageFixture('c', 390, 844, focused),
+					createCaptureImageFixture('d', 390, 844, focused),
 				],
 				PRODUCERS,
 			),
@@ -2623,10 +2554,10 @@ describe('scanCaptureFrames', () => {
 		expect(
 			scanCaptureFrames(
 				[
-					createImage('a', 390, 844),
-					createImage('b', 390, 844),
-					createImage('c', 1280, 800, wide),
-					createImage('d', 1280, 2400, wide),
+					createCaptureImageFixture('a', 390, 844),
+					createCaptureImageFixture('b', 390, 844),
+					createCaptureImageFixture('c', 1280, 800, wide),
+					createCaptureImageFixture('d', 1280, 2400, wide),
 				],
 				PRODUCERS,
 			),
@@ -2636,7 +2567,10 @@ describe('scanCaptureFrames', () => {
 	it('ignores a frame whose project the wrapper does not declare', () => {
 		expect(
 			scanCaptureFrames(
-				[createImage('a', 390, 844), createImage('b', 390, 2000, { project: 'journey:absent' })],
+				[
+					createCaptureImageFixture('a', 390, 844),
+					createCaptureImageFixture('b', 390, 2000, { project: 'journey:absent' }),
+				],
 				PRODUCERS,
 			),
 		).toEqual([])
@@ -2644,30 +2578,23 @@ describe('scanCaptureFrames', () => {
 })
 
 describe('collectCaptureIdentical', () => {
-	function createImage(file: string, digest: string): CaptureImageResult {
-		return {
-			entry: createDestinationFixture({ file }),
-			picture: { width: 1, height: 1 },
-			thumbnail: createSolid(1, 1, 0),
-			digest,
-			size: 4096,
-		}
-	}
-
 	it('groups the files that share a digest and leaves unique images out', () => {
 		expect(
 			collectCaptureIdentical([
-				createImage('a.png', 'one'),
-				createImage('b.png', 'two'),
-				createImage('c.png', 'one'),
-				createImage('d.png', 'one'),
+				createCaptureDigestImageFixture('a.png', 'one'),
+				createCaptureDigestImageFixture('b.png', 'two'),
+				createCaptureDigestImageFixture('c.png', 'one'),
+				createCaptureDigestImageFixture('d.png', 'one'),
 			]),
 		).toEqual([['a.png', 'c.png', 'd.png']])
 	})
 
 	it('reports nothing for unique images or no images', () => {
 		expect(
-			collectCaptureIdentical([createImage('a.png', 'one'), createImage('b.png', 'two')]),
+			collectCaptureIdentical([
+				createCaptureDigestImageFixture('a.png', 'one'),
+				createCaptureDigestImageFixture('b.png', 'two'),
+			]),
 		).toEqual([])
 		expect(collectCaptureIdentical([])).toEqual([])
 	})
@@ -2756,7 +2683,7 @@ describe('readCaptureEntry', () => {
 	it.each(['./project.config.ts', 42, null, undefined])(
 		'refuses %j as a project that is not declared inline',
 		(value) => {
-			expect(readThrown(() => readCaptureEntry(value))).toMatchObject({
+			expect(captureError(() => readCaptureEntry(value))).toMatchObject({
 				code: 'HOST',
 				message: 'The journey wrapper must declare inline projects',
 			})
@@ -2766,7 +2693,7 @@ describe('readCaptureEntry', () => {
 	it.each(PROJECT_REFUSALS)(
 		'refuses $title with the reader that owns the declaration',
 		(refusal) => {
-			const failure = readThrown(() =>
+			const failure = captureError(() =>
 				readCaptureEntry({ test: createProjectFixture(refusal.overrides) }),
 			)
 			expect(failure).toMatchObject({ code: refusal.code })
@@ -2803,23 +2730,16 @@ describe('readCaptureDescription', () => {
 		pid: 4343,
 	}
 
-	function createDescription(patch: Readonly<Record<string, unknown>> = {}): unknown {
-		return Object.fromEntries(
-			Object.entries({ version: 1, ...EXPECTED, projects: [PROJECT], ...patch }).filter(
-				([, value]) => value !== undefined,
-			),
-		)
-	}
-
 	it('accepts a description that echoes this exchange and validates each project', () => {
-		const description = readCaptureDescription(createDescription(), EXPECTED)
+		const input = createCaptureDescriptionFixture(EXPECTED, PROJECT)
+		const description = readCaptureDescription(input, EXPECTED)
 		expect(description).toMatchObject({ version: 1, ...EXPECTED })
 		expect(description.projects).toEqual([readCaptureEntry(PROJECT)])
 	})
 
 	it('carries uniform scopes through the discovery description', () => {
 		const description = readCaptureDescription(
-			createDescription({
+			createCaptureDescriptionFixture(EXPECTED, PROJECT, {
 				projects: [{ test: createProjectFixture({ provide: { uniform: ['pages', 'examples'] } }) }],
 			}),
 			EXPECTED,
@@ -2862,21 +2782,23 @@ describe('readCaptureDescription', () => {
 			message: 'The wrapper declares no projects',
 		},
 	])('refuses $title', ({ patch, message }) => {
-		const failure = readThrown(() => readCaptureDescription(createDescription(patch), EXPECTED))
+		const input = createCaptureDescriptionFixture(EXPECTED, PROJECT, patch)
+		const failure = captureError(() => readCaptureDescription(input, EXPECTED))
 		expect(failure).toMatchObject({ code: 'HOST' })
 		expect(failure instanceof Error ? failure.message : '').toContain(message)
 	})
 
 	it.each([undefined, null, [], 'text', 42])('refuses %j as no document', (value) => {
-		expect(readThrown(() => readCaptureDescription(value, EXPECTED))).toMatchObject({
+		expect(captureError(() => readCaptureDescription(value, EXPECTED))).toMatchObject({
 			code: 'HOST',
 			message: expect.stringContaining('The host description is malformed'),
 		})
 	})
 
 	it('refuses an expectation that names no discovery child', () => {
-		const failure = readThrown(() =>
-			readCaptureDescription(createDescription(), { ...EXPECTED, pid: undefined }),
+		const input = createCaptureDescriptionFixture(EXPECTED, PROJECT)
+		const failure = captureError(() =>
+			readCaptureDescription(input, { ...EXPECTED, pid: undefined }),
 		)
 		expect(failure).toMatchObject({
 			code: 'HOST',
@@ -2887,9 +2809,8 @@ describe('readCaptureDescription', () => {
 	})
 
 	it('refuses a project the wrapper declares malformed, with the reader that owns it', () => {
-		const failure = readThrown(() =>
-			readCaptureDescription(createDescription({ projects: [{ test: {} }] }), EXPECTED),
-		)
+		const input = createCaptureDescriptionFixture(EXPECTED, PROJECT, { projects: [{ test: {} }] })
+		const failure = captureError(() => readCaptureDescription(input, EXPECTED))
 		expect(failure).toMatchObject({ code: 'HOST' })
 	})
 })
@@ -2899,42 +2820,22 @@ describe('answerCaptureDiscovery', () => {
 	const ARGV = ['/workspace/node_modules/vitest/vitest.mjs', 'list', '--filesOnly']
 	const CONFIG = 'configs/wrapper.config.ts'
 
-	function createDiscoveryRequest(patch: Readonly<Record<string, unknown>> = {}): unknown {
-		return Object.fromEntries(
-			Object.entries({
-				version: 1,
-				phase: 'discover',
-				id: 'run-1',
-				nonce: 'nonce-1',
-				config: CONFIG,
-				pid: PPID,
-				args: ARGV,
-				...patch,
-			}).filter(([, value]) => value !== undefined),
-		)
-	}
-
-	function describeAnswer(directory: string, projects: readonly unknown[] = [PROJECT]) {
-		return answerCaptureDiscovery({ ppid: PPID, argv: ARGV, directory, config: CONFIG, projects })
-	}
-
-	async function readRejection(attempt: Promise<unknown>): Promise<unknown> {
-		return await attempt.then(
-			() => undefined,
-			(error: unknown) => error,
-		)
-	}
-
 	it('writes the projects the wrapper declares, unjudged, to the invocation directory and answers true', async () => {
 		const scratch = createScratch({ prefix: 'answer-' })
 		try {
 			scratch.write(
 				`requests/journey-selection-${String(PPID)}.json`,
-				JSON.stringify(createDiscoveryRequest()),
+				JSON.stringify(createCaptureDiscoveryRequest(PPID, ARGV, CONFIG)),
 			)
 			const directory = resolve(scratch.path, 'requests')
 			expect(
-				await describeAnswer(directory, [PROJECT, Promise.resolve(PROJECT), () => PROJECT]),
+				await answerCaptureDiscovery({
+					ppid: PPID,
+					argv: ARGV,
+					directory,
+					config: CONFIG,
+					projects: [PROJECT, Promise.resolve(PROJECT), () => PROJECT],
+				}),
 			).toBe(true)
 			const written: unknown = parseJSON(scratch.read('requests/runs/run-1/description.json') ?? '')
 			expect(written).toEqual({
@@ -2957,11 +2858,27 @@ describe('answerCaptureDiscovery', () => {
 		try {
 			scratch.write(
 				`requests/journey-selection-${String(PPID)}.json`,
-				JSON.stringify(createDiscoveryRequest()),
+				JSON.stringify(createCaptureDiscoveryRequest(PPID, ARGV, CONFIG)),
 			)
 			const directory = resolve(scratch.path, 'requests')
-			expect(await describeAnswer(directory)).toBe(true)
-			expect(await describeAnswer(directory)).toBe(true)
+			expect(
+				await answerCaptureDiscovery({
+					ppid: PPID,
+					argv: ARGV,
+					directory,
+					config: CONFIG,
+					projects: [PROJECT],
+				}),
+			).toBe(true)
+			expect(
+				await answerCaptureDiscovery({
+					ppid: PPID,
+					argv: ARGV,
+					directory,
+					config: CONFIG,
+					projects: [PROJECT],
+				}),
+			).toBe(true)
 		} finally {
 			scratch.destroy()
 		}
@@ -2972,7 +2889,7 @@ describe('answerCaptureDiscovery', () => {
 		try {
 			scratch.write(
 				`requests/journey-selection-${String(PPID)}.json`,
-				JSON.stringify(createDiscoveryRequest()),
+				JSON.stringify(createCaptureDiscoveryRequest(PPID, ARGV, CONFIG)),
 			)
 			await withEnvironment({ CAPTURE_REQUESTS: resolve(scratch.path, 'requests') }, async () => {
 				expect(
@@ -2995,14 +2912,46 @@ describe('answerCaptureDiscovery', () => {
 		try {
 			const directory = resolve(scratch.path, 'requests')
 			scratch.ensure('requests')
-			expect(await describeAnswer(directory)).toBe(false)
+			expect(
+				await answerCaptureDiscovery({
+					ppid: PPID,
+					argv: ARGV,
+					directory,
+					config: CONFIG,
+					projects: [PROJECT],
+				}),
+			).toBe(false)
 			const file = `requests/journey-selection-${String(PPID)}.json`
 			scratch.write(file, '{')
-			expect(await describeAnswer(directory)).toBe(false)
+			expect(
+				await answerCaptureDiscovery({
+					ppid: PPID,
+					argv: ARGV,
+					directory,
+					config: CONFIG,
+					projects: [PROJECT],
+				}),
+			).toBe(false)
 			scratch.write(file, 'null')
-			expect(await describeAnswer(directory)).toBe(false)
+			expect(
+				await answerCaptureDiscovery({
+					ppid: PPID,
+					argv: ARGV,
+					directory,
+					config: CONFIG,
+					projects: [PROJECT],
+				}),
+			).toBe(false)
 			scratch.write(file, JSON.stringify(createWireRequest(PPID, ARGV)))
-			expect(await describeAnswer(directory)).toBe(false)
+			expect(
+				await answerCaptureDiscovery({
+					ppid: PPID,
+					argv: ARGV,
+					directory,
+					config: CONFIG,
+					projects: [PROJECT],
+				}),
+			).toBe(false)
 			expect(scratch.has('requests/runs')).toBe(false)
 		} finally {
 			scratch.destroy()
@@ -3030,9 +2979,17 @@ describe('answerCaptureDiscovery', () => {
 		try {
 			scratch.write(
 				`requests/journey-selection-${String(PPID)}.json`,
-				JSON.stringify(createDiscoveryRequest(patch)),
+				JSON.stringify(createCaptureDiscoveryRequest(PPID, ARGV, CONFIG, patch)),
 			)
-			const failure = await readRejection(describeAnswer(resolve(scratch.path, 'requests')))
+			const failure = await readCaptureRejection(
+				answerCaptureDiscovery({
+					ppid: PPID,
+					argv: ARGV,
+					directory: resolve(scratch.path, 'requests'),
+					config: CONFIG,
+					projects: [PROJECT],
+				}),
+			)
 			expect(failure).toMatchObject({ code: 'HOST' })
 			expect(failure instanceof Error ? failure.message : '').toContain(message)
 			expect(scratch.has('requests/runs')).toBe(false)
@@ -3046,11 +3003,19 @@ describe('answerCaptureDiscovery', () => {
 		try {
 			scratch.write(
 				`requests/journey-selection-${String(PPID)}.json`,
-				JSON.stringify(createDiscoveryRequest()),
+				JSON.stringify(createCaptureDiscoveryRequest(PPID, ARGV, CONFIG)),
 			)
 			const prior = JSON.stringify({ pid: process.pid + 1, projects: [] })
 			scratch.write('requests/runs/run-1/description.json', prior)
-			const failure = await readRejection(describeAnswer(resolve(scratch.path, 'requests')))
+			const failure = await readCaptureRejection(
+				answerCaptureDiscovery({
+					ppid: PPID,
+					argv: ARGV,
+					directory: resolve(scratch.path, 'requests'),
+					config: CONFIG,
+					projects: [PROJECT],
+				}),
+			)
 			expect(failure).toMatchObject({ code: 'HOST' })
 			expect(failure instanceof Error ? failure.message : '').toContain('already answered')
 			expect(scratch.read('requests/runs/run-1/description.json')).toBe(prior)
@@ -3075,7 +3040,7 @@ describe('readCaptureRegistryArguments', () => {
 		'retains registry refusals for %j',
 		(...argv) => {
 			expect(
-				readThrown(() => readCaptureRegistryArguments(argv, process.cwd(), 'default.ts')),
+				captureError(() => readCaptureRegistryArguments(argv, process.cwd(), 'default.ts')),
 			).toMatchObject({ code: 'USAGE' })
 		},
 	)
@@ -3113,13 +3078,13 @@ describe('readCaptureRegistryArguments', () => {
 	})
 
 	it.each(REGISTRY_ARGUMENT_REFUSALS)('refuses $title as a usage failure', ({ argv, reason }) => {
-		const failure = readThrown(() => readCaptureRegistryArguments(argv, ROOT, 'x'))
+		const failure = captureError(() => readCaptureRegistryArguments(argv, ROOT, 'x'))
 		expect(isCaptureError(failure)).toBe(true)
 		expect(failure).toMatchObject({ code: 'USAGE', message: expect.stringContaining(reason) })
 	})
 
 	it('names the usage line in a refusal that teaches the command', () => {
-		const failure = readThrown(() => readCaptureRegistryArguments(['pages:mail'], ROOT, 'x'))
+		const failure = captureError(() => readCaptureRegistryArguments(['pages:mail'], ROOT, 'x'))
 		expect(failure).toMatchObject({
 			message: expect.stringContaining(
 				'Usage: capture registry [--variant <name>]... [--mode <name>] [--config <file>]',
@@ -3239,7 +3204,7 @@ describe('writeCaptureDocument', () => {
 		try {
 			const path = resolve(scratch.path, 'registry.json')
 			writeCaptureDocument(path, { value: 'earlier' })
-			const failure = readThrown(() =>
+			const failure = captureError(() =>
 				writeCaptureDocument(path, { value: 'later' }, AbortSignal.abort(new Error('interrupted'))),
 			)
 			expect(failure).toMatchObject({ message: 'interrupted' })

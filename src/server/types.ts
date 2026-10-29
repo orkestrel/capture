@@ -163,11 +163,21 @@ export interface CaptureExecutionResult {
 export type CaptureParsedArguments<Options extends ParseArgsOptionsConfig> = {
 	readonly [
 		Key in keyof ReturnType<
-			typeof parseArgs<{ options: Options; tokens: true; strict: true; allowPositionals: true }>
+			typeof parseArgs<{
+				readonly options: Options
+				readonly tokens: true
+				readonly strict: true
+				readonly allowPositionals: true
+			}>
 		>
 	]: Readonly<
 		ReturnType<
-			typeof parseArgs<{ options: Options; tokens: true; strict: true; allowPositionals: true }>
+			typeof parseArgs<{
+				readonly options: Options
+				readonly tokens: true
+				readonly strict: true
+				readonly allowPositionals: true
+			}>
 		>[Key]
 	>
 }

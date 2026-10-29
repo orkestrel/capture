@@ -1,297 +1,28 @@
 import {
-	isCaptureArtifact,
-	isCaptureBox,
-	isCaptureCollection,
-	isCaptureDeclaration,
 	isCaptureDestination,
-	isCaptureDigest,
-	isCaptureEntry,
-	isCaptureGeometry,
 	isCaptureHash,
 	isCaptureHashes,
-	isCaptureIdentity,
-	isCaptureLookup,
-	isCaptureLookupJournal,
-	isCaptureManifest,
 	isCapturePath,
 	isCapturePattern,
-	isCaptureReceipt,
-	isCaptureRegistry,
 	isCaptureRequest,
 	isCaptureRun,
 	isCaptureSegment,
 	isCaptureSelector,
-	isCaptureSources,
-	isCaptureStamp,
 	isCaptureStoredManifest,
 } from '@src/core'
 import { createHostileValues } from '@orkestrel/test'
 import { describe, expect, it } from 'vitest'
 import {
+	CAPTURE_COLLECTION_FIXTURE,
+	CAPTURE_GUARD_CASES,
 	FIXTURE_HASH,
 	REFUSED_PATHS,
-	createDeclarationFixture,
 	createDestinationFixture,
 	createIdentityFixture,
-	createLookupFixture,
 	createManifestFixture,
-	createReceiptFixture,
-	createRegistryFixture,
 	createRequestFixture,
 	createRunFixture,
-	createSourcesFixture,
-	createStampFixture,
 } from '../../setup.js'
-
-const COLLECTION = {
-	project: 'journey:light-390',
-	registry: FIXTURE_HASH,
-	variant: 'light-390',
-	inputs: { patterns: [], files: {}, digest: FIXTURE_HASH },
-	run: { file: 'tmp/runs/a.json', digest: FIXTURE_HASH },
-	report: { file: 'tmp/runs/a-report.json', digest: FIXTURE_HASH },
-}
-
-// Each row pairs a guard with a value it accepts and the edits that must make it refuse. A row
-// whose edit still passes means the guard stopped reading that field.
-const ROWS: ReadonlyArray<
-	readonly [string, (value: unknown) => boolean, unknown, ReadonlyArray<readonly [string, unknown]>]
-> = [
-	[
-		'isCaptureSources',
-		isCaptureSources,
-		createSourcesFixture(),
-		[
-			['a traversing own pattern', createSourcesFixture({ own: ['../x'] })],
-			['a backslash shared pattern', createSourcesFixture({ shared: ['src\\core'] })],
-			['a non-array tests member', { ...createSourcesFixture(), tests: 'tests/setup.ts' }],
-			['a missing member', { own: [], shared: [] }],
-		],
-	],
-	[
-		'isCaptureIdentity',
-		isCaptureIdentity,
-		createIdentityFixture(),
-		[
-			['a zero pid', createIdentityFixture({ pid: 0 })],
-			['a fractional pid', createIdentityFixture({ pid: 1.5 })],
-			['a spaced stage', createIdentityFixture({ stage: 'rest stage' })],
-			['an escaping config', createIdentityFixture({ config: '../vite.config.ts' })],
-			['a reserved device id', createIdentityFixture({ id: 'nul/x' })],
-		],
-	],
-	[
-		'isCaptureRequest',
-		isCaptureRequest,
-		createRequestFixture(),
-		[
-			['another version', { ...createRequestFixture(), version: 2 }],
-			['an unknown command', { ...createRequestFixture(), command: 'stale' }],
-			['no variants', createRequestFixture({ variants: [] })],
-			['a repeated-separator selector', createRequestFixture({ selector: 'pages::mail' })],
-			['a blank case', createRequestFixture({ case: '  ' })],
-			['a journey carrying a state', createRequestFixture({ command: 'journey', state: 'inbox' })],
-			['a non-string argument', { ...createRequestFixture(), args: [1] }],
-		],
-	],
-	[
-		'isCaptureDeclaration',
-		isCaptureDeclaration,
-		createDeclarationFixture(),
-		[
-			['a blank case', createDeclarationFixture({ case: ' ' })],
-			['an owner with an empty segment', createDeclarationFixture({ owner: 'pages:' })],
-			['a non-boolean eligibility', { ...createDeclarationFixture(), eligible: 'yes' }],
-			['a spaced state', createDeclarationFixture({ states: ['two words'] })],
-		],
-	],
-	[
-		'isCaptureDestination',
-		isCaptureDestination,
-		createDestinationFixture(),
-		[
-			['an escaping file', createDestinationFixture({ file: '../escape.png' })],
-			['an empty project', createDestinationFixture({ project: '' })],
-			['a spaced section', createDestinationFixture({ section: 'a b' })],
-			['a blank case', createDestinationFixture({ case: '' })],
-			['invalid sources', { ...createDestinationFixture(), sources: { own: [] } }],
-		],
-	],
-	[
-		'isCaptureEntry',
-		isCaptureEntry,
-		{ ...createDestinationFixture(), duration: 0 },
-		[
-			['a negative duration', { ...createDestinationFixture(), duration: -1 }],
-			['a non-finite duration', { ...createDestinationFixture(), duration: Number.NaN }],
-			['no duration', createDestinationFixture()],
-		],
-	],
-	[
-		'isCaptureArtifact',
-		isCaptureArtifact,
-		{ file: 'tmp/runs/a/light-390.txt', digest: FIXTURE_HASH },
-		[
-			['an absolute file', { file: '/runs/a.txt', digest: FIXTURE_HASH }],
-			['a short digest', { file: 'tmp/runs/a.txt', digest: 'abc' }],
-		],
-	],
-	[
-		'isCaptureRun',
-		isCaptureRun,
-		createRunFixture(),
-		[
-			['another version', createRunFixture({ version: 2 })],
-			['an unparsable time', createRunFixture({ time: 'yesterday' })],
-			['a request without an identity', createRunFixture({ request: createRequestFixture() })],
-			['an identity without a request', createRunFixture({ identity: createIdentityFixture() })],
-			['a malformed artifact', { ...createRunFixture(), artifact: { file: 'a', digest: 'x' } }],
-			['a spaced variant', createRunFixture({ variant: 'light 390' })],
-		],
-	],
-	[
-		'isCaptureDigest',
-		isCaptureDigest,
-		{ patterns: ['src/**'], files: { 'src/a.ts': FIXTURE_HASH }, digest: FIXTURE_HASH },
-		[
-			['no digest', { patterns: [], files: {} }],
-			[
-				'a case-colliding file pair',
-				{
-					patterns: [],
-					files: { 'A.ts': FIXTURE_HASH, 'a.ts': FIXTURE_HASH },
-					digest: FIXTURE_HASH,
-				},
-			],
-			['a bad file hash', { patterns: [], files: { 'a.ts': 'x' }, digest: FIXTURE_HASH }],
-		],
-	],
-	[
-		'isCaptureReceipt',
-		isCaptureReceipt,
-		createReceiptFixture(),
-		[
-			['an unparsable time', createReceiptFixture({ time: 'x' })],
-			['a malformed report', { ...createReceiptFixture(), report: { file: 'a', digest: 'x' } }],
-			['a non-boolean completeness', { ...createReceiptFixture(), complete: 1 }],
-		],
-	],
-	[
-		'isCaptureRegistry',
-		isCaptureRegistry,
-		createRegistryFixture(),
-		[
-			['another version', createRegistryFixture({ version: 2 })],
-			['a malformed receipt', { ...createRegistryFixture(), receipts: [{}] }],
-			['a short digest', createRegistryFixture({ digest: 'abc' })],
-		],
-	],
-	[
-		'isCaptureLookup',
-		isCaptureLookup,
-		createLookupFixture(),
-		[
-			['a short registry digest', createLookupFixture({ registry: 'abc' })],
-			['a blank case', createLookupFixture({ case: ' ' })],
-			[
-				'a malformed run',
-				{ ...createLookupFixture(), run: { file: '../a', digest: FIXTURE_HASH } },
-			],
-		],
-	],
-	[
-		'isCaptureLookupJournal',
-		isCaptureLookupJournal,
-		{
-			version: 1,
-			manifest: FIXTURE_HASH,
-			inputs: { [FIXTURE_HASH]: createLookupFixture().inputs },
-			lookups: [{ ...createLookupFixture(), inputs: FIXTURE_HASH }],
-		},
-		[
-			['another version', { version: 2, inputs: {}, lookups: [] }],
-			['a short manifest digest', { version: 1, manifest: 'abc', inputs: {}, lookups: [] }],
-			['a malformed collection', { version: 1, collections: [{}], inputs: {}, lookups: [] }],
-			['a malformed lookup', { version: 1, inputs: {}, lookups: [{}] }],
-			['a missing input table', { version: 1, lookups: [] }],
-			['a short table digest', { version: 1, inputs: { abc: {} }, lookups: [] }],
-			[
-				'a malformed input map',
-				{ version: 1, inputs: { [FIXTURE_HASH]: { '../escape': FIXTURE_HASH } }, lookups: [] },
-			],
-			[
-				'an embedded lookup input map',
-				{ version: 1, inputs: {}, lookups: [createLookupFixture()] },
-			],
-			[
-				'a short input reference',
-				{ version: 1, inputs: {}, lookups: [{ ...createLookupFixture(), inputs: 'abc' }] },
-			],
-		],
-	],
-	[
-		'isCaptureStamp',
-		isCaptureStamp,
-		createStampFixture(),
-		[
-			['a short commit', createStampFixture({ commit: 'abc123' })],
-			[
-				'an empty image',
-				createStampFixture({ image: { digest: FIXTURE_HASH, size: 0, modified: 1 } }),
-			],
-			[
-				'a negative modification time',
-				createStampFixture({ image: { digest: FIXTURE_HASH, size: 1, modified: -1 } }),
-			],
-			['an escaping dirty path', createStampFixture({ dirty: ['../x'] })],
-			['an unparsable time', createStampFixture({ time: 'x' })],
-		],
-	],
-	[
-		'isCaptureManifest',
-		isCaptureManifest,
-		createManifestFixture(),
-		[
-			['another version', createManifestFixture({ version: 2 })],
-			['a malformed stamp', { ...createManifestFixture(), entries: { 'pages/a.png': {} } }],
-			[
-				'an escaping stamp key',
-				{ ...createManifestFixture(), entries: { '../a.png': createStampFixture() } },
-			],
-		],
-	],
-	[
-		'isCaptureCollection',
-		isCaptureCollection,
-		COLLECTION,
-		[
-			['a blank project', { ...COLLECTION, project: ' ' }],
-			['a malformed report', { ...COLLECTION, report: { file: 'a', digest: 'x' } }],
-			['an escaping run file', { ...COLLECTION, run: { file: '../a.json', digest: FIXTURE_HASH } }],
-			['an undigested input population', { ...COLLECTION, inputs: { patterns: [], files: {} } }],
-		],
-	],
-	[
-		'isCaptureGeometry',
-		isCaptureGeometry,
-		{ name: 'light-390', width: 390, height: 844 },
-		[
-			['a zero width', { name: 'light-390', width: 0, height: 844 }],
-			['a spaced name', { name: 'light 390', width: 390, height: 844 }],
-			['a missing height', { name: 'light-390', width: 390 }],
-			['a string width', { name: 'light-390', width: '390', height: 844 }],
-		],
-	],
-	[
-		'isCaptureBox',
-		isCaptureBox,
-		{ x: 0, y: 64, width: 390, height: 780 },
-		[
-			['a zero height', { x: 0, y: 64, width: 390, height: 0 }],
-			['an infinite x', { x: Number.POSITIVE_INFINITY, y: 0, width: 1, height: 1 }],
-		],
-	],
-]
 
 describe('capture guards', () => {
 	it('accepts a selected journey request and final identity while retaining malformed-stage refusals', () => {
@@ -305,11 +36,11 @@ describe('capture guards', () => {
 		expect(isCaptureRun(createRunFixture({ identity, request }))).toBe(true)
 		expect(isCaptureRequest({ ...request, stage: '../selected' })).toBe(false)
 	})
-	it.each(ROWS)('%s accepts its positive control', (_name, guard, positive) => {
+	it.each(CAPTURE_GUARD_CASES)('%s accepts its positive control', (_name, guard, positive) => {
 		expect(guard(positive)).toBe(true)
 	})
 
-	for (const [name, guard, , negatives] of ROWS) {
+	for (const [name, guard, , negatives] of CAPTURE_GUARD_CASES) {
 		it.each(negatives)(`${name} refuses %s`, (_label, value) => {
 			expect(guard(value)).toBe(false)
 		})
@@ -317,9 +48,8 @@ describe('capture guards', () => {
 
 	it('accepts a stored manifest with and without collection receipts and refuses a malformed one', () => {
 		expect(isCaptureStoredManifest(createManifestFixture())).toBe(true)
-		expect(isCaptureStoredManifest({ ...createManifestFixture(), collections: [COLLECTION] })).toBe(
-			true,
-		)
+		const manifest = { ...createManifestFixture(), collections: [CAPTURE_COLLECTION_FIXTURE] }
+		expect(isCaptureStoredManifest(manifest)).toBe(true)
 		expect(isCaptureStoredManifest({ ...createManifestFixture(), collections: [{}] })).toBe(false)
 		expect(isCaptureStoredManifest({ ...createManifestFixture(), version: 2 })).toBe(false)
 	})
@@ -421,7 +151,7 @@ describe('capture guard totality', () => {
 		Number.NaN,
 		'manifest',
 	]
-	const guards = ROWS.map(([name, guard]) => [name, guard] as const)
+	const guards = CAPTURE_GUARD_CASES.map(([name, guard]) => [name, guard] as const)
 
 	it('feeds the guards values a naive reader cannot survive', () => {
 		// The negative control: a reader that stringifies its input throws on part of this corpus, so

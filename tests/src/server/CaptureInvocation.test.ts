@@ -1,3 +1,5 @@
+import * as core from '@src/core'
+import * as server from '@src/server'
 import { linkSync, readFileSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { attempt, isNumber, isRecord, parseJSON } from '@orkestrel/contract'
@@ -13,14 +15,17 @@ import {
 	settleCaptureShutdown,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { InvocationFixture } from '../../fixtures/capture/InvocationFixture.js'
+import { createRequestFixture } from '../../setup.js'
 import {
+	createCaptureReadFault,
+	createCapturePermanentFault,
+	createCaptureLinkFault,
+	throwCaptureBusy,
+	writeCaptureRefusedOutput,
+	InvocationFixture,
 	readExitedPid,
 	startSleeper,
 	stopFixtureChild,
-} from '../../fixtures/capture/ProcessFixture.js'
-import { createRequestFixture } from '../../setup.js'
-import {
 	FIXTURE_TIMEOUT,
 	RUNNER_REQUESTS,
 	SUPPORTS_GROUP_SIGNAL,
@@ -33,7 +38,6 @@ import {
 	CAPTURE_OWNERSHIP_CASES,
 	stopCaptureTree,
 } from '../../setupServer.js'
-
 const REPORTER = resolve(import.meta.dirname, '../../fixtures/capture/Reporter.ts')
 const SLEEPER = resolve(import.meta.dirname, '../../fixtures/capture/Sleeper.ts')
 const OUTPUT = resolve(import.meta.dirname, '../../fixtures/capture/Output.ts')
@@ -76,7 +80,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('X6 writes a create-only survivor record and keeps the marker byte-identical', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const confirmation = new AbortController()
 		const invocation = fixture.next({
 			terminate: async (child) => (confirmation.signal.aborted ? await child.stop() : false),
@@ -129,7 +133,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each(['present', 'absent', 'unreadable', 'malformed'])(
 		'X6 reports a dead owner with its %s advisory record',
 		async (state) => {
-			const fixture = new InvocationFixture()
+			const fixture = new InvocationFixture({ core, server })
 			const dead = await readExitedPid()
 			const marker = resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE)
 			const record = resolve(
@@ -185,7 +189,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each(['ENOENT', 'EACCES', 'EBUSY', 'foreign'])(
 		'X6 retains ownership on record write %s and retries only missing directory once',
 		async (code) => {
-			const fixture = new InvocationFixture()
+			const fixture = new InvocationFixture({ core, server })
 			const confirmation = new AbortController()
 			const writes: string[] = []
 			const invocation = fixture.next({
@@ -233,7 +237,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		},
 	)
 	it('X6 creates a missing run directory for the survivor record', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const confirmation = new AbortController()
 		const invocation = fixture.next({
 			terminate: async (child) => (confirmation.signal.aborted ? await child.stop() : false),
@@ -268,7 +272,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each([false, true])(
 		'X6 reads a dead holder record once and a live holder record never, alive=%s',
 		async (alive) => {
-			const fixture = new InvocationFixture()
+			const fixture = new InvocationFixture({ core, server })
 			const reads: string[] = []
 			const marker = resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE)
 			const record = resolve(
@@ -310,7 +314,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		},
 	)
 	it('X6 ignores a dead temporary removal failure and preserves a live temporary', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			const dead = await readExitedPid()
 			const blocked = resolve(
@@ -337,7 +341,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('X6 checks the id after a failed removal and leaves a foreign marker untouched', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const removals: string[] = []
 		const foreign = JSON.stringify({ pid: process.pid, id: 'foreign-after-remove' })
 		const invocation = fixture.next({
@@ -359,7 +363,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('X6 retains the marker after removal exhaustion and reports the code without deletion advice', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const inactive = new AbortController()
 		const invocation = fixture.next({
 			ownership: {
@@ -388,7 +392,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('X6 labels a permanent error on the liveness re-read as unreadable', () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const probed = new AbortController()
 		const invocation = fixture.next({
 			ownership: {
@@ -422,19 +426,13 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		async (platform) => {
 			for (const operation of ['read', 'remove'] as const) {
 				for (const code of ['EPERM', 'EACCES', 'EBUSY', 'EMFILE']) {
-					const fixture = new InvocationFixture()
+					const fixture = new InvocationFixture({ core, server })
 					const calls: string[] = []
 					const inactive = new AbortController()
 					const invocation = fixture.next({
 						ownership: {
 							platform,
-							[operation]: (file: string) => {
-								if (!inactive.signal.aborted) calls.push(code)
-								if (!inactive.signal.aborted && calls.length === 1)
-									throw Object.assign(new Error(code), { code })
-								if (operation === 'read') return readFileSync(file, 'utf8')
-								rmSync(file, { force: true })
-							},
+							[operation]: createCaptureReadFault(operation, code, calls, inactive.signal),
 						},
 					})
 					try {
@@ -458,7 +456,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each(CAPTURE_OWNERSHIP_CASES)(
 		'H1x classifies link $code on $platform',
 		async ({ platform, code }) => {
-			const fixture = new InvocationFixture()
+			const fixture = new InvocationFixture({ core, server })
 			const calls: string[] = []
 			const invocation = fixture.next({
 				ownership: {
@@ -482,7 +480,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		},
 	)
 	it('X6 Survivor composition consumes production release after the real owner exits', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const owner = await leaveCaptureUnconfirmed(fixture.scratch.path, RUNNER_REQUESTS)
 		try {
 			expect(owner.published).toBe(true)
@@ -526,7 +524,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'])(
 		'H1w refuses unsupported POSIX link %s immediately',
 		async (code) => {
-			const fixture = new InvocationFixture()
+			const fixture = new InvocationFixture({ core, server })
 			const calls: string[] = []
 			const invocation = fixture.next({
 				ownership: {
@@ -551,15 +549,12 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		'H1w names %s and its permanent failure code without hard-link advice',
 		async (operation) => {
 			for (const code of ['ENOSPC', 'EACCES']) {
-				const fixture = new InvocationFixture()
+				const fixture = new InvocationFixture({ core, server })
 				const calls: string[] = []
 				const invocation = fixture.next({
 					ownership: {
 						platform: 'linux',
-						[operation]: () => {
-							calls.push(code)
-							throw Object.assign(new Error(code), { code })
-						},
+						[operation]: createCapturePermanentFault(calls, code),
 					},
 				})
 				try {
@@ -584,7 +579,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		},
 	)
 	it('H1v retries a changed marker after the liveness probe and preserves its new holder', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const probes: number[] = []
 		const marker = `${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`
 		const replacement = JSON.stringify({ pid: process.pid, id: 'replacement-after-probe' })
@@ -609,7 +604,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('X6 DetachedSurvivor names a real surviving child after its owner process exits', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			const survivor = await leaveCaptureSurvivor(fixture.scratch.path, RUNNER_REQUESTS)
 			try {
@@ -650,7 +645,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1v records unconfirmed children and retries their stop on a later release', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const calls: number[] = []
 		const invocation = fixture.next({
 			terminate: async (child) => {
@@ -686,19 +681,14 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each(['EPERM', 'EACCES', 'EBUSY', 'EMFILE'])(
 		'H1v retries transient %s on link and marker read',
 		async (code) => {
-			const fixture = new InvocationFixture()
+			const fixture = new InvocationFixture({ core, server })
 			try {
 				for (const operation of ['link', 'read'] as const) {
 					const calls: string[] = []
 					const invocation = fixture.next({
 						ownership: {
 							platform: 'win32',
-							[operation]: (...paths: string[]) => {
-								calls.push(operation)
-								if (calls.length === 1) throw Object.assign(new Error(code), { code })
-								if (operation === 'read') return readFileSync(paths[0] ?? '', 'utf8')
-								linkSync(paths[0] ?? '', paths[1] ?? '')
-							},
+							[operation]: createCaptureLinkFault(operation, code, calls),
 						},
 					})
 					if (operation === 'read') fixture.invocation.prepare()
@@ -726,12 +716,10 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each(['link', 'read'] as const)(
 		'H1v bounds persistent transient errors on %s without deletion advice',
 		async (operation) => {
-			const fixture = new InvocationFixture()
+			const fixture = new InvocationFixture({ core, server })
 			const invocation = fixture.next({
 				ownership: {
-					[operation]: () => {
-						throw Object.assign(new Error('busy'), { code: 'EBUSY' })
-					},
+					[operation]: throwCaptureBusy,
 				},
 			})
 			try {
@@ -748,7 +736,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		},
 	)
 	it.each(['EPERM', 'EBUSY'])('H1v retries %s while removing its own marker', async (code) => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const calls: string[] = []
 		const invocation = fixture.next({
 			ownership: {
@@ -770,7 +758,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1v retries when the marker vanishes during the liveness probe', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const invocation = fixture.next({
 			ownership: {
 				alive: () => {
@@ -792,7 +780,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1v confirms malformed content twice before refusing without deletion advice', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const reads: string[] = []
 		const invocation = fixture.next({
 			ownership: {
@@ -813,7 +801,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1t retains ownership and reports the child pid when real termination is unconfirmed', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const dead = await readExitedPid()
 		const invocation = fixture.next({ terminate: () => stopCaptureTree(dead) })
 		invocation.prepare()
@@ -842,7 +830,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1t keeps at most one active owner while winners exit during repeated process races', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			for (const round of Array.from({ length: 6 }, (_, index) => index)) {
 				const outcomes = await runCaptureOwnershipRace(fixture.scratch.path, RUNNER_REQUESTS)
@@ -859,7 +847,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1s release leaves a replacement owner marker intact', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			fixture.invocation.prepare()
 			const replacement = JSON.stringify({ pid: process.pid, id: 'replacement-owner' })
@@ -871,7 +859,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1t cleans a dead process temporary claim without removing a marker', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			const dead = await leaveCaptureTemporary(fixture.scratch.path, RUNNER_REQUESTS)
 			const temporary = `${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}.${String(dead)}.crashed.tmp`
@@ -891,7 +879,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1t refuses dead and live owners with their recovery instructions and preserves the marker', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const live = await startSleeper()
 		try {
 			const dead = await readExitedPid()
@@ -913,7 +901,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1r distinguishes empty, unreadable, and absent ownership paths', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const marker = `${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`
 		try {
 			expect(() => fixture.invocation.publish(createRequestFixture())).toThrow(
@@ -935,7 +923,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1r preserves the shutdown failure when the ownership marker cannot be removed', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			fixture.invocation.prepare()
 			fixture.invocation.attach()
@@ -961,7 +949,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('H1r removes the request before beginning even a synchronously refused termination', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			fixture.invocation.prepare()
 			fixture.invocation.publish(createRequestFixture())
@@ -981,7 +969,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('keeps ownership until release has ended a live child', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const other = fixture.next()
 		fixture.invocation.prepare()
 		fixture.invocation.attach()
@@ -1010,7 +998,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('settles real child failures and removal failures independently', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			fixture.invocation.prepare()
 			mkdirSync(fixture.invocation.request)
@@ -1039,7 +1027,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('refuses overlapping ownership and preserves the named holder request', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const other = fixture.next()
 		try {
 			fixture.invocation.prepare()
@@ -1063,7 +1051,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('removes listeners and ends a real child when request removal fails during shutdown', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const { invocation, stdout } = fixture
 		const before = [process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]
 		try {
@@ -1089,7 +1077,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('passes the complete filtered environment without reintroducing case-folded request aliases', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			const { invocation, stdout, scratch } = fixture
 			invocation.prepare()
@@ -1113,7 +1101,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('destroys a launched child when the initial pid writer throws', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const invocation = fixture.next({
 			stdout: (text) => {
 				fixture.stdout.push(text)
@@ -1136,7 +1124,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 	it('preserves split UTF-8, carriage returns, and absent final newlines in the tee', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			const { invocation, stdout, stderr, scratch } = fixture
 			invocation.prepare()
@@ -1159,7 +1147,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('flushes an incomplete final UTF-8 sequence at termination', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			const { invocation, stdout, scratch } = fixture
 			invocation.prepare()
@@ -1173,7 +1161,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses a pre-aborted invocation before launching a child or opening its log', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const { invocation, scratch, stdout } = fixture
 		try {
 			invocation.prepare()
@@ -1196,12 +1184,9 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each(['stdout', 'stderr'] as const)(
 		'refuses a %s writer failure despite session listener isolation',
 		async (stream) => {
-			const fixture = new InvocationFixture()
+			const fixture = new InvocationFixture({ core, server })
 			const invocation = fixture.next({
-				[stream]: (text: string) => {
-					if (text.startsWith('pid=')) fixture.stdout.push(text)
-					else throw new Error('writer refused')
-				},
+				[stream]: writeCaptureRefusedOutput.bind(undefined, fixture),
 			})
 			try {
 				invocation.prepare()
@@ -1220,7 +1205,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	)
 
 	it('refuses a writer failure on the flushed final sequence', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const invocation = fixture.next({
 			stdout: (text: string) => {
 				if (text !== '' && !text.startsWith('pid=')) throw new Error('writer refused')
@@ -1240,7 +1225,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses a log append failure and destroys the child', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const invocation = fixture.next({
 			stdout: (text) => {
 				fixture.stdout.push(text)
@@ -1267,7 +1252,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('ends a child and its descendant together on interruption', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const { invocation, stdout, scratch } = fixture
 		try {
 			invocation.prepare()
@@ -1299,7 +1284,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('refuses a successful root exit when an inherited pipe cuts observation off', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const { invocation, scratch } = fixture
 		try {
 			invocation.prepare()
@@ -1320,7 +1305,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('keeps interruption ahead of a still-armed deadline', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const invocation = fixture.next({
 			stdout: (text) => {
 				fixture.stdout.push(text)
@@ -1348,7 +1333,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.runIf(SUPPORTS_GROUP_SIGNAL)(
 		'retains deadline expiry when an interrupt arrives during the POSIX grace window',
 		async () => {
-			const fixture = new InvocationFixture()
+			const fixture = new InvocationFixture({ core, server })
 			const invocation = fixture.next({
 				stdout: (text) => {
 					fixture.stdout.push(text)
@@ -1374,7 +1359,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		},
 	)
 	it('names its request by the process id and its report directory by its own identity', () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			const { invocation, scratch } = fixture
 			const other = fixture.next()
@@ -1394,7 +1379,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('publishes the request whole and retracts it with its temporary sibling', () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			const { invocation, scratch } = fixture
 			const request = createRequestFixture({ pid: process.pid })
@@ -1414,7 +1399,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('prunes a request under a dead process id and keeps a live one, an unrelated name, and its own', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const live = await startSleeper()
 		try {
 			const { invocation, scratch } = fixture
@@ -1451,7 +1436,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('tees child output to both writers and the log, runs the child in the workspace, and reports its exit', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			const { invocation, scratch, stdout, stderr } = fixture
 			invocation.prepare()
@@ -1483,7 +1468,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	])(
 		'folds an inherited capture variable when capture is $capture',
 		async ({ capture, expected }) => {
-			const fixture = new InvocationFixture()
+			const fixture = new InvocationFixture({ core, server })
 			try {
 				const { invocation, stdout } = fixture
 				invocation.prepare()
@@ -1500,7 +1485,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	)
 
 	it('ends a running child on an interrupt, aborts its signal, and restores the handlers', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			const { invocation, scratch, stdout } = fixture
 			invocation.prepare()
@@ -1539,7 +1524,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('ends a child that outlives its deadline and says the deadline ended it, not an interrupt', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			const { invocation, stdout } = fixture
 			invocation.prepare()
@@ -1560,7 +1545,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('releases without an interrupt and leaves no handler behind', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		try {
 			const { invocation } = fixture
 			const before = [process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]
@@ -1574,7 +1559,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 
 	it('lists every other holder including a request under the same process id', async () => {
-		const fixture = new InvocationFixture()
+		const fixture = new InvocationFixture({ core, server })
 		const live = await startSleeper()
 		try {
 			const { invocation, scratch } = fixture

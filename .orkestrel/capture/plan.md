@@ -88,7 +88,8 @@ A `verifier` runs each loop standalone and reports the counts.
   - R10: the packed tarball, installed with Vitest 5.0.5, runs `registry`, `journey`, `frames`, and `preflight`, each exiting 0.
 - The fresh-clone and Linux runs exposed defects in the test harness that a working checkout hides: a type-resolved `dist` import, scratch parents under the ignored `tmp/`, a status read racing its write, a Windows-only tree kill, and a stale peer literal. Each is repaired in the commits above.
 - 0.0.1 is published from `025a8e2` (2026-10-29). `main` is pushed at `69541b9`, `candidate/0.0.1` is deleted, and the guide is mirrored into the scaffold catalog in scaffold 0.0.109.
-- Next action: adopt scaffold 0.0.110 and its toolchain (Vitest 5.0.5, TypeScript 7.0.2), then open the 0.0.2 campaign from § Deferred.
+- Scaffold adoption is recorded at `ea1509d`. The fired realignment items are in § Sequence.
+- Next action: validate and accept capture-realign, then cite its closing commit and resume the remaining deferred work.
 
 ## Deferred
 
@@ -98,12 +99,8 @@ These go to 0.0.2. Reopen one when its trigger fires. Every entry is owned by th
 - **Pid reuse.** A reused pid can make a dead holder read as alive. Trigger: a consumer reports a live-holder refusal naming a process that is not a capture run.
 - **An OS-held lock** (named pipe or socket) in place of the marker, or a pid-plus-start-time stamp. Owner: a design question the 0.0.2 campaign opens before any repair. Trigger: either entry above fires.
 - **Live macOS runs, and POSIX live proofs beyond the Linux gate.** Trigger: a consumer installs capture on macOS, or a POSIX host becomes a gate host.
-- **Vitest 5 coverage beyond R8.** Owner: capture's scaffold 0.0.110 adoption unit. Trigger: that unit moves capture's own toolchain to Vitest 5.0.5.
 - **Wording and logs.** Refusal wording polish, and a `pid=` line in run logs. Trigger: the 0.0.2 campaign opens.
 - **Visual refinements.** Thumbnails and sheets. Trigger: a consumer's verdict round reports a thumbnail or sheet that misreads its frame.
-- **Duplicate test helpers.** The tests re-implement `captureError` and other helpers that installed packages export (the debrief's artifact audit). Owner: capture's scaffold 0.0.110 adoption unit. Trigger: that unit opens.
-- **Late journal refusal.** `registry` reads the existing lookup journal only in its publication read, after every stage (`CaptureRegistrar.ts:189`, refused at `CaptureIntegrity.ts:1177`). Veneer's first complete refresh on 0.0.1 ran four variants for 8,651,518 ms before the retired runner's journal refused it. The refusal's remedy then names the complete-registry refresh, the command that had just failed. Read the journal and the manifest before the first stage, and name the refused file in the remedy. Trigger: the 0.0.2 campaign opens.
-- **Two wrapper shapes.** The guide's discovery example and `buildCaptureDiscoveryConfig`'s `@example` export synchronously after a module-level `await`. The consumer fixture `tests/fixtures/capture/consumer/journey.config.ts` uses an async `defineConfig` factory, which scaffold's conformance case refused before scaffold 0.0.111 (`7540fb0e8`). Both shapes pass from 0.0.111, so make the fixture match the guide, or name both shapes in the guide. Trigger: the 0.0.2 campaign opens.
 - **Review findings below the release bar,** including every low and housekeeping finding raised from 2026-10-28 on. Trigger: the 0.0.2 campaign opens.
 - **X7 falsify, outside the claims and below the bar.** Trigger: the 0.0.2 campaign opens.
   - **O2.** The `finally` removal of the claim temporary is unguarded against a host fault.
@@ -113,6 +110,12 @@ These go to 0.0.2. Reopen one when its trigger fires. Every entry is owned by th
   - **O6.** After a successful claim, the request-file sweep is unguarded against a directory with a request file's name.
 
 ## Sequence
+
+### capture-realign: scaffold adoption
+
+The adoption trigger has fired for duplicate test helpers, Vitest coverage beyond R8, late journal refusal, and wrapper shape alignment. The implementation routes thrown-value capture through the installed test package, centralizes fixture infrastructure in the root setup modules, checks inherited evidence schemas before registry stages, and aligns the consumer wrapper with the guide.
+
+The runner must execute the final suite and the baseline title comparison before acceptance. The late-refusal regression and the consumer wrapper proof need execution. The distribution proof must verify distinct error constructors before the cross-copy guards. Cite the accepted checks in the closing commit, remove this sequence item, and record that commit in § State. The Vitest coverage item closes only after the runner reports the final suite green.
 
 ### X6: write-once marker, child record in the run directory
 
