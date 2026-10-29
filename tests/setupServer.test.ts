@@ -9,7 +9,6 @@ import { crc32, inflateSync } from 'node:zlib'
 import { isArray, isRecord, parseJSON } from '@orkestrel/contract'
 import { createHostileValues, waitForCondition, waitForAbort, waitForDelay } from '@orkestrel/test'
 import { createScratch, isRunning } from '@orkestrel/test/server'
-import { killTree } from '@orkestrel/process/server'
 import { createTimeout } from '@orkestrel/timeout'
 import { isCaptureRun, readCaptureReport } from '@src/core'
 import {
@@ -30,6 +29,7 @@ import {
 	requireCaptureBuild,
 	importCaptureBuild,
 	waitForCaptureStatus,
+	stopCaptureTree,
 	runCaptureOwnershipRace,
 	leaveCaptureTemporary,
 	countCaptureChildren,
@@ -88,6 +88,32 @@ import {
 } from './setupServer.js'
 
 describe('H1 shared infrastructure', () => {
+	it('X7 round 4 stops a real detached fixture and returns false once it has exited', async () => {
+		const child = spawn(
+			process.execPath,
+			[resolve(import.meta.dirname, 'fixtures/capture/Sleeper.ts')],
+			{
+				detached: true,
+				windowsHide: true,
+				stdio: ['ignore', 'pipe', 'ignore'],
+			},
+		)
+		const pid = child.pid
+		if (pid === undefined) throw new Error('Detached fixture has no pid')
+		const stdout: string[] = []
+		child.stdout.setEncoding('utf8').on('data', (text: string) => stdout.push(text))
+		try {
+			await waitForCondition('the detached fixture reports ready', () =>
+				stdout.join('').includes('ready'),
+			)
+			expect(isRunning(pid)).toBe(true)
+			expect(await stopCaptureTree(pid)).toBe(true)
+			expect(isRunning(pid)).toBe(false)
+			expect(await stopCaptureTree(pid)).toBe(false)
+		} finally {
+			if (isRunning(pid)) await stopCaptureTree(pid)
+		}
+	})
 	it('X7 round 3 creates an absent scratch parent before constructing an integrity fixture', () => {
 		const scratch = createScratch({ prefix: 'capture-parent-' })
 		const parent = resolve(scratch.path, 'absent', 'tmp')
@@ -174,8 +200,8 @@ describe('H1 shared infrastructure', () => {
 				)
 				expect(await execution).toMatchObject({ aborted: true })
 			} finally {
-				if (parent !== undefined && isRunning(parent)) await killTree(parent, 5000)
-				if (pid !== undefined && isRunning(pid)) await killTree(pid, 5000)
+				if (parent !== undefined && isRunning(parent)) await stopCaptureTree(parent)
+				if (pid !== undefined && isRunning(pid)) await stopCaptureTree(pid)
 				await execution.catch(() => undefined)
 				timeout.clear()
 				consumer.destroy()

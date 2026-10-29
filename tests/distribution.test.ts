@@ -8,8 +8,9 @@ import {
 } from './setupDistribution.js'
 import { cpSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { isRecord } from '@orkestrel/contract'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { BRAND_DRIVER, BRAND_EXPECTED } from './setupServer.js'
+import { BRAND_DRIVER, BRAND_EXPECTED, CAPTURE_WORKSPACE_ROOT } from './setupServer.js'
 
 const DISTRIBUTION_SUITE = createDistributionSuite()
 
@@ -61,16 +62,24 @@ describe('installed capture executable and peers', () => {
 			typeof manifest === 'object' && manifest !== null && 'peerDependencies' in manifest
 				? manifest.peerDependencies
 				: undefined
-		expect(peers).toStrictEqual({ vite: '^8.3.5', vitest: '^4.1.12' })
-		const versions = ['vite', 'vitest'].map((name) => {
+		const checkout = readDistributionJSON(join(CAPTURE_WORKSPACE_ROOT, 'package.json'))
+		expect(peers).toStrictEqual(isRecord(checkout) ? checkout.peerDependencies : undefined)
+		expect(peers).toMatchObject({ vite: expect.any(String), vitest: expect.any(String) })
+		if (!isRecord(peers)) throw new Error('Missing capture peer dependencies')
+		for (const name of ['vite', 'vitest']) {
 			const installed = readDistributionJSON(
 				join(stage.consumer, 'node_modules', name, 'package.json'),
 			)
-			return typeof installed === 'object' && installed !== null && 'version' in installed
-				? String(installed.version).split('.')[0]
-				: undefined
-		})
-		expect(versions).toStrictEqual(['8', '4'])
+			const version =
+				typeof installed === 'object' && installed !== null && 'version' in installed
+					? String(installed.version).split('.')[0]
+					: undefined
+			const range = peers[name]
+			if (typeof range !== 'string') throw new Error(`Missing peer range: ${name}`)
+			const majors = range.split('||').map((part) => /\d+/u.exec(part)?.[0])
+			expect(majors).not.toContain(undefined)
+			expect(majors).toContain(version)
+		}
 	})
 })
 

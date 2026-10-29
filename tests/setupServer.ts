@@ -39,7 +39,7 @@ import {
 	isString,
 	parseJSON,
 } from '@orkestrel/contract'
-import { execute, executeSync, detach } from '@orkestrel/process/server'
+import { execute, executeSync, detach, killTree } from '@orkestrel/process/server'
 import { retryUntil, waitForCondition } from '@orkestrel/test'
 import { createScratch, isRunning } from '@orkestrel/test/server'
 
@@ -156,6 +156,36 @@ export async function importCaptureBuild(): Promise<typeof CaptureBuild> {
 	requireCaptureBuild()
 	return await import(
 		pathToFileURL(resolve(CAPTURE_WORKSPACE_ROOT, 'dist/src/server/index.js')).href
+	)
+}
+
+/** Stops a recorded fixture process tree and confirms exit, returning false when it was already gone. */
+export async function stopCaptureTree(pid: number): Promise<boolean> {
+	if (!isRunning(pid)) return false
+	let accepted = true
+	if (process.platform === 'win32') accepted = await killTree(pid, 5_000)
+	else {
+		try {
+			process.kill(-pid, 'SIGKILL')
+		} catch (error) {
+			if (
+				!isError(error) ||
+				!('code' in error) ||
+				(error.code !== 'ESRCH' && error.code !== 'EPERM')
+			)
+				return false
+			try {
+				process.kill(pid, 'SIGKILL')
+			} catch (direct) {
+				if (!isError(direct) || !('code' in direct) || direct.code !== 'ESRCH') return false
+			}
+		}
+	}
+	return await waitForCondition('the fixture process tree root exits', () => !isRunning(pid), {
+		budget: 5_000,
+	}).then(
+		() => accepted,
+		() => false,
 	)
 }
 

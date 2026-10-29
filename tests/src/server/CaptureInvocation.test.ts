@@ -1,7 +1,6 @@
 import { linkSync, readFileSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { attempt, isNumber, isRecord, parseJSON } from '@orkestrel/contract'
-import { killTree } from '@orkestrel/process/server'
 import { waitForCondition } from '@orkestrel/test'
 import { createScratch, isRunning } from '@orkestrel/test/server'
 import { isCaptureError } from '@src/core'
@@ -32,6 +31,7 @@ import {
 	leaveCaptureSurvivor,
 	leaveCaptureUnconfirmed,
 	CAPTURE_OWNERSHIP_CASES,
+	stopCaptureTree,
 } from '../../setupServer.js'
 
 const REPORTER = resolve(import.meta.dirname, '../../fixtures/capture/Reporter.ts')
@@ -519,7 +519,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(message).not.toMatch(/\b(?:live|running|surviving) child processes?: \d/iu)
 			expect(fixture.scratch.read(`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`)).toBe(marker)
 		} finally {
-			if (isRunning(owner.pid)) await killTree(owner.pid, 5000)
+			if (isRunning(owner.pid)) await stopCaptureTree(owner.pid)
 			fixture.destroy()
 		}
 	})
@@ -642,7 +642,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 						.filter((name) => name.startsWith(`${CAPTURE_OWNER_FILE}.`)),
 				).toEqual([])
 			} finally {
-				if (isRunning(survivor.pid)) await killTree(survivor.pid, 5_000)
+				if (isRunning(survivor.pid)) await stopCaptureTree(survivor.pid)
 				await waitForCondition('the survivor has exited', () => !isRunning(survivor.pid))
 			}
 		} finally {
@@ -752,6 +752,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		const calls: string[] = []
 		const invocation = fixture.next({
 			ownership: {
+				platform: 'win32',
 				remove: (file) => {
 					calls.push(file)
 					if (calls.length === 1) throw Object.assign(new Error(code), { code })
@@ -814,7 +815,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 	it('H1t retains ownership and reports the child pid when real termination is unconfirmed', async () => {
 		const fixture = new InvocationFixture()
 		const dead = await readExitedPid()
-		const invocation = fixture.next({ terminate: () => killTree(dead, 5_000) })
+		const invocation = fixture.next({ terminate: () => stopCaptureTree(dead) })
 		invocation.prepare()
 		const running = invocation.spawn(
 			[OUTPUT],
@@ -834,7 +835,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(() => fixture.invocation.prepare()).toThrow('Another runner holds')
 		} finally {
 			const pid = Number(/pid=(\d+)/u.exec(fixture.stdout.join(''))?.[1])
-			if (isRunning(pid)) await killTree(pid, 5_000)
+			if (isRunning(pid)) await stopCaptureTree(pid)
 			await running.catch(() => undefined)
 			await invocation.release().catch(() => undefined)
 			fixture.destroy()
@@ -1030,7 +1031,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(failures[1]).toMatchObject({ message: 'Termination command exited 3' })
 			const dead = await readExitedPid()
 			expect(
-				await settleCaptureShutdown(() => undefined, [() => killTree(dead, 5_000)]),
+				await settleCaptureShutdown(() => undefined, [() => stopCaptureTree(dead)]),
 			).toMatchObject([{ code: 'STAGE', message: 'Capture child termination was not confirmed' }])
 		} finally {
 			await fixture.invocation.release().catch(() => undefined)
@@ -1311,8 +1312,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		} finally {
 			const descendant: unknown = parseJSON(scratch.read('descendant.json') ?? 'null')
 			if (isNumber(descendant) && isRunning(descendant)) {
-				if (process.platform === 'win32') await killTree(descendant, 5_000)
-				else attempt(() => process.kill(descendant, 'SIGKILL'))
+				await stopCaptureTree(descendant)
 				await waitForCondition('the orphan fixture is gone', () => !isRunning(descendant))
 			}
 			fixture.destroy()
