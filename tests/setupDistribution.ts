@@ -57,11 +57,14 @@ export const DISTRIBUTION_NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 // process: the command and its plain-text diagnostics are the same across the
 // compiler majors this toolchain supports, and its in-process API is not. It is
 // resolved from the workspace under proof, so a consumer of the packed artifact is
-// checked by the same compiler that workspace's own `check` script runs.
+// checked by the same compiler that workspace's own `check` script runs. TypeScript 7 exports
+// `package.json` but not `bin/tsc`, so the path is joined from the manifest's directory.
+/** Names the TypeScript manifest installed by the workspace under proof. */
+export const DISTRIBUTION_TYPESCRIPT = createRequire(
+	join(DISTRIBUTION_ROOT, 'package.json'),
+).resolve('typescript/package.json')
 /** Names the compiler installed by the workspace under proof. */
-export const DISTRIBUTION_COMPILER = createRequire(join(DISTRIBUTION_ROOT, 'package.json')).resolve(
-	'typescript/bin/tsc',
-)
+export const DISTRIBUTION_COMPILER = join(dirname(DISTRIBUTION_TYPESCRIPT), 'bin', 'tsc')
 // Windows needs a shell to launch a `.cmd`: Node refuses one directly since the
 // batch-argument hardening, and `spawnSync` returns `EINVAL` with a null status
 // rather than an exit code a caller can read. Every following argument is a literal or
