@@ -1,4 +1,4 @@
-import type { SessionInterface } from '@orkestrel/process'
+import type { DuplexInterface } from '@orkestrel/process'
 import type { CaptureRequest } from '@src/core'
 import type {
 	CaptureDiscoveryRequest,
@@ -22,7 +22,7 @@ import {
 import { resolve } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { attempt, isRecord, parseJSON, preview } from '@orkestrel/contract'
-import { createSession } from '@orkestrel/process/server'
+import { createDuplex } from '@orkestrel/process/server'
 import { createTimeout } from '@orkestrel/timeout'
 import {
 	CAPTURE_REQUEST_PREFIX,
@@ -74,7 +74,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 	readonly #options: CaptureInvocationOptions
 	readonly #id = randomUUID()
 	readonly #controller = new AbortController()
-	readonly #children = new Set<SessionInterface>()
+	readonly #children = new Set<DuplexInterface>()
 	readonly #unconfirmed = new Set<number>()
 	readonly #launches: string[] = []
 	readonly #interrupt = this.#abort.bind(this)
@@ -253,7 +253,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 						name.toLowerCase() !== CAPTURE_REQUESTS_FLAG.toLowerCase(),
 				),
 			)
-			const session = createSession({
+			const session = createDuplex({
 				command: {
 					file: process.execPath,
 					arguments: args,
@@ -350,7 +350,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		)
 	}
 
-	async #stop(child: SessionInterface): Promise<boolean> {
+	async #stop(child: DuplexInterface): Promise<boolean> {
 		if (child.pid !== undefined) this.#unconfirmed.add(child.pid)
 		const confirmed = await (this.#options.terminate === undefined
 			? child.stop()

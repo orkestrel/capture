@@ -1,5 +1,5 @@
 import type { ParseArgsOptionsConfig, parseArgs } from 'node:util'
-import type { SessionInterface } from '@orkestrel/process'
+import type { DuplexInterface } from '@orkestrel/process'
 import type {
 	CaptureCollectionReceipt,
 	CaptureDeclaration,
@@ -1104,7 +1104,7 @@ export interface CapturePngLimits {
  * const terminate: CaptureChildTerminationHandler = (child) => child.stop()
  * ```
  */
-export type CaptureChildTerminationHandler = (child: SessionInterface) => Promise<boolean>
+export type CaptureChildTerminationHandler = (child: DuplexInterface) => Promise<boolean>
 
 /**
  * Removes one invocation's published request during shutdown.
