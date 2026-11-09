@@ -168,6 +168,9 @@ describe('describers', () => {
 		expect(describeCaptureRequest(request)).not.toBe(
 			describeCaptureRequest({ ...request, state: 'sent' }),
 		)
+		expect(describeCaptureRequest({ ...request, mode: 'vue' })).not.toBe(
+			describeCaptureRequest(request),
+		)
 	})
 })
 

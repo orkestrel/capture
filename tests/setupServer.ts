@@ -1012,8 +1012,8 @@ export const RUNNER_REFUSALS: readonly RunnerRefusal[] = Object.freeze([
 	},
 	{
 		title: 'unsupported flag',
-		args: ['pages:mail', '--mode', 'vue'],
-		message: "Unknown option '--mode'",
+		args: ['pages:mail', '--output', 'sheets'],
+		message: "Unknown option '--output'",
 	},
 	{
 		title: 'missing option value',
@@ -1484,8 +1484,8 @@ export const ARGUMENT_REFUSALS: readonly ArgumentRefusal[] = Object.freeze([
 	{
 		title: 'an unknown flag',
 		command: 'stale',
-		argv: ['app', '--mode', 'vue'],
-		message: "Unknown option '--mode'",
+		argv: ['app', '--output', 'sheets'],
+		message: "Unknown option '--output'",
 	},
 	{
 		title: 'a flag at the end',
@@ -3657,3 +3657,33 @@ export const CAPTURE_SERVER_VALUES = [
 	'shrinkCapturePicture',
 	'unfilterCaptureRow',
 ]
+
+/** Pairs the phase of a stand-in child with the Vitest mode it was started with. */
+export interface CaptureChildMode {
+	readonly phase: 'discovery' | 'stage'
+	readonly mode: string
+}
+
+/**
+ * Reads the modes every stand-in child recorded, in start order.
+ *
+ * @param fixture - The workspace whose children ran
+ * @returns One entry per discovery and execution child; `test` when the child received no `--mode`
+ */
+export function readCaptureChildModes(fixture: IntegrityFixture): readonly CaptureChildMode[] {
+	const file = resolve(fixture.root, 'tmp/mode-children.jsonl')
+	if (!existsSync(file)) return []
+	return readFileSync(file, 'utf8')
+		.split(/\r\n|\n/u)
+		.filter((line) => line !== '')
+		.map((line) => {
+			const entry: unknown = parseJSON(line)
+			if (
+				!isRecord(entry) ||
+				(entry.phase !== 'discovery' && entry.phase !== 'stage') ||
+				typeof entry.mode !== 'string'
+			)
+				throw new Error('Invalid recorded child mode')
+			return { phase: entry.phase, mode: entry.mode }
+		})
+}

@@ -8,6 +8,7 @@ import { isCaptureRun } from '@src/core'
 import { CAPTURE_OWNER_FILE, CAPTURE_REFUSAL_LIMIT, createCaptureRunner } from '@src/server'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+	readCaptureChildModes,
 	readCaptureInvocationId,
 	readCaptureStageRequest,
 	readCaptureTagFilter,
@@ -778,6 +779,55 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(readCaptureHeld(base.root, base.requests)).toEqual([])
 		},
 	)
+
+	it.each([
+		{ argv: ['--mode', 'vue'], mode: 'vue' },
+		{ argv: ['--mode=vue'], mode: 'vue' },
+		{ argv: [], mode: 'test' },
+	])('hands mode $mode from $argv to the discovery child and each execution child', async (row) => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			fixture.seed()
+			const before = readCaptureChildModes(fixture).length
+			const prior = fixture.stages.length
+			const run = await fixture.run('journey', ['pages:mail', ...row.argv])
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+			const modes = readCaptureChildModes(fixture).slice(before)
+			expect(modes.filter((child) => child.phase === 'discovery')).toEqual([
+				{ phase: 'discovery', mode: row.mode },
+			])
+			const stages = modes.filter((child) => child.phase === 'stage')
+			expect(stages).toHaveLength(fixture.stages.length - prior)
+			expect(stages.length).toBeGreaterThan(0)
+			for (const child of stages) expect(child.mode).toBe(row.mode)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it.each([
+		{ argv: ['--mode', 'vue'], mode: 'vue' },
+		{ argv: [], mode: 'test' },
+	])('hands mode $mode from $argv to the discovery child of stale', async (row) => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			fixture.seed()
+			await fixture.capture({ variants: [...VARIANTS] })
+			const before = readCaptureChildModes(fixture).length
+			const run = await fixture.run('stale', [
+				'pages:mail',
+				'--variant',
+				COMPOSED_FIRST,
+				...row.argv,
+			])
+			expect(run.code).toBe(0)
+			expect(readCaptureChildModes(fixture).slice(before)).toEqual([
+				{ phase: 'discovery', mode: row.mode },
+			])
+		} finally {
+			fixture.destroy()
+		}
+	})
 })
 
 describe('CaptureRunner wrapper refusals', { timeout: FIXTURE_TIMEOUT }, () => {

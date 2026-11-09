@@ -73,6 +73,7 @@ export interface CaptureIdentity {
  *
  * @remarks Journey selections use the selected stage; frame captures use narrow and rest stages.
  * Registry refreshes retain their registry-prefixed stages. Records are keyed by id, stage, and variant.
+ * `mode` carries the selected Vitest mode when the command line names one.
  *
  * @example
  * ```ts
@@ -83,6 +84,7 @@ export interface CaptureIdentity {
 export interface CaptureRequest extends CaptureSelection, CaptureIdentity {
 	readonly version: 1
 	readonly command: 'journey' | 'capture'
+	readonly mode?: string
 	readonly variants: readonly string[]
 	readonly args: readonly string[]
 }

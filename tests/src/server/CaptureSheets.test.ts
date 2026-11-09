@@ -6,6 +6,7 @@ import { createScratch, supportsDirectoryLinks } from '@orkestrel/test/server'
 import { CaptureSheets, decodeCapturePicture } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import {
+	readCaptureChildModes,
 	readCaptureSheetIndex,
 	ReaderFixture,
 	FIXTURE_TIMEOUT,
@@ -18,6 +19,38 @@ import {
 const REFUSAL = 'Contact sheets require a new contained directory'
 
 describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE_TIMEOUT }, () => {
+	it.each([
+		{ argv: ['--mode', 'vue'], mode: 'vue' },
+		{ argv: [], mode: 'test' },
+	])('hands mode $mode from $argv to the sheets discovery child', async (row) => {
+		const fixture = new ReaderFixture({ core, server })
+		try {
+			fixture.seed()
+			await fixture.capture({
+				selector: 'pages:mail',
+				case: MAIL,
+				picture: true,
+			})
+			const before = readCaptureChildModes(fixture).length
+			const result = await fixture.run('contact-sheets', [
+				'pages:mail',
+				'--case',
+				MAIL,
+				'--variant',
+				'light-390',
+				'--output',
+				'tmp/mode-sheets',
+				...row.argv,
+			])
+			expect(result.status === 0 ? 0 : result.stderr).toBe(0)
+			expect(readCaptureChildModes(fixture).slice(before)).toEqual([
+				{ phase: 'discovery', mode: row.mode },
+			])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
 	it('H1x flags a partial final thumbnail row at the height limit', async () => {
 		const fixture = new ReaderFixture({ core, server })
 		try {

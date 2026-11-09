@@ -749,7 +749,7 @@ export interface CaptureStagePlan {
  * absolute JSON reporter path and `projects` the Vitest project labels the stage runs. `filter`
  * is the tag expression. An exact `case` adds the anchored name pattern for that case and the
  * `final` case, so the final case still writes the run record. A `mode` adds Vitest's `--mode`
- * flag, which the registry command forwards so a wrapper can select another registry.
+ * flag to discovery and execution children.
  *
  * @example
  * ```ts
@@ -817,7 +817,8 @@ export interface CaptureRequestOptions {
  * `phase` is always `discover`, which is what tells a wrapper this is no execution request. `nonce`
  * is the challenge the wrapper must echo in its answer, `pid` the runner's process id, `config` the
  * repository-relative wrapper path, and `args` the exact arguments the discovery child was spawned
- * with. The file has the name and location of an execution request, so one lease covers both.
+ * with. `mode` is present when the command line selects one. The file has the name and location of
+ * an execution request, so one lease covers both.
  *
  * @example
  * ```ts
@@ -838,6 +839,7 @@ export interface CaptureDiscoveryRequest {
 	readonly id: string
 	readonly nonce: string
 	readonly config: string
+	readonly mode?: string
 	readonly pid: number
 	readonly args: readonly string[]
 }
@@ -922,7 +924,7 @@ export interface CaptureDescriptionExpectation {
  * @remarks
  * `ppid`, `argv`, `directory`, and `config` are the ones `CaptureRequestOptions` names. `projects`
  * is the wrapper's own `test.projects` list, each entry an inline project, a promise of one, or a
- * factory, which the answer resolves the way Vitest does.
+ * factory, which the answer resolves with the requested mode or the default test mode.
  *
  * @example
  * ```ts
@@ -1011,7 +1013,7 @@ export interface CaptureOutcome {
  * wrapper path, and `final` the full name of the case that closes a variant's run. `filter` is
  * the tag expression. `case` and `state` appear only when the command line named them, and `case`
  * holds the resolved declaring case once a state selects one. `command` is the request command
- * every stage records.
+ * every stage records. `mode` selects the wrapper's Vitest mode when present.
  *
  * @example
  * ```ts
@@ -1036,6 +1038,7 @@ export interface CaptureRunPlan {
 	readonly final: string
 	readonly directory: string
 	readonly config: string
+	readonly mode?: string
 }
 
 /**
@@ -1292,7 +1295,8 @@ export interface CaptureRunnerOptions {
 }
 
 /**
- * Carries parsed runner arguments while leaving omitted selectors available to the usage diagnostic.
+ * Carries parsed runner arguments, including an optional wrapper mode, while leaving omitted
+ * selectors available to the usage diagnostic.
  *
  * @example
  * ```ts
@@ -1304,6 +1308,7 @@ export interface CaptureRunnerArguments {
 	readonly changed?: string
 	readonly plan?: boolean
 	readonly config: string
+	readonly mode?: string
 	readonly variants: readonly string[]
 	readonly case?: string
 	readonly state?: string
@@ -1393,7 +1398,8 @@ export interface CapturePicture {
  * Configures a read-only capture consumer using the wrapper's host declarations.
  *
  * @remarks
- * `root` is the absolute workspace and `config` the absolute wrapper path. `selection` bounds the
+ * `root` is the absolute workspace and `config` the absolute wrapper path. `mode` selects Vitest's
+ * wrapper mode when present. `selection` bounds the
  * population, and `journeys` is the absolute directory of journey artifacts. `checks`, when
  * supplied, is the path of a module, absolute or relative to `root`, that exports the host's
  * `CAPTURE_CHECKS` list of frame readers. The reader loads it through the runtime's own module
@@ -1417,6 +1423,7 @@ export interface CapturePicture {
 export interface CaptureReaderOptions {
 	readonly root: string
 	readonly config: string
+	readonly mode?: string
 	readonly selection: CaptureReadOptions
 	readonly journeys: string
 	readonly checks?: string

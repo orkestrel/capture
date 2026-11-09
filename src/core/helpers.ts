@@ -252,6 +252,7 @@ export function describeCaptureRequest(request: CaptureRequest): string {
 		request.pid,
 		request.config,
 		request.command,
+		request.mode,
 		request.selector,
 		request.case,
 		request.state,

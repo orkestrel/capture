@@ -221,6 +221,7 @@ export function isCaptureRequest(value: unknown): value is CaptureRequest {
 			isCaptureIdentity(value) &&
 			value.version === 1 &&
 			(value.command === 'journey' || value.command === 'capture') &&
+			(value.mode === undefined || (typeof value.mode === 'string' && value.mode.trim() !== '')) &&
 			isCaptureSelector(value.selector) &&
 			arrayOf(isCaptureSegment)(value.variants) &&
 			value.variants.length > 0 &&

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseJSON } from '@orkestrel/contract'
 import {
@@ -23,6 +23,24 @@ const directory = process.env.CAPTURE_PRODUCER_DIRECTORY ?? ''
 const mode = process.env.CAPTURE_PRODUCER_MODE
 const request: unknown = parseJSON(
 	readFileSync(resolve(requests, `journey-selection-${String(process.ppid)}.json`), 'utf8'),
+)
+// The child records the Vitest mode it was started with, so a proof reads what reached the wrapper.
+const modeAt = process.argv.findIndex(
+	(argument) => argument === '--mode' || argument.startsWith('--mode='),
+)
+const modeArgument = process.argv[modeAt]
+mkdirSync('tmp', { recursive: true })
+appendFileSync(
+	'tmp/mode-children.jsonl',
+	`${JSON.stringify({
+		phase: isFixtureDiscovery(request) ? 'discovery' : 'stage',
+		mode:
+			modeArgument === undefined
+				? 'test'
+				: modeArgument.startsWith('--mode=')
+					? modeArgument.slice('--mode='.length)
+					: (process.argv[modeAt + 1] ?? 'test'),
+	})}\n`,
 )
 if (isFixtureDiscovery(request)) {
 	const flag = process.argv.indexOf('--config')

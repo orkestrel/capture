@@ -270,6 +270,7 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 			config: resolveCaptureRelative(root, parsed.config),
 			pid: process.pid,
 			command: 'journey',
+			...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
 			selector: 'all',
 			variants: [variant],
 			args,

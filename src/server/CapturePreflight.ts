@@ -308,7 +308,7 @@ export class CapturePreflight implements CapturePreflightInterface {
 	): Promise<
 		ReadonlyArray<{ readonly project: CaptureProject; readonly producer: CaptureProducer }>
 	> {
-		const { root, deadline } = this.#options
+		const { root, deadline, mode } = this.#options
 		// A discovery child's output is the runner's log, never the reader's report.
 		invocation.prepare()
 		requireCaptureArgument(root, resolve(root, this.#options.journeys), '--journeys')
@@ -318,6 +318,7 @@ export class CapturePreflight implements CapturePreflightInterface {
 			root,
 			config,
 			invocation,
+			...(mode === undefined ? {} : { mode }),
 			...(deadline === undefined ? {} : { deadline }),
 		}).describe()
 		return description.projects.map(({ project, viewport }) => {

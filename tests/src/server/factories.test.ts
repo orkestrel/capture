@@ -62,13 +62,13 @@ describe('createCaptureRunner', () => {
 			root: process.cwd(),
 			config: 'configs/none.config.ts',
 			requests: RUNNER_REQUESTS,
-			argv: ['--mode'],
+			argv: ['--output'],
 			stdout: (text) => lines.push(text),
 			stderr: (text) => lines.push(text),
 		})
 		expect(runner).toBeInstanceOf(CaptureRunner)
 		expect(await runner.execute()).toBe(64)
-		expect(lines.join('')).toContain("Unknown option '--mode'")
+		expect(lines.join('')).toContain("Unknown option '--output'")
 	})
 })
 

@@ -115,6 +115,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 				root,
 				config: parsed.config,
 				invocation,
+				...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
 				...(this.#options.deadline === undefined ? {} : { deadline: this.#options.deadline }),
 			}).describe()
 			const projects = description.projects.map((entry) => entry.project)
@@ -178,7 +179,11 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		const shared = plan.changes.filter((change) => change.classification === 'shared')
 		const complete = renderCaptureCommand(
 			'journey',
-			{ config: parsed.config, variants: parsed.variants },
+			{
+				config: parsed.config,
+				variants: parsed.variants,
+				...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
+			},
 			'all',
 			root,
 		)
@@ -346,6 +351,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			final: primary.final,
 			directory: resolveCaptureRelative(root, primary.directory),
 			config: resolveCaptureRelative(root, parsed.config),
+			...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
 		}
 		const outcomes: CaptureOutcome[] = []
 		const stages = resolveCaptureStages(variants, primary.first, command)
@@ -415,6 +421,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			report,
 			projects: selected.map((project) => project.name),
 			filter: plan.filter,
+			...(plan.mode === undefined ? {} : { mode: plan.mode }),
 			...(plan.case === undefined ? {} : { case: plan.case }),
 			...(plan.case === undefined
 				? {}
@@ -430,6 +437,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			config: plan.config,
 			pid: process.pid,
 			command: plan.command,
+			...(plan.mode === undefined ? {} : { mode: plan.mode }),
 			selector: plan.selector,
 			...(plan.case === undefined ? {} : { case: plan.case }),
 			...(plan.state === undefined ? {} : { state: plan.state }),

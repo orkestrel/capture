@@ -1458,6 +1458,63 @@ describe('readCaptureArguments changed selection', () => {
 	})
 })
 
+describe('command wrapper modes', () => {
+	const ROOT = resolve('workspace')
+	const DEFAULTS = {
+		config: 'configs/default.config.ts',
+		journeys: 'tmp/default-journeys',
+	}
+	const ARGS = {
+		entry: resolve('node_modules/vitest/vitest.mjs'),
+		config: '/workspace/wrapper.config.ts',
+		report: '/workspace/run.json',
+		projects: ['journey:wide'],
+		filter: 'owner:pages:mail',
+		final: RUNNER_FINAL,
+	}
+
+	it.each([
+		['journey', 'journey'],
+		['frames', 'capture'],
+		['stale', 'stale'],
+	] as const)(
+		'passes the %s mode into its runner arguments and omits it when absent',
+		(_name, command) => {
+			const parsed = readCaptureArguments(
+				['pages:mail', '--mode', 'vue'],
+				command,
+				ROOT,
+				'wrapper.ts',
+			)
+			const bare = readCaptureArguments(['pages:mail'], command, ROOT, 'wrapper.ts')
+			expect(parsed.mode).toBe('vue')
+			expect('mode' in bare).toBe(false)
+			expect(
+				buildCaptureArguments({
+					...ARGS,
+					...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
+				}),
+			).toContain('--mode')
+			expect(buildCaptureArguments(ARGS)).not.toContain('--mode')
+		},
+	)
+
+	it.each(['preflight', 'sheets'] as const)(
+		'passes the %s mode into reader discovery and omits it when absent',
+		(command) => {
+			const argv =
+				command === 'sheets'
+					? ['pages:mail', '--output', 'sheets', '--mode', 'vue']
+					: ['pages:mail', '--mode', 'vue']
+			const bare = command === 'sheets' ? ['pages:mail', '--output', 'sheets'] : ['pages:mail']
+			const parsed = readCaptureReaderArguments(argv, ROOT, DEFAULTS, command)
+			const absent = readCaptureReaderArguments(bare, ROOT, DEFAULTS, command)
+			expect(parsed.reader.mode).toBe('vue')
+			expect('mode' in absent.reader).toBe(false)
+		},
+	)
+})
+
 describe('buildCaptureArguments', () => {
 	const BASE = {
 		entry: resolve('node_modules/vitest/vitest.mjs'),
@@ -1678,6 +1735,7 @@ describe('buildCaptureArguments', () => {
 			'vue',
 		])
 		expect(buildCaptureArguments(BASE)).not.toContain('--mode')
+		expect(buildCaptureArguments({ ...BASE, mode: '-custom' })).toContain('--mode=-custom')
 	})
 })
 
@@ -2026,6 +2084,20 @@ describe('readCaptureRequest', () => {
 			expect(request).toBeDefined()
 			expect(request !== undefined && 'case' in request).toBe(false)
 			expect(request !== undefined && 'state' in request).toBe(false)
+			expect(request !== undefined && 'mode' in request).toBe(false)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('retains the selected mode from the request', () => {
+		const scratch = createScratch({ prefix: 'request-mode-' })
+		try {
+			scratch.write(
+				`journey-selection-${String(PPID)}.json`,
+				JSON.stringify(createWireRequest(PPID, ARGV, { mode: 'vue' })),
+			)
+			expect(readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))?.mode).toBe('vue')
 		} finally {
 			scratch.destroy()
 		}
@@ -2329,8 +2401,8 @@ describe('readCaptureReaderArguments', () => {
 		},
 		{
 			title: 'an unknown flag',
-			argv: ['app', '--mode', 'vue'],
-			message: "Unknown option '--mode'",
+			argv: ['app', '--changed', 'HEAD'],
+			message: "Unknown option '--changed'",
 		},
 		{
 			title: 'a second positional argument',
@@ -2887,6 +2959,39 @@ describe('answerCaptureDiscovery', () => {
 					projects: [PROJECT],
 				}),
 			).toBe(true)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('evaluates project factories with the requested mode', async () => {
+		const scratch = createScratch({ prefix: 'answer-mode-' })
+		const invocations: unknown[] = []
+		try {
+			const argv = [...ARGV, '--mode', 'vue']
+			scratch.write(
+				`requests/journey-selection-${String(PPID)}.json`,
+				JSON.stringify(
+					createCaptureDiscoveryRequest(PPID, argv, CONFIG, {
+						mode: 'vue',
+					}),
+				),
+			)
+			expect(
+				await answerCaptureDiscovery({
+					ppid: PPID,
+					argv,
+					directory: resolve(scratch.path, 'requests'),
+					config: CONFIG,
+					projects: [
+						(invocation: unknown) => {
+							invocations.push(invocation)
+							return PROJECT
+						},
+					],
+				}),
+			).toBe(true)
+			expect(invocations).toEqual([{ command: 'serve', mode: 'vue' }])
 		} finally {
 			scratch.destroy()
 		}

@@ -73,7 +73,7 @@ export class CaptureDiscovery implements CaptureDiscoveryInterface {
 			...CAPTURE_DISCOVERY.arguments,
 			'--config',
 			resolve(root, config),
-			...(mode === undefined ? [] : ['--mode', mode]),
+			...(mode === undefined ? [] : mode.startsWith('-') ? [`--mode=${mode}`] : ['--mode', mode]),
 			'--configLoader',
 			'runner',
 		]
@@ -83,6 +83,7 @@ export class CaptureDiscovery implements CaptureDiscoveryInterface {
 			id: invocation.id,
 			nonce,
 			config: relative,
+			...(mode === undefined ? {} : { mode }),
 			pid: process.pid,
 			args,
 		}

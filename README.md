@@ -62,14 +62,16 @@ contact sheets. Preflight and sheets report `acceptance: false`; they provide it
 
 Every command accepts `--config <file>`. The principal selection and output flags are as follows:
 
-| Command                                          | Flags and behavior                                                                                                                             |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `capture registry`                               | `--variant <name>` repeats to refresh selected producing variants; `--mode <name>` selects the wrapper's mode. Takes no selector.              |
-| `capture journey <selector>`                     | `--variant <name>` repeats; `--case <full name>` selects an exact case. Use `--changed <ref>` instead of the selector, with optional `--plan`. |
-| `capture frames <selector>`                      | Journey flags plus `--state <name>` to resolve a state through fresh passing lookup evidence.                                                  |
-| `capture stale <selector>`                       | `--variant <name>` repeats; `--case <full name>`, `--state <name>`, and `--portfolio <name>` narrow the freshness reading.                     |
-| `capture preflight <selector>`                   | Stale flags plus `--journeys <directory>` for artifacts and `--checks <module>` for the host's `CAPTURE_CHECKS` export.                        |
-| `capture sheets <selector> --output <directory>` | Preflight flags plus required `--output <directory>` for a new contained directory outside the selected capture directories.                   |
+| Command                                          | Flags and behavior                                                                                                                                                                       |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `capture registry`                               | `--variant <name>` repeats to refresh selected producing variants; `--mode <name>` selects the wrapper's mode. Takes no selector.                                                        |
+| `capture journey <selector>`                     | `--variant <name>` repeats; `--case <full name>` selects an exact case; `--mode <name>` selects the wrapper mode. Use `--changed <ref>` instead of the selector, with optional `--plan`. |
+| `capture frames <selector>`                      | Journey flags plus `--state <name>` to resolve a state through fresh passing lookup evidence; `--mode <name>` selects the wrapper mode.                                                  |
+| `capture stale <selector>`                       | `--variant <name>` repeats; `--case <full name>`, `--state <name>`, `--portfolio <name>`, and `--mode <name>` narrow the freshness reading.                                              |
+| `capture preflight <selector>`                   | Stale flags plus `--mode <name>`, `--journeys <directory>` for artifacts, and `--checks <module>` for the host's `CAPTURE_CHECKS` export.                                                |
+| `capture sheets <selector> --output <directory>` | Preflight flags, including `--mode <name>`, plus required `--output <directory>` for a new contained directory outside selected captures.                                                |
+
+`--mode <name>` is available on every command that reads the wrapper. It reaches discovery and execution children and wrapper project factories; omission keeps Vitest's default mode.
 
 A selector is `all` or a declared colon-separated owner path. Only `--variant` repeats. Every
 flag except `--plan` takes a nonempty value as `--flag value` or `--flag=value`; a value beginning

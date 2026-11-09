@@ -205,6 +205,7 @@ export function renderCaptureCommand(
 		command === 'registry' ? command : CAPTURE_COMMAND_NAMES[command],
 		...(selector === undefined ? [] : [selector]),
 		...parsed.variants.flatMap((variant) => ['--variant', variant]),
+		...(parsed.mode === undefined ? [] : ['--mode', parsed.mode]),
 		...(parsed.case === undefined
 			? []
 			: parsed.case.startsWith('-')
@@ -1371,7 +1372,11 @@ export function buildCaptureArguments(options: CaptureArgumentsOptions): readonl
 		'run',
 		'--config',
 		options.config,
-		...(options.mode === undefined ? [] : ['--mode', options.mode]),
+		...(options.mode === undefined
+			? []
+			: options.mode.startsWith('-')
+				? [`--mode=${options.mode}`]
+				: ['--mode', options.mode]),
 		'--configLoader',
 		'runner',
 		'--no-cache',
@@ -1593,6 +1598,7 @@ export function readCaptureArguments(
 			{ code: 'USAGE' },
 		)
 	const name = values.case
+	const mode = values.mode
 	if (name !== undefined && name.trim() === '')
 		throw new CaptureError('Empty case name', { code: 'USAGE' })
 	const portfolio =
@@ -1613,6 +1619,7 @@ export function readCaptureArguments(
 		...(changed === undefined ? {} : { changed }),
 		...(plan ? { plan: true } : {}),
 		config: resolve(root, values.config ?? fallback),
+		...(mode === undefined ? {} : { mode }),
 		variants,
 		...(name === undefined ? {} : { case: name }),
 		...(state === undefined ? {} : { state }),
@@ -1991,6 +1998,8 @@ export function readCaptureRequest(options: CaptureRequestOptions): CaptureReque
 		throw new CaptureError('Journey selection request has invalid identity', { code: 'HOST' })
 	if (parsed.config !== options.config)
 		throw new CaptureError('Journey selection request has invalid config', { code: 'HOST' })
+	if (parsed.mode !== undefined && (typeof parsed.mode !== 'string' || parsed.mode.trim() === ''))
+		throw new CaptureError('Journey selection request has invalid mode', { code: 'HOST' })
 	const command =
 		parsed.command === 'journey' || parsed.command === 'capture' ? parsed.command : undefined
 	if (
@@ -2023,6 +2032,7 @@ export function readCaptureRequest(options: CaptureRequestOptions): CaptureReque
 		config: options.config,
 		pid: options.ppid,
 		command,
+		...(typeof parsed.mode === 'string' ? { mode: parsed.mode } : {}),
 		selector,
 		...(typeof parsed.case === 'string' ? { case: parsed.case } : {}),
 		variants,
@@ -2037,7 +2047,7 @@ export function readCaptureRequest(options: CaptureRequestOptions): CaptureReque
  * @remarks
  * The first argument is the selector and every flag after it takes one nonempty value, separated
  * or in equals form. Only `--variant` repeats. `--output` belongs to sheets; the preflight option
- * table refuses it before discovery. The wrapper, the journey artifact directory, and the checks module
+ * table refuses it before discovery. `--mode` selects the wrapper's Vitest mode. The wrapper, the journey artifact directory, and the checks module
  * resolve against `root`; `defaults` supplies the first two when the command line names neither.
  *
  * @param argv - The arguments after the entry name
@@ -2077,10 +2087,12 @@ export function readCaptureReaderArguments(
 	const portfolio = values.portfolio
 	const checks = values.checks
 	const output = 'output' in values && typeof values.output === 'string' ? values.output : undefined
+	const mode = values.mode
 	return {
 		reader: {
 			root: resolve(root),
 			config: resolve(root, values.config ?? defaults.config),
+			...(mode === undefined ? {} : { mode }),
 			journeys: resolve(root, values.journeys ?? defaults.journeys),
 			selection: {
 				selector,
@@ -2289,8 +2301,8 @@ export function readCaptureRunning(pid: number): boolean {
  * Resolves one entry of a wrapper's project list to the project it declares.
  *
  * @remarks
- * A factory entry is called with the serve command and the test mode, as Vitest calls it, and a
- * promise is awaited. The result is the project as plain data, not yet judged: the runner reads
+ * A factory entry is called with the serve command and the requested mode, or the default test
+ * mode, as Vitest calls it, and a promise is awaited. The result is the project as plain data: the runner reads
  * and validates it, so one reader owns every refusal.
  *
  * @param input - The entry as the wrapper declared it: an inline project, a promise of one, or a factory
@@ -2301,8 +2313,11 @@ export function readCaptureRunning(pid: number): boolean {
  * const project = await resolveCaptureWrapperProject(wrapper.test.projects[0])
  * ```
  */
-export async function resolveCaptureWrapperProject(input: unknown): Promise<unknown> {
-	return isFunction(input) ? await input({ command: 'serve', mode: 'test' }) : await input
+export async function resolveCaptureWrapperProject(
+	input: unknown,
+	mode = 'test',
+): Promise<unknown> {
+	return isFunction(input) ? await input({ command: 'serve', mode }) : await input
 }
 
 /**
@@ -2518,6 +2533,8 @@ export async function answerCaptureDiscovery(options: CaptureDiscoveryOptions): 
 		throw new CaptureError('Discovery request has invalid identity', { code: 'HOST' })
 	if (parsed.config !== options.config)
 		throw new CaptureError('Discovery request has invalid config', { code: 'HOST' })
+	if (parsed.mode !== undefined && (typeof parsed.mode !== 'string' || parsed.mode.trim() === ''))
+		throw new CaptureError('Discovery request has invalid mode', { code: 'HOST' })
 	const answer = resolve(
 		directory,
 		CAPTURE_RUNS_DIRECTORY,
@@ -2531,7 +2548,10 @@ export async function answerCaptureDiscovery(options: CaptureDiscoveryOptions): 
 			context: { file },
 		})
 	// The projects travel as plain data; the runner reads and judges them, so one reader owns every refusal.
-	const projects = await Promise.all(options.projects.map(resolveCaptureWrapperProject))
+	const mode = typeof parsed.mode === 'string' ? parsed.mode : undefined
+	const projects = await Promise.all(
+		options.projects.map((input) => resolveCaptureWrapperProject(input, mode)),
+	)
 	writeCaptureDocument(answer, {
 		version: CAPTURE_VERSION,
 		id: parsed.id,

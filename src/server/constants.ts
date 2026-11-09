@@ -85,6 +85,7 @@ export const CAPTURE_COMMAND_OPTIONS = Object.freeze({
 		case: Object.freeze({ type: 'string' }),
 		changed: Object.freeze({ type: 'string' }),
 		plan: Object.freeze({ type: 'boolean' }),
+		mode: Object.freeze({ type: 'string' }),
 	}),
 	capture: Object.freeze({
 		config: Object.freeze({ type: 'string' }),
@@ -93,6 +94,7 @@ export const CAPTURE_COMMAND_OPTIONS = Object.freeze({
 		state: Object.freeze({ type: 'string' }),
 		changed: Object.freeze({ type: 'string' }),
 		plan: Object.freeze({ type: 'boolean' }),
+		mode: Object.freeze({ type: 'string' }),
 	}),
 	stale: Object.freeze({
 		config: Object.freeze({ type: 'string' }),
@@ -100,6 +102,7 @@ export const CAPTURE_COMMAND_OPTIONS = Object.freeze({
 		case: Object.freeze({ type: 'string' }),
 		state: Object.freeze({ type: 'string' }),
 		portfolio: Object.freeze({ type: 'string' }),
+		mode: Object.freeze({ type: 'string' }),
 	}),
 	preflight: Object.freeze({
 		variant: Object.freeze({ type: 'string', multiple: true }),
@@ -109,6 +112,7 @@ export const CAPTURE_COMMAND_OPTIONS = Object.freeze({
 		config: Object.freeze({ type: 'string' }),
 		journeys: Object.freeze({ type: 'string' }),
 		checks: Object.freeze({ type: 'string' }),
+		mode: Object.freeze({ type: 'string' }),
 	}),
 	sheets: Object.freeze({
 		variant: Object.freeze({ type: 'string', multiple: true }),
@@ -118,6 +122,7 @@ export const CAPTURE_COMMAND_OPTIONS = Object.freeze({
 		config: Object.freeze({ type: 'string' }),
 		journeys: Object.freeze({ type: 'string' }),
 		checks: Object.freeze({ type: 'string' }),
+		mode: Object.freeze({ type: 'string' }),
 		output: Object.freeze({ type: 'string' }),
 	}),
 	registry: Object.freeze({
@@ -400,13 +405,13 @@ export const CAPTURE_DISCOVERY = Object.freeze({
 export const CAPTURE_USAGE = [
 	'Usage: capture <command> [arguments]',
 	'Commands:',
-	'  journey <selector> [--variant <name>]... [--case <full name>] [--config <file>]',
-	'  journey --changed <ref> [--plan] [--variant <name>]... [--case <full name>] [--config <file>]',
-	'  frames <selector> [--variant <name>]... [--case <full name>] [--state <name>] [--config <file>]',
-	'  frames --changed <ref> [--plan] [--variant <name>]... [--case <full name>] [--state <name>] [--config <file>]',
-	'  stale <selector> [--variant <name>]... [--case <full name>] [--state <name>] [--portfolio <name>] [--config <file>]',
-	'  preflight <selector> [--variant <name>]... [--state <name>] [--case <full name>] [--portfolio <name>] [--config <file>] [--journeys <directory>] [--checks <module>]',
-	'  sheets <selector> --output <new directory> [--variant <name>]... [--state <name>] [--case <full name>] [--portfolio <name>] [--config <file>] [--journeys <directory>] [--checks <module>]',
+	'  journey <selector> [--variant <name>]... [--case <full name>] [--mode <name>] [--config <file>]',
+	'  journey --changed <ref> [--plan] [--variant <name>]... [--case <full name>] [--mode <name>] [--config <file>]',
+	'  frames <selector> [--variant <name>]... [--case <full name>] [--state <name>] [--mode <name>] [--config <file>]',
+	'  frames --changed <ref> [--plan] [--variant <name>]... [--case <full name>] [--state <name>] [--mode <name>] [--config <file>]',
+	'  stale <selector> [--variant <name>]... [--case <full name>] [--state <name>] [--portfolio <name>] [--mode <name>] [--config <file>]',
+	'  preflight <selector> [--variant <name>]... [--state <name>] [--case <full name>] [--portfolio <name>] [--mode <name>] [--config <file>] [--journeys <directory>] [--checks <module>]',
+	'  sheets <selector> --output <new directory> [--variant <name>]... [--state <name>] [--case <full name>] [--portfolio <name>] [--mode <name>] [--config <file>] [--journeys <directory>] [--checks <module>]',
 	'  registry [--variant <name>]... [--mode <name>] [--config <file>]',
 	'--changed takes one Git ref; HEAD selects uncommitted work. It cannot accompany a selector.',
 	'--plan requires --changed and prints paths and commands after read-only discovery; no execution child starts.',

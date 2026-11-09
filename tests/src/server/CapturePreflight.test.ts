@@ -16,6 +16,7 @@ import { SCOPED_FINDING, TALL_FINDING } from '../../fixtures/capture/Checks.js'
 import {
 	buildCaptureSheetArguments,
 	describeCaptureReaderRun,
+	readCaptureChildModes,
 	ReaderFixture,
 	BOARD,
 	FIXTURE_TIMEOUT,
@@ -73,6 +74,34 @@ it(
 			))
 				rmSync(resolve(directory, entry), { recursive: true, force: true })
 			expect(readCaptureHeld(fixture.root, CAPTURE_DEFAULTS.requests)).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	},
+	FIXTURE_TIMEOUT,
+)
+
+it.each([
+	{ argv: ['--mode', 'vue'], mode: 'vue' },
+	{ argv: [], mode: 'test' },
+])(
+	'hands mode $mode from $argv to the preflight discovery child',
+	async (row) => {
+		const fixture = new ReaderFixture({ core, server })
+		try {
+			fixture.seed()
+			await fixture.capture({ variants: [...VARIANTS], picture: true })
+			const before = readCaptureChildModes(fixture).length
+			const result = await fixture.run('preflight', [
+				'examples:files',
+				'--variant',
+				'light-320',
+				...row.argv,
+			])
+			expect(result.status === 0 ? 0 : result.stderr).toBe(0)
+			expect(readCaptureChildModes(fixture).slice(before)).toEqual([
+				{ phase: 'discovery', mode: row.mode },
+			])
 		} finally {
 			fixture.destroy()
 		}
