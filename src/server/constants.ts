@@ -297,11 +297,11 @@ export const CAPTURE_SHEET_FILES = Object.freeze({
 } as const)
 
 /**
- * Names the stage each producing variant's complete journey runs in, ahead of the variant's name.
+ * Names the one stage a registry refresh runs every selected producing variant's complete journey in.
  *
  * @example
  * ```ts
- * `${CAPTURE_REGISTRY_STAGE}-light-390` // 'registry-light-390'
+ * `runs/${id}/${CAPTURE_REGISTRY_STAGE}/light-390.json` // 'runs/<id>/registry/light-390.json'
  * ```
  */
 export const CAPTURE_REGISTRY_STAGE = 'registry'

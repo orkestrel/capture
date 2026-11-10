@@ -72,7 +72,8 @@ export interface CaptureIdentity {
  * Carries a runner request through Vitest's provided-context protocol.
  *
  * @remarks Journey selections use the selected stage; frame captures use narrow and rest stages.
- * Registry refreshes retain their registry-prefixed stages. Records are keyed by id, stage, and variant.
+ * A registry refresh runs every selected variant in one registry stage. Records are keyed by id,
+ * stage, and variant.
  * `mode` carries the selected Vitest mode when the command line names one.
  *
  * @example

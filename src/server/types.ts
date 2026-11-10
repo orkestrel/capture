@@ -1833,7 +1833,7 @@ export interface CaptureRegistrarOptions {
 }
 
 /**
- * Refreshes the accepted registry from one complete capture-free journey per producing variant.
+ * Refreshes the accepted registry from one complete capture-free journey stage over the selected variants.
  *
  * @example
  * ```ts

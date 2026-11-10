@@ -1899,7 +1899,7 @@ export function createStandIn(): string {
 export const REGISTRY_REFUSALS = Object.freeze([
 	{
 		fault: 'failed-child',
-		reason: 'The registry journey for light-1280 did not exit successfully (7)',
+		reason: `The registry journey for ${VARIANTS.join(', ')} in stage registry did not exit successfully (7)`,
 	},
 	{ fault: 'complete', reason: 'Run completeness differs from eligible results' },
 	{ fault: 'invalid-record', reason: 'Invalid or mismatched final record' },

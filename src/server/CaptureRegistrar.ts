@@ -55,15 +55,16 @@ import {
 } from './helpers.js'
 
 /**
- * Refreshes the accepted registry from one complete capture-free journey per producing variant.
+ * Refreshes the accepted registry from one complete capture-free journey stage over the selected variants.
  *
  * @remarks
  * The refresh is the one route that bootstraps or replaces the registry the stage transaction
  * requires, so it cannot stamp through the integrity engine. It reads the wrapper through the same
  * discovery the runner uses, takes the same invocation entity, request file, and Vitest child, and runs
- * each producing variant as a stage of its own with the `all` selector and no capture variable. It
- * reads each stage's reporter and final record, takes the project's input population before and
- * after, and builds the receipts through `buildCaptureRegistry`. The registry is written to a
+ * every selected producing variant in one stage, one child that receives each variant's project, with
+ * the `all` selector and no capture variable. It reads the stage's reporter once and each variant's
+ * final record, takes each project's input population before and after, and builds one receipt per
+ * variant, all naming the one reporter, through `buildCaptureRegistry`. The registry is written to a
  * candidate beside its target, read back through the integrity engine, and only then renamed into
  * place, so a registry the engine would refuse never replaces a good one. With `--variant`, the
  * existing registry's receipts for the other declared variants are kept. It never widens a scoped
@@ -155,13 +156,15 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		const variants = declared.filter(
 			(variant) => parsed.variants.length === 0 || parsed.variants.includes(variant),
 		)
-		for (const variant of variants) {
-			if (!projects.some((project) => project.variant === variant))
+		const selected = variants.map((variant) => {
+			const project = projects.find((candidate) => candidate.variant === variant)
+			if (project === undefined)
 				throw new CaptureError(`The wrapper declares no journey project for ${variant}`, {
 					code: 'HOST',
 					context: { variant },
 				})
-		}
+			return project
+		})
 		const directory = resolveCaptureRelative(root, primary.directory)
 		const target = `${directory}/${CAPTURE_REGISTRY_FILE}`
 		const candidate = `${target}.${invocation.id}.candidate`
@@ -181,11 +184,8 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		// A receipt this run keeps must still match its reporter bytes, so an altered one refuses before any journey runs.
 		const retained = parsed.variants.length === 0 ? [] : this.#retain(target, variants, declared)
 		if (retained.length > 0) buildCaptureRegistry(retained)
-		const imports: CaptureReceiptInput[] = []
-		for (const variant of variants) {
-			if (invocation.interrupted) return CAPTURE_EXIT.failed
-			imports.push(await this.#stage(invocation, parsed, projects, primary, variant))
-		}
+		if (invocation.interrupted) return CAPTURE_EXIT.failed
+		const imports = await this.#stage(invocation, parsed, projects, primary, selected)
 		if (invocation.interrupted) return CAPTURE_EXIT.failed
 		const registry = buildCaptureRegistry([...retained, ...imports])
 		const path = resolve(root, candidate)
@@ -238,27 +238,22 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		parsed: CaptureRegistryArguments,
 		projects: readonly CaptureProject[],
 		primary: CaptureProject,
-		variant: string,
-	): Promise<CaptureReceiptInput> {
+		selected: readonly CaptureProject[],
+	): Promise<readonly CaptureReceiptInput[]> {
 		const { root } = this.#options
-		const project = projects.find((candidate) => candidate.variant === variant)
-		if (project === undefined)
-			throw new CaptureError(`The wrapper declares no journey project for ${variant}`, {
-				code: 'HOST',
-				context: { variant },
-			})
 		const selectors = [...new Set(projects.flatMap((candidate) => candidate.tags))]
 			.filter((tag) => tag.startsWith(CAPTURE_OWNER_PREFIX))
 			.map((tag) => tag.slice(CAPTURE_OWNER_PREFIX.length))
-		const stage = `${CAPTURE_REGISTRY_STAGE}-${variant}`
+		const stage = CAPTURE_REGISTRY_STAGE
+		const variants = selected.map((project) => project.variant)
 		const reportFile = resolve(invocation.directory, `${stage}.json`)
 		const log = resolve(invocation.directory, `${stage}.log`)
-		const record = `${resolveCaptureRelative(root, primary.directory)}/${CAPTURE_RUNS_DIRECTORY}/${invocation.id}/${stage}/${variant}.json`
+		const records = `${resolveCaptureRelative(root, primary.directory)}/${CAPTURE_RUNS_DIRECTORY}/${invocation.id}/${stage}`
 		const args = buildCaptureArguments({
 			entry: resolve(root, CAPTURE_VITEST_ENTRY),
 			config: parsed.config,
 			report: reportFile,
-			projects: [project.name],
+			projects: selected.map((project) => project.name),
 			filter: buildCaptureFilter('journey', 'all', selectors),
 			final: primary.final,
 			...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
@@ -272,84 +267,90 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 			command: 'journey',
 			...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
 			selector: 'all',
-			variants: [variant],
+			variants,
 			args,
 		}
-		const before = readCaptureInputs(root, project.inputs)
+		const snapshots = selected.map((project) => ({
+			project,
+			before: readCaptureInputs(root, project.inputs),
+		}))
 		const started = Date.now()
 		rmSync(reportFile, { force: true })
-		this.#stdout(`registry ${stage}: ${variant}; all; report=${reportFile}; record=${record}\n`)
+		this.#stdout(
+			`registry ${stage}: ${variants.join(', ')}; all; report=${reportFile}; records=${records}/<variant>.json\n`,
+		)
 		const outcome = await this.#run(invocation, request, log)
 		if (invocation.interrupted)
-			throw new CaptureError('Runner interrupted', { code: 'STAGE', context: { variant } })
+			throw new CaptureError('Runner interrupted', { code: 'STAGE', context: { stage, variants } })
+		const subject = `The registry journey for ${variants.join(', ')} in stage ${stage}`
 		if (outcome.code !== 0 || outcome.signal !== null)
 			throw new CaptureError(
-				`The registry journey for ${variant} did not exit successfully (${String(outcome.code ?? outcome.signal)})`,
-				{ code: 'STAGE', context: { variant, code: outcome.code, signal: outcome.signal } },
+				`${subject} did not exit successfully (${String(outcome.code ?? outcome.signal)})`,
+				{ code: 'STAGE', context: { stage, variants, code: outcome.code, signal: outcome.signal } },
 			)
 		if (!existsSync(reportFile))
-			throw new CaptureError(
-				`The registry journey for ${variant} wrote no reporter at ${reportFile}`,
-				{
-					code: 'EVIDENCE',
-					context: { variant },
-				},
-			)
+			throw new CaptureError(`${subject} wrote no reporter at ${reportFile}`, {
+				code: 'EVIDENCE',
+				context: { stage, variants },
+			})
 		const text = readFileSync(reportFile, 'utf8')
 		const report = readCaptureReport(parseJSON(text))
 		if (report.start < started || report.end > Date.now())
 			throw new CaptureError('Reporter does not belong to this refresh', { code: 'EVIDENCE' })
-		if (!existsSync(resolve(root, record)))
-			throw new CaptureError(
-				`The registry journey for ${variant} wrote no final record at ${record}`,
-				{
+		const file = resolveCaptureRelative(root, reportFile)
+		const digest = computeCaptureHash(text)
+		return snapshots.map(({ project, before }) => {
+			const variant = project.variant
+			const record = `${records}/${variant}.json`
+			if (!existsSync(resolve(root, record)))
+				throw new CaptureError(
+					`The registry journey for ${variant} wrote no final record at ${record}`,
+					{
+						code: 'EVIDENCE',
+						context: { variant },
+					},
+				)
+			const run: unknown = parseJSON(readFileSync(resolve(root, record), 'utf8'))
+			if (
+				!isCaptureRun(run) ||
+				run.request === undefined ||
+				run.variant !== variant ||
+				describeCaptureRequest(run.request) !== describeCaptureRequest(request)
+			)
+				throw new CaptureError(`Invalid or mismatched final record: ${record}`, {
 					code: 'EVIDENCE',
+				})
+			if (Date.parse(run.time) < started || Date.parse(run.time) > report.end)
+				throw new CaptureError('Final record time does not belong to this refresh', {
+					code: 'EVIDENCE',
+				})
+			validateCaptureRun(run, report, project.name)
+			if (!run.complete)
+				throw new CaptureError(
+					`The registry journey for ${variant} was not a complete run; a refresh imports complete runs only`,
+					{ code: 'EVIDENCE', context: { variant } },
+				)
+			if (JSON.stringify(readCaptureInputs(root, project.inputs)) !== JSON.stringify(before))
+				throw new CaptureError('Bounded host inputs or membership changed during the refresh', {
+					code: 'STAGE',
 					context: { variant },
+				})
+			return {
+				receipt: {
+					version: CAPTURE_VERSION,
+					variant,
+					time: run.time,
+					report: { file, digest },
+					inputs: before,
+					declarations: run.declarations,
+					registry: run.registry,
+					complete: run.complete,
 				},
-			)
-		const run: unknown = parseJSON(readFileSync(resolve(root, record), 'utf8'))
-		if (
-			!isCaptureRun(run) ||
-			run.request === undefined ||
-			run.variant !== variant ||
-			describeCaptureRequest(run.request) !== describeCaptureRequest(request)
-		)
-			throw new CaptureError(`Invalid or mismatched final record: ${record}`, {
-				code: 'EVIDENCE',
-			})
-		if (Date.parse(run.time) < started || Date.parse(run.time) > report.end)
-			throw new CaptureError('Final record time does not belong to this refresh', {
-				code: 'EVIDENCE',
-			})
-		validateCaptureRun(run, report, project.name)
-		if (!run.complete)
-			throw new CaptureError(
-				`The registry journey for ${variant} was not a complete run; a refresh imports complete runs only`,
-				{ code: 'EVIDENCE', context: { variant } },
-			)
-		if (JSON.stringify(readCaptureInputs(root, project.inputs)) !== JSON.stringify(before))
-			throw new CaptureError('Bounded host inputs or membership changed during the refresh', {
-				code: 'STAGE',
-				context: { variant },
-			})
-		return {
-			receipt: {
-				version: CAPTURE_VERSION,
-				variant,
-				time: run.time,
-				report: {
-					file: resolveCaptureRelative(root, reportFile),
-					digest: computeCaptureHash(text),
-				},
-				inputs: before,
-				declarations: run.declarations,
-				registry: run.registry,
-				complete: run.complete,
-			},
-			report: text,
-			outcome,
-			capped: false,
-		}
+				report: text,
+				outcome,
+				capped: false,
+			}
+		})
 	}
 
 	async #run(

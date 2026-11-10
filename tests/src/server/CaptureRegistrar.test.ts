@@ -58,7 +58,7 @@ it(
 )
 
 it.runIf(supportsDirectoryLinks())(
-	'H1r rechecks registry containment after stage children redirect its root',
+	'H1r rechecks registry containment after the stage child redirects its root',
 	async () => {
 		const fixture = new ComposedFixture({ core, server })
 		const outside = createScratch({ prefix: 'capture-registry-redirect-' })
@@ -73,7 +73,7 @@ it.runIf(supportsDirectoryLinks())(
 			)
 			const run = await fixture.refresh()
 			await waitForDelay(20)
-			expect(fixture.stages).toHaveLength(4)
+			expect(fixture.stages).toHaveLength(1)
 			expect(run.code).toBe(1)
 			expect(run.stderr).toContain('outside')
 			expect(events.filter((name) => name.includes('.candidate'))).toEqual([])
@@ -161,7 +161,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 				expect(receipt.registry.length).toBeGreaterThan(0)
 				expect(receipt.inputs).toEqual(fixture.hashes())
 				expect(receipt.report.file).toMatch(
-					new RegExp(`^${COMPOSED_REQUESTS}/runs/[^/]+/registry-${receipt.variant}\\.json$`, 'u'),
+					new RegExp(`^${COMPOSED_REQUESTS}/runs/[^/]+/registry\\.json$`, 'u'),
 				)
 				expect(receipt.report.digest).toBe(
 					createHash('sha256').update(fixture.read(receipt.report.file)).digest('hex'),
@@ -173,6 +173,79 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 				variants: [...VARIANTS],
 				refreshed: [...VARIANTS],
 				entries: registry.entries.length,
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('runs every declared variant in one stage child whose receipts all name its one reporter', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			const run = await fixture.refresh()
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+			const stages = fixture.stages
+			expect(
+				stages.map((request) => ({
+					stage: request.stage,
+					command: request.command,
+					selector: request.selector,
+					variants: request.variants,
+				})),
+			).toEqual([
+				{ stage: 'registry', command: 'journey', selector: 'all', variants: [...VARIANTS] },
+			])
+			const request = requireValue(stages.at(0), 'The refresh recorded no stage child')
+			expect(request.args.filter((argument) => argument === '--project')).toHaveLength(
+				VARIANTS.length,
+			)
+			expect(request.args.join(' ')).toContain(
+				VARIANTS.map((variant) => `--project journey:${variant}`).join(' '),
+			)
+			const file = `${COMPOSED_REQUESTS}/runs/${request.id}/registry.json`
+			const registry = readCapturePublishedRegistry(fixture)
+			expect(registry.receipts.map((receipt) => [receipt.variant, receipt.report])).toEqual(
+				VARIANTS.map((variant) => [
+					variant,
+					{ file, digest: createHash('sha256').update(fixture.read(file)).digest('hex') },
+				]),
+			)
+			const records = `${COMPOSED_DIRECTORY}/runs/${request.id}/registry`
+			expect(
+				VARIANTS.filter(
+					(variant) => !existsSync(resolve(fixture.root, records, `${variant}.json`)),
+				),
+			).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('runs a partial refresh in the one stage over only the named variants, in declaration order', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			expect((await fixture.refresh()).code).toBe(0)
+			const before = fixture.stages.length
+			const run = await fixture.refresh(['--variant', 'dark-390', '--variant', 'light-1280'])
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+			const stages = fixture.stages.slice(before)
+			expect(
+				stages.map((request) => ({ stage: request.stage, variants: request.variants })),
+			).toEqual([{ stage: 'registry', variants: ['light-1280', 'dark-390'] }])
+			const request = requireValue(stages.at(0), 'The partial refresh recorded no stage child')
+			expect(request.args.filter((argument) => argument === '--project')).toHaveLength(2)
+			expect(request.args.join(' ')).toContain(
+				'--project journey:light-1280 --project journey:dark-390',
+			)
+			const file = `${COMPOSED_REQUESTS}/runs/${request.id}/registry.json`
+			const registry = readCapturePublishedRegistry(fixture)
+			expect(
+				registry.receipts
+					.filter((receipt) => receipt.report.file === file)
+					.map((receipt) => receipt.variant),
+			).toEqual(['light-1280', 'dark-390'])
+			expect(readCaptureRegistrySummary(run.stdout)).toMatchObject({
+				refreshed: ['light-1280', 'dark-390'],
 			})
 		} finally {
 			fixture.destroy()
@@ -277,7 +350,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(run.stderr).toContain(
 				'Registry receipt requires an uncapped successful exit and unchanged report',
 			)
-			expect(run.stdout).not.toContain('registry registry-dark-390')
+			expect(run.stdout).not.toContain('registry registry:')
 			expect(fixture.read(REGISTRY).equals(before)).toBe(true)
 		} finally {
 			fixture.destroy()
@@ -361,7 +434,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 				)
 				const record: unknown = parseJSON(
 					fixture
-						.read(`${COMPOSED_DIRECTORY}/runs/${id}/registry-light-1280/light-1280.json`)
+						.read(`${COMPOSED_DIRECTORY}/runs/${id}/registry/light-1280.json`)
 						.toString('utf8'),
 				)
 				const args = isRecord(record) && isRecord(record.request) ? record.request.args : undefined
