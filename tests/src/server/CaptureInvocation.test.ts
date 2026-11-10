@@ -485,7 +485,13 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		try {
 			expect(owner.published).toBe(true)
 			expect(isRunning(owner.owner)).toBe(false)
-			expect(process.platform === 'win32' ? isRunning(owner.pid) : false).toBe(false)
+			// Windows ends the supervised child when its owner's job closes, a moment after the owner's own exit.
+			if (process.platform === 'win32')
+				await waitForCondition(
+					'the supervised child exits with its owner',
+					() => !isRunning(owner.pid),
+					{ budget: 20_000 },
+				)
 			const marker = fixture.scratch.read(`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`)
 			expect(parseJSON(marker ?? '')).toEqual({
 				pid: owner.owner,
