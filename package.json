@@ -93,29 +93,29 @@
 		"prepublishOnly": "npm run format:check && npm run lint:check && npm run check && npm run build && npm test && npm run test:distribution -- --mode release"
 	},
 	"dependencies": {
-		"@orkestrel/contract": "^0.0.22",
-		"@orkestrel/process": "^0.0.18",
-		"@orkestrel/timeout": "^0.0.16"
+		"@orkestrel/contract": "^0.0.23",
+		"@orkestrel/process": "^0.0.19",
+		"@orkestrel/timeout": "^0.0.17"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.60.1",
 		"@orkestrel/guide": "^0.0.30",
 		"@orkestrel/probe": "^0.0.29",
-		"@orkestrel/scaffold": "^0.0.129",
-		"@orkestrel/test": "^0.0.33",
+		"@orkestrel/scaffold": "^0.0.131",
+		"@orkestrel/test": "^0.0.34",
 		"@types/node": "^24.19.2",
 		"@vitest/browser-playwright": "^5.0.5",
 		"oxfmt": "^0.78.0",
 		"oxlint": "^1.93.0",
 		"playwright": "^1.61.0",
 		"typescript": "^7.0.2",
-		"vite": "^8.3.7",
+		"vite": "^8.3.8",
 		"vitest": "^5.1.0"
 	},
 	"peerDependencies": {
 		"@vitest/browser-playwright": "^4.1.12 || ^5.0.5",
 		"playwright": "^1.61.0",
-		"vite": "^8.3.7",
+		"vite": "^8.3.8",
 		"vitest": "^4.1.12 || ^5.1.0"
 	},
 	"peerDependenciesMeta": {
