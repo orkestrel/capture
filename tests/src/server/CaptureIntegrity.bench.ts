@@ -210,7 +210,7 @@ it.for(
 			if (!core.isCaptureManifestDocument(document)) throw new Error('Invalid population manifest')
 			const manifest = server.readCaptureManifest(document, fixture.options.manifest)
 			// The table stores every map the document holds; members hold only table keys.
-			const maps = Object.values(document.files).map((files) => JSON.stringify(files))
+			const maps = Object.values(document.populations).map((files) => JSON.stringify(files))
 			const repeated =
 				Buffer.byteLength(maps.join('')) - Buffer.byteLength([...new Set(maps)].join(''))
 			console.log(

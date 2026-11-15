@@ -30,7 +30,7 @@ import {
 	readCaptureManifest,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { REFUSED_PATHS } from '../../setup.js'
+import { REFUSED_PATHS, readCaptureRejection } from '../../setup.js'
 import {
 	readCaptureFixtureJSON,
 	readCaptureFixtureStatuses,
@@ -899,7 +899,7 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 			const result = await fixture.capture({ command: 'journey', variants: VARIANTS })
 			const journal = readCaptureFixtureJSON(fixture, fixture.options.lookups)
 			if (!isCaptureLookupJournal(journal)) throw new Error('Missing lookup journal')
-			expect(Object.values(journal.inputs)).toEqual([fixture.hashes()])
+			expect(Object.values(journal.populations)).toEqual([fixture.hashes()])
 			expect(journal.lookups).toHaveLength(result.lookups.length)
 			expect(result.lookups.length).toBeGreaterThan(1)
 			for (const lookup of result.lookups) {
@@ -918,9 +918,78 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 		}
 	})
 
+	it('refuses the version-1 journal capture 0.0.9 wrote with its removal and the refresh commands, publishing nothing', async () => {
+		const fixture = await IntegrityFixture.current({ core, server })
+		try {
+			await fixture.capture({ command: 'journey', selector: 'pages:mail' })
+			const journal = readCaptureFixtureJSON(fixture, fixture.options.lookups)
+			if (!isCaptureLookupJournal(journal)) throw new Error('Missing lookup journal')
+			const { populations, ...rest } = journal
+			const earlier = `${JSON.stringify({ ...rest, version: 1, inputs: populations })}\n`
+			fixture.write(fixture.options.lookups, earlier)
+			const file = fixture.options.lookups
+			const refresh = `Lookup journal version 1 at ${file} is not version ${String(core.CAPTURE_VERSION)}, and no other version is converted. Remove ${file}, then refresh explicitly with: capture registry, then capture frames all`
+			// The read and lookup refusals carry the version refusal's own recovery and no other.
+			expect(
+				await readCaptureRejection(fixture.engine.read({ selector: 'pages:mail' })),
+			).toHaveProperty('message', refresh)
+			expect(
+				await readCaptureRejection(fixture.engine.lookup({ ...MAIL_LIGHT, state: 'mail-screen' })),
+			).toHaveProperty('message', refresh)
+			expect(await readCaptureRejection(fixture.engine.check(MAIL_LIGHT))).toHaveProperty(
+				'message',
+				refresh,
+			)
+			await expect(fixture.capture({ command: 'journey', selector: 'pages:mail' })).rejects.toThrow(
+				refresh,
+			)
+			expect(fixture.read(file).toString('utf8')).toBe(earlier)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('refuses the version-1 registry capture 0.0.9 wrote with every removal and the refresh commands, publishing nothing', async () => {
+		const fixture = await IntegrityFixture.current({ core, server })
+		try {
+			const registry = readCaptureFixtureJSON(fixture, fixture.options.registry)
+			if (!isCaptureRegistry(registry)) throw new Error('Missing registry')
+			const earlier = `${JSON.stringify({
+				...registry,
+				version: 1,
+				receipts: registry.receipts.map((receipt) => ({ ...receipt, version: 1 })),
+			})}\n`
+			fixture.write(fixture.options.registry, earlier)
+			const manifest = fixture.read(fixture.options.manifest)
+			const { registry: file, manifest: stored, lookups } = fixture.options
+			const refresh = `Registry version 1 at ${file} is not version ${String(core.CAPTURE_VERSION)}, and no other version is converted. Remove ${file}, ${stored}, and ${lookups}, then refresh explicitly with: capture registry, then capture frames all`
+			expect(await readCaptureRejection(fixture.engine.check(MAIL_LIGHT))).toHaveProperty(
+				'message',
+				refresh,
+			)
+			expect(
+				await readCaptureRejection(fixture.engine.read({ selector: 'pages:mail' })),
+			).toHaveProperty('message', refresh)
+			expect(
+				await readCaptureRejection(fixture.engine.lookup({ ...MAIL_LIGHT, state: 'mail-screen' })),
+			).toHaveProperty('message', refresh)
+			await expect(fixture.capture()).rejects.toThrow(refresh)
+			expect(fixture.read(file).toString('utf8')).toBe(earlier)
+			expect(fixture.read(fixture.options.manifest)).toEqual(manifest)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
 	it.each([
-		['unknown inputs', 'Lookup names an unknown inputs digest:'],
-		['altered inputs', 'Lookup input digest differs from its map:'],
+		[
+			'unknown inputs',
+			'Lookup journal at tmp/captures/states/lookups.json names an unknown inputs digest:',
+		],
+		[
+			'altered inputs',
+			'Lookup journal at tmp/captures/states/lookups.json stores a population that does not hash to its key:',
+		],
 		['duplicate lookup', 'Duplicate incoming lookup identities'],
 		['changed run', 'Lookup run record is missing or changed:'],
 		['unauthorized run', 'Lookup has no authorized runner record'],
@@ -942,12 +1011,12 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 			}
 			const altered = {
 				...journal,
-				inputs:
+				populations:
 					fault === 'unknown inputs'
 						? {}
 						: fault === 'altered inputs'
-							? Object.fromEntries(Object.keys(journal.inputs).map((digest) => [digest, {}]))
-							: journal.inputs,
+							? Object.fromEntries(Object.keys(journal.populations).map((digest) => [digest, {}]))
+							: journal.populations,
 				lookups:
 					fault === 'duplicate lookup'
 						? [...journal.lookups, ...journal.lookups]
@@ -1418,7 +1487,7 @@ describe(
 			}
 		})
 
-		it('writes each distinct shared and input map once in the file table its members name', async () => {
+		it('writes each distinct shared and input map once in the population table its members name', async () => {
 			const fixture = await IntegrityFixture.current({ core, server })
 			try {
 				const document = readCaptureFixtureJSON(fixture, fixture.options.manifest)
@@ -1429,9 +1498,9 @@ describe(
 					...manifest.lookups.map((lookup) => lookup.inputs),
 					...(manifest.collections ?? []).map((receipt) => receipt.inputs.files),
 				]
-				expect(maps.length).toBeGreaterThan(Object.keys(document.files).length)
+				expect(maps.length).toBeGreaterThan(Object.keys(document.populations).length)
 				expect(
-					Object.values(document.files)
+					Object.values(document.populations)
 						.map((files) => JSON.stringify(Object.entries(files).toSorted()))
 						.toSorted(),
 				).toEqual(
@@ -1474,32 +1543,36 @@ describe(
 				if (!isCaptureManifestDocument(document)) throw new Error('Missing manifest document')
 				const key = Object.values(document.entries).find((stamp) => stamp.state === 'mail-screen')
 					?.shared.files
-				const files = key === undefined ? undefined : document.files[key]
+				const files = key === undefined ? undefined : document.populations[key]
 				if (key === undefined || files === undefined) throw new Error('Missing shared map')
 				const altered = `${JSON.stringify({
 					...document,
-					files: { ...document.files, [key]: { ...files, 'src/shared/added.ts': 'a'.repeat(64) } },
+					populations: {
+						...document.populations,
+						[key]: { ...files, 'src/shared/added.ts': 'a'.repeat(64) },
+					},
 				})}\n`
 				fixture.write(fixture.options.manifest, altered)
+				const subject = `Manifest at ${fixture.options.manifest}`
 				await expect(fixture.engine.check(MAIL_LIGHT)).rejects.toThrow(
-					`Manifest file digest differs from its map: ${key}`,
+					`${subject} stores a population that does not hash to its key: ${key}`,
 				)
 				await expect(fixture.capture()).rejects.toThrow(
-					`Manifest file digest differs from its map: ${key}`,
+					`${subject} stores a population that does not hash to its key: ${key}`,
 				)
 				expect(fixture.read(fixture.options.manifest).toString('utf8')).toBe(altered)
 				const missing = `${JSON.stringify({
 					...document,
-					files: Object.fromEntries(
-						Object.entries(document.files).filter(([digest]) => digest !== key),
+					populations: Object.fromEntries(
+						Object.entries(document.populations).filter(([digest]) => digest !== key),
 					),
 				})}\n`
 				fixture.write(fixture.options.manifest, missing)
 				await expect(fixture.engine.check(MAIL_LIGHT)).rejects.toThrow(
-					`Manifest names an unknown files digest: ${key}`,
+					`${subject} names an unknown shared.files digest: ${key}`,
 				)
 				await expect(fixture.capture()).rejects.toThrow(
-					`Manifest names an unknown files digest: ${key}`,
+					`${subject} names an unknown shared.files digest: ${key}`,
 				)
 				expect(fixture.read(fixture.options.manifest).toString('utf8')).toBe(missing)
 				fixture.write(fixture.options.manifest, original)
@@ -1931,7 +2004,7 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 				fixture.options.lookups,
 				JSON.stringify({
 					version: journal.version,
-					inputs: journal.inputs,
+					populations: journal.populations,
 					lookups: journal.lookups,
 					...(journal.manifest === undefined ? {} : { manifest: journal.manifest }),
 				}),

@@ -7,6 +7,7 @@ import type {
 	CaptureDigest,
 	CaptureDigestReference,
 	CaptureEntry,
+	CaptureExpandedManifest,
 	CaptureIdentity,
 	CaptureLookup,
 	CaptureLookupJournal,
@@ -18,7 +19,6 @@ import type {
 	CaptureRun,
 	CaptureSources,
 	CaptureStamp,
-	CaptureStoredManifest,
 	CaptureViewport,
 } from './types.js'
 import { arrayOf, holds, isFiniteNumber, isObject, isRecord, isString } from '@orkestrel/contract'
@@ -479,8 +479,8 @@ export function isCaptureLookup(value: unknown): value is CaptureLookup {
  *
  * @example
  * ```ts
- * isCaptureLookupJournal({ version: 2, inputs: {}, lookups: [] }) // true
- * isCaptureLookupJournal({ version: 1, inputs: {}, lookups: [] }) // false
+ * isCaptureLookupJournal({ version: 2, populations: {}, lookups: [] }) // true
+ * isCaptureLookupJournal({ version: 1, populations: {}, lookups: [] }) // false
  * ```
  */
 export function isCaptureLookupJournal(value: unknown): value is CaptureLookupJournal {
@@ -490,8 +490,8 @@ export function isCaptureLookupJournal(value: unknown): value is CaptureLookupJo
 			(value.collections === undefined || arrayOf(isCaptureCollection)(value.collections)) &&
 			value.version === CAPTURE_VERSION &&
 			(value.manifest === undefined || isCaptureHash(value.manifest)) &&
-			isRecord(value.inputs) &&
-			Object.entries(value.inputs).every(
+			isRecord(value.populations) &&
+			Object.entries(value.populations).every(
 				([digest, inputs]) => isCaptureHash(digest) && isCaptureHashes(inputs),
 			) &&
 			arrayOf(
@@ -541,7 +541,7 @@ export function isCaptureStamp(value: unknown): value is CaptureStamp {
 }
 
 /**
- * Checks whether an inherited manifest has the supported schema without discarding malformed rows.
+ * Checks whether an expanded manifest has the supported schema without discarding malformed rows.
  *
  * @param value - The manifest
  * @returns True if every inherited member validates; false otherwise
@@ -597,18 +597,18 @@ export function isCaptureCollection(value: unknown): value is CaptureCollectionR
 }
 
 /**
- * Checks optional collection metadata without upgrading historical image evidence.
+ * Checks whether an expanded manifest and its optional collection receipts have the supported schema.
  *
- * @param value - The inherited image transaction
- * @returns True if its existing manifest and any collection receipts are valid; false otherwise
+ * @param value - The expanded manifest
+ * @returns True if the manifest and any collection receipts are valid; false otherwise
  *
  * @example
  * ```ts
- * isCaptureStoredManifest(readCaptureManifest(JSON.parse(text), file)) // true with or without collections
- * isCaptureStoredManifest(null) // false
+ * isCaptureExpandedManifest(readCaptureManifest(JSON.parse(text), file)) // true with or without collections
+ * isCaptureExpandedManifest(null) // false
  * ```
  */
-export function isCaptureStoredManifest(value: unknown): value is CaptureStoredManifest {
+export function isCaptureExpandedManifest(value: unknown): value is CaptureExpandedManifest {
 	return holds(
 		() =>
 			isCaptureManifest(value) &&
@@ -640,7 +640,7 @@ export function isCaptureDigestReference(value: unknown): value is CaptureDigest
 }
 
 /**
- * Checks whether a stored manifest holds its file table and every member that names a table key.
+ * Checks whether a stored manifest holds its population table and every member that names a table key.
  *
  * @param value - The decoded manifest file
  * @returns True if the version, table, registry, stamps, lookups, and collections are valid; false otherwise
@@ -649,17 +649,17 @@ export function isCaptureDigestReference(value: unknown): value is CaptureDigest
  * @example
  * ```ts
  * isCaptureManifestDocument(JSON.parse(text)) // true for a written manifest.json
- * isCaptureManifestDocument({ version: 1, files: {}, entries: {}, lookups: [] }) // false
+ * isCaptureManifestDocument({ version: 1, populations: {}, entries: {}, lookups: [] }) // false
  * ```
  */
 export function isCaptureManifestDocument(value: unknown): value is CaptureManifestDocument {
 	return holds(
 		() =>
 			isRecord(value) &&
-			// The file table and the lookup references follow the journal's table rule.
+			// The population table and the lookup references follow the journal's table rule.
 			isCaptureLookupJournal({
 				version: value.version,
-				inputs: value.files,
+				populations: value.populations,
 				lookups: value.lookups,
 			}) &&
 			isCaptureRegistry(value.registry) &&

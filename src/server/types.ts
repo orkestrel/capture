@@ -7,6 +7,7 @@ import type {
 	CaptureDeclaration,
 	CaptureDestination,
 	CaptureDigest,
+	CaptureExpandedManifest,
 	CaptureFreshness,
 	CaptureLookup,
 	CapturePortfolioRoot,
@@ -18,7 +19,6 @@ import type {
 	CaptureSelection,
 	CaptureSources,
 	CaptureStamp,
-	CaptureStoredManifest,
 	CaptureViewport,
 	CaptureWarning,
 } from '@src/core'
@@ -498,7 +498,7 @@ export interface CaptureDirectoryResult {
 export interface CaptureEvidence {
 	readonly registry: CaptureRegistry
 	readonly collections: readonly CaptureCollectionReceipt[]
-	readonly manifest?: CaptureStoredManifest
+	readonly manifest?: CaptureExpandedManifest
 	readonly lookups: readonly CaptureLookup[]
 	readonly runs: readonly CaptureRunEvidence[]
 }

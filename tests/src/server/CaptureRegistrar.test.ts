@@ -93,7 +93,10 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 		for (const file of ['lookups.json', 'manifest.json']) {
 			const fixture = new ComposedFixture({ core, server })
 			try {
-				fixture.write(`${COMPOSED_DIRECTORY}/${file}`, '{"version":0}')
+				fixture.write(
+					`${COMPOSED_DIRECTORY}/${file}`,
+					JSON.stringify({ version: core.CAPTURE_VERSION }),
+				)
 				const run = await fixture.refresh()
 				expect(run.code).toBe(1)
 				expect(fixture.stages).toEqual([])
@@ -106,7 +109,7 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 
-	it('refuses a version-1 manifest before starting any registry stage and names the refresh commands', async () => {
+	it('refuses a version-1 manifest before starting any registry stage with its own recovery alone', async () => {
 		const fixture = new ComposedFixture({ core, server })
 		try {
 			const file = `${COMPOSED_DIRECTORY}/manifest.json`
@@ -114,8 +117,24 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 			const run = await fixture.refresh()
 			expect(run.code).toBe(1)
 			expect(fixture.stages).toEqual([])
-			expect(run.stderr).toContain(
-				`Manifest version 1 at ${file} is not version ${String(core.CAPTURE_VERSION)}, and no other version is converted. Remove ${file} and its lookup journal, then refresh explicitly with: capture registry, then capture frames all`,
+			expect(run.stderr).toBe(
+				`Manifest version 1 at ${file} is not version ${String(core.CAPTURE_VERSION)}, and no other version is converted. Remove ${file} and its lookup journal, then refresh explicitly with: capture registry, then capture frames all\n`,
+			)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('refuses a version-1 lookup journal before starting any registry stage with its own recovery alone', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			const file = `${COMPOSED_DIRECTORY}/lookups.json`
+			fixture.write(file, JSON.stringify({ version: 1, inputs: {}, lookups: [] }))
+			const run = await fixture.refresh()
+			expect(run.code).toBe(1)
+			expect(fixture.stages).toEqual([])
+			expect(run.stderr).toBe(
+				`Lookup journal version 1 at ${file} is not version ${String(core.CAPTURE_VERSION)}, and no other version is converted. Remove ${file}, then refresh explicitly with: capture registry, then capture frames all\n`,
 			)
 		} finally {
 			fixture.destroy()

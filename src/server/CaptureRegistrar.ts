@@ -21,7 +21,6 @@ import {
 	describeCaptureRequest,
 	isCapturePath,
 	isCaptureRegistry,
-	isCaptureLookupJournal,
 	isCaptureRun,
 	readCaptureReport,
 	validateCaptureRun,
@@ -46,7 +45,9 @@ import {
 	buildCaptureRegistry,
 	computeCaptureHash,
 	readCaptureInputs,
+	readCaptureLookupJournal,
 	readCaptureManifest,
+	matchesCaptureVersionRefusal,
 	readCaptureRegistryArguments,
 	requireCaptureProjects,
 	resolveCaptureRelative,
@@ -70,7 +71,8 @@ import {
  * place, so a registry the engine would refuse never replaces a good one. With `--variant`, the
  * existing registry's receipts for the other declared variants are kept. It never widens a scoped
  * run into a refresh and refuses while another runner holds a request file in the request directory.
- * Before any stage, it reads the inherited manifest and lookup journal and refuses an unsupported
+ * Before any stage, it reads the inherited manifest and lookup journal: it refuses a document of
+ * another version with that refusal's own removal and refresh commands alone, and an unsupported
  * schema with the file to inspect and repair.
  *
  * @example
@@ -222,9 +224,9 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 				if (!existsSync(path)) continue
 				const value: unknown = parseJSON(readFileSync(path, 'utf8'))
 				if (file === options.manifest) readCaptureManifest(value, file)
-				else if (!isCaptureLookupJournal(value))
-					throw new CaptureError('Invalid inherited evidence schema', { code: 'EVIDENCE' })
+				else readCaptureLookupJournal(value, file)
 			} catch (error) {
+				if (matchesCaptureVersionRefusal(error)) throw error
 				throw new CaptureError(
 					`Cannot refresh the registry with inherited evidence at ${JSON.stringify(file)}: ${describeCaptureError(error)}; inspect and repair this file before retrying`,
 					{ code: 'EVIDENCE', cause: error, context: { file } },

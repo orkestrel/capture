@@ -1,4 +1,4 @@
-import type { CaptureDestination, CaptureStoredManifest } from '@src/core'
+import type { CaptureDestination, CaptureExpandedManifest } from '@src/core'
 import type {
 	CaptureArtifactResult,
 	CaptureCheckFrame,
@@ -446,7 +446,7 @@ export class CapturePreflight implements CapturePreflightInterface {
 	}
 
 	// Reads the stamps the engine's check validated; an absent manifest holds no stamps.
-	#manifest(directory: string): CaptureStoredManifest | undefined {
+	#manifest(directory: string): CaptureExpandedManifest | undefined {
 		const file = resolve(this.#options.root, directory, CAPTURE_MANIFEST_FILE)
 		if (!existsSync(file)) return undefined
 		return readCaptureManifest(
@@ -458,7 +458,7 @@ export class CapturePreflight implements CapturePreflightInterface {
 	// Resolves the run record a judged frame's stamp names through its wrapper's producing variant.
 	#locate(
 		entry: CaptureDestination,
-		stored: CaptureStoredManifest | undefined,
+		stored: CaptureExpandedManifest | undefined,
 		producers: readonly CaptureProducer[],
 		directory: string,
 	): CaptureJudgedRecord {

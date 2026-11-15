@@ -124,7 +124,7 @@ export interface CaptureDigest {
 }
 
 /**
- * Names a digest's file map by the key a document's file table stores it under.
+ * Names a digest's file map by the key a document's population table stores it under.
  *
  * @example
  * ```ts
@@ -233,7 +233,7 @@ export interface CaptureArtifactLines {
  * ```
  */
 export interface CaptureRun {
-	readonly version: number
+	readonly version: typeof CAPTURE_VERSION
 	readonly identity?: CaptureIdentity
 	readonly request?: CaptureRequest
 	readonly variant: string
@@ -258,7 +258,7 @@ export interface CaptureRun {
  * ```
  */
 export interface CaptureReceipt {
-	readonly version: number
+	readonly version: typeof CAPTURE_VERSION
 	readonly variant: string
 	readonly time: string
 	readonly report: { readonly file: string; readonly digest: string }
@@ -278,7 +278,7 @@ export interface CaptureReceipt {
  * ```
  */
 export interface CaptureRegistry {
-	readonly version: number
+	readonly version: typeof CAPTURE_VERSION
 	readonly receipts: readonly CaptureReceipt[]
 	readonly entries: readonly CaptureDestination[]
 	readonly digest: string
@@ -334,7 +334,7 @@ export interface CaptureStamp extends CaptureEntry {
  * ```
  */
 export interface CaptureManifest {
-	readonly version: number
+	readonly version: typeof CAPTURE_VERSION
 	readonly registry: CaptureRegistry
 	readonly entries: Readonly<Record<string, CaptureStamp>>
 	readonly lookups: readonly CaptureLookup[]
@@ -420,7 +420,7 @@ export interface CaptureCollectionReceipt {
  * manifest.collections // readonly receipts or undefined
  * ```
  */
-export interface CaptureStoredManifest extends CaptureManifest {
+export interface CaptureExpandedManifest extends CaptureManifest {
 	readonly collections?: readonly CaptureCollectionReceipt[]
 }
 
@@ -429,20 +429,20 @@ export interface CaptureStoredManifest extends CaptureManifest {
  *
  * @remarks
  * A successful capture merges the journal and changes the manifest digest, retiring this journal
- * logically without a second filesystem mutation in the capture transaction. The `inputs` table
- * stores each distinct path-to-hash map under its digest; every lookup names that digest in its
- * `inputs` field. Expanded lookup results and image manifests retain their input maps.
+ * logically without a second filesystem mutation in the capture transaction. The `populations`
+ * table stores each distinct path-to-hash map under its digest; every lookup names that digest in
+ * its `inputs` field.
  *
  * @example
  * ```ts
- * const journal: CaptureLookupJournal = { version: 2, inputs: {}, lookups: [] }
+ * const journal: CaptureLookupJournal = { version: 2, populations: {}, lookups: [] }
  * ```
  */
 export interface CaptureLookupJournal {
 	readonly collections?: readonly CaptureCollectionReceipt[]
 	readonly version: typeof CAPTURE_VERSION
 	readonly manifest?: string
-	readonly inputs: Readonly<Record<string, Readonly<Record<string, string>>>>
+	readonly populations: Readonly<Record<string, Readonly<Record<string, string>>>>
 	readonly lookups: ReadonlyArray<Omit<CaptureLookup, 'inputs'> & { readonly inputs: string }>
 }
 
@@ -450,20 +450,20 @@ export interface CaptureLookupJournal {
  * Stores a manifest with each distinct file map once, in a table keyed by the map's digest.
  *
  * @remarks
- * Each `files` key is the digest from `buildCaptureDigest([], files)` over the path-to-hash map it
- * stores. Each stamp's `shared.files`, each lookup's `inputs`, and each collection receipt's
- * `inputs.files` names a key in that table. The expanded `CaptureStoredManifest` carries every map
- * in place.
+ * Each `populations` key is the digest from `buildCaptureDigest([], files)` over the path-to-hash
+ * map it stores. Each stamp's `shared.files`, each lookup's `inputs`, and each collection receipt's
+ * `inputs.files` names a key in that table. The expanded `CaptureExpandedManifest` carries every
+ * map in place.
  *
  * @example
  * ```ts
  * const document: unknown = JSON.parse(text)
- * if (isCaptureManifestDocument(document)) Object.keys(document.files) // distinct map digests
+ * if (isCaptureManifestDocument(document)) Object.keys(document.populations) // distinct map digests
  * ```
  */
 export interface CaptureManifestDocument {
-	readonly version: number
-	readonly files: Readonly<Record<string, Readonly<Record<string, string>>>>
+	readonly version: typeof CAPTURE_VERSION
+	readonly populations: Readonly<Record<string, Readonly<Record<string, string>>>>
 	readonly registry: CaptureRegistry
 	readonly entries: Readonly<
 		Record<string, Omit<CaptureStamp, 'shared'> & { readonly shared: CaptureDigestReference }>

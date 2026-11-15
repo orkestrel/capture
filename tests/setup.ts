@@ -537,7 +537,7 @@ export const CAPTURE_GUARD_CASES: ReadonlyArray<
 		isCaptureRun,
 		createRunFixture(),
 		[
-			['another version', createRunFixture({ version: 1 })],
+			['another version', { ...createRunFixture(), version: 1 }],
 			['an unparsable time', createRunFixture({ time: 'yesterday' })],
 			['a request without an identity', createRunFixture({ request: createRequestFixture() })],
 			['an identity without a request', createRunFixture({ identity: createIdentityFixture() })],
@@ -577,7 +577,7 @@ export const CAPTURE_GUARD_CASES: ReadonlyArray<
 		isCaptureRegistry,
 		createRegistryFixture(),
 		[
-			['another version', createRegistryFixture({ version: 1 })],
+			['another version', { ...createRegistryFixture(), version: 1 }],
 			['a malformed receipt', { ...createRegistryFixture(), receipts: [{}] }],
 			['a short digest', createRegistryFixture({ digest: 'abc' })],
 		],
@@ -601,39 +601,40 @@ export const CAPTURE_GUARD_CASES: ReadonlyArray<
 		{
 			version: CAPTURE_VERSION,
 			manifest: FIXTURE_HASH,
-			inputs: { [FIXTURE_HASH]: createLookupFixture().inputs },
+			populations: { [FIXTURE_HASH]: createLookupFixture().inputs },
 			lookups: [{ ...createLookupFixture(), inputs: FIXTURE_HASH }],
 		},
 		[
-			['another version', { version: 1, inputs: {}, lookups: [] }],
+			['another version', { version: 1, populations: {}, lookups: [] }],
+			['the version-1 table name', { version: CAPTURE_VERSION, inputs: {}, lookups: [] }],
 			[
 				'a short manifest digest',
-				{ version: CAPTURE_VERSION, manifest: 'abc', inputs: {}, lookups: [] },
+				{ version: CAPTURE_VERSION, manifest: 'abc', populations: {}, lookups: [] },
 			],
 			[
 				'a malformed collection',
-				{ version: CAPTURE_VERSION, collections: [{}], inputs: {}, lookups: [] },
+				{ version: CAPTURE_VERSION, collections: [{}], populations: {}, lookups: [] },
 			],
-			['a malformed lookup', { version: CAPTURE_VERSION, inputs: {}, lookups: [{}] }],
-			['a missing input table', { version: CAPTURE_VERSION, lookups: [] }],
-			['a short table digest', { version: CAPTURE_VERSION, inputs: { abc: {} }, lookups: [] }],
+			['a malformed lookup', { version: CAPTURE_VERSION, populations: {}, lookups: [{}] }],
+			['a missing population table', { version: CAPTURE_VERSION, lookups: [] }],
+			['a short table digest', { version: CAPTURE_VERSION, populations: { abc: {} }, lookups: [] }],
 			[
 				'a malformed input map',
 				{
 					version: CAPTURE_VERSION,
-					inputs: { [FIXTURE_HASH]: { '../escape': FIXTURE_HASH } },
+					populations: { [FIXTURE_HASH]: { '../escape': FIXTURE_HASH } },
 					lookups: [],
 				},
 			],
 			[
 				'an embedded lookup input map',
-				{ version: CAPTURE_VERSION, inputs: {}, lookups: [createLookupFixture()] },
+				{ version: CAPTURE_VERSION, populations: {}, lookups: [createLookupFixture()] },
 			],
 			[
 				'a short input reference',
 				{
 					version: CAPTURE_VERSION,
-					inputs: {},
+					populations: {},
 					lookups: [{ ...createLookupFixture(), inputs: 'abc' }],
 				},
 			],
@@ -662,7 +663,7 @@ export const CAPTURE_GUARD_CASES: ReadonlyArray<
 		isCaptureManifest,
 		createManifestFixture(),
 		[
-			['another version', createManifestFixture({ version: 1 })],
+			['another version', { ...createManifestFixture(), version: 1 }],
 			['a malformed stamp', { ...createManifestFixture(), entries: { 'pages/a.png': {} } }],
 			[
 				'an escaping stamp key',
@@ -1138,6 +1139,7 @@ export const CAPTURE_CORE_VALUES = [
 	'isCaptureDigestReference',
 	'isCaptureEntry',
 	'isCaptureError',
+	'isCaptureExpandedManifest',
 	'isCaptureGeometry',
 	'isCaptureHash',
 	'isCaptureHashes',
@@ -1156,7 +1158,6 @@ export const CAPTURE_CORE_VALUES = [
 	'isCaptureSelector',
 	'isCaptureSources',
 	'isCaptureStamp',
-	'isCaptureStoredManifest',
 	'matchesCaptureMembers',
 	'matchesCaptureSelector',
 	'readCaptureArtifact',

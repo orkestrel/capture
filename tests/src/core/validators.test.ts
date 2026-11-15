@@ -2,6 +2,7 @@ import {
 	CAPTURE_VERSION,
 	isCaptureDestination,
 	isCaptureDigestReference,
+	isCaptureExpandedManifest,
 	isCaptureHash,
 	isCaptureHashes,
 	isCaptureManifestDocument,
@@ -11,7 +12,6 @@ import {
 	isCaptureRun,
 	isCaptureSegment,
 	isCaptureSelector,
-	isCaptureStoredManifest,
 } from '@src/core'
 import { createHostileValues } from '@orkestrel/test'
 import { describe, expect, it } from 'vitest'
@@ -52,12 +52,12 @@ describe('capture guards', () => {
 		})
 	}
 
-	it('accepts a stored manifest with and without collection receipts and refuses a malformed one', () => {
-		expect(isCaptureStoredManifest(createManifestFixture())).toBe(true)
+	it('accepts an expanded manifest with and without collection receipts and refuses a malformed one', () => {
+		expect(isCaptureExpandedManifest(createManifestFixture())).toBe(true)
 		const manifest = { ...createManifestFixture(), collections: [CAPTURE_COLLECTION_FIXTURE] }
-		expect(isCaptureStoredManifest(manifest)).toBe(true)
-		expect(isCaptureStoredManifest({ ...createManifestFixture(), collections: [{}] })).toBe(false)
-		expect(isCaptureStoredManifest({ ...createManifestFixture(), version: 1 })).toBe(false)
+		expect(isCaptureExpandedManifest(manifest)).toBe(true)
+		expect(isCaptureExpandedManifest({ ...createManifestFixture(), collections: [{}] })).toBe(false)
+		expect(isCaptureExpandedManifest({ ...createManifestFixture(), version: 1 })).toBe(false)
 	})
 
 	it('accepts a digest that names its map by a table key and refuses an embedded or short one', () => {
@@ -75,7 +75,7 @@ describe('isCaptureManifestDocument', () => {
 	const inputs = 'b'.repeat(64)
 	const document = {
 		version: CAPTURE_VERSION,
-		files: { [FIXTURE_HASH]: stamp.shared.files, [inputs]: createLookupFixture().inputs },
+		populations: { [FIXTURE_HASH]: stamp.shared.files, [inputs]: createLookupFixture().inputs },
 		registry: createRegistryFixture(),
 		entries: {
 			'pages/inbox--light-390.png': { ...stamp, shared: { ...stamp.shared, files: FIXTURE_HASH } },
@@ -93,17 +93,23 @@ describe('isCaptureManifestDocument', () => {
 		expect(isCaptureManifestDocument(document)).toBe(true)
 		const { collections: _collections, ...bare } = document
 		expect(isCaptureManifestDocument(bare)).toBe(true)
-		expect(isCaptureManifestDocument({ ...bare, entries: {}, lookups: [], files: {} })).toBe(true)
+		expect(isCaptureManifestDocument({ ...bare, entries: {}, lookups: [], populations: {} })).toBe(
+			true,
+		)
 	})
 
 	it.each([
 		['version 1', { ...document, version: 1 }],
 		['no version', { ...document, version: undefined }],
-		['no file table', { ...document, files: undefined }],
-		['a short table key', { ...document, files: { abc: {} } }],
+		['no population table', { ...document, populations: undefined }],
+		[
+			'the table under its earlier name',
+			{ ...document, populations: undefined, files: document.populations },
+		],
+		['a short table key', { ...document, populations: { abc: {} } }],
 		[
 			'a malformed table map',
-			{ ...document, files: { [FIXTURE_HASH]: { '../escape': FIXTURE_HASH } } },
+			{ ...document, populations: { [FIXTURE_HASH]: { '../escape': FIXTURE_HASH } } },
 		],
 		['no registry', { ...document, registry: undefined }],
 		[
@@ -276,7 +282,7 @@ describe('capture guard totality', () => {
 			isCaptureSelector,
 			isCaptureHash,
 			isCaptureHashes,
-			isCaptureStoredManifest,
+			isCaptureExpandedManifest,
 			isCaptureDigestReference,
 			isCaptureManifestDocument,
 		]
@@ -295,7 +301,7 @@ describe('capture guard totality', () => {
 			expect(isCaptureSelector(value)).toBe(false)
 			expect(isCaptureHash(value)).toBe(false)
 			// An empty record is a valid hash map, so this guard is held to totality above, not to refusal.
-			expect(isCaptureStoredManifest(value)).toBe(false)
+			expect(isCaptureExpandedManifest(value)).toBe(false)
 			expect(isCaptureDigestReference(value)).toBe(false)
 			expect(isCaptureManifestDocument(value)).toBe(false)
 		}
@@ -306,6 +312,6 @@ describe('capture guard totality', () => {
 			expect(guard('manifest')).toBe(true)
 		expect(isCaptureHash('manifest')).toBe(false)
 		expect(isCaptureHashes('manifest')).toBe(false)
-		expect(isCaptureStoredManifest('manifest')).toBe(false)
+		expect(isCaptureExpandedManifest('manifest')).toBe(false)
 	})
 })

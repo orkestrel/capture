@@ -4,6 +4,7 @@ import type {
 	CaptureCollectionReceipt,
 	CaptureDestination,
 	CaptureDigest,
+	CaptureExpandedManifest,
 	CaptureLookup,
 	CaptureLookupJournal,
 	CaptureManifestDocument,
@@ -11,7 +12,6 @@ import type {
 	CaptureProvided,
 	CaptureRegistry,
 	CaptureRequest,
-	CaptureStoredManifest,
 	CaptureViewport,
 } from '@src/core'
 import type {
@@ -22,6 +22,7 @@ import type {
 	CaptureDescriptionExpectation,
 	CaptureDiscoveryConfig,
 	CaptureDiscoveryOptions,
+	CaptureEvidence,
 	CaptureFileSnapshot,
 	CaptureHashHandler,
 	CaptureHolder,
@@ -106,6 +107,7 @@ import {
 	describeCaptureError,
 	isCaptureGeometry,
 	isCaptureError,
+	isCaptureLookupJournal,
 	isCaptureManifestDocument,
 	isCapturePath,
 	isCapturePattern,
@@ -610,7 +612,7 @@ export function filterCaptureInputs(
  *
  * @example
  * ```ts
- * buildCaptureLookupJournal([], []).inputs // {}
+ * buildCaptureLookupJournal([], []).populations // {}
  * ```
  */
 export function buildCaptureLookupJournal(
@@ -618,39 +620,66 @@ export function buildCaptureLookupJournal(
 	collections: readonly CaptureCollectionReceipt[],
 	manifest?: string,
 ): CaptureLookupJournal {
-	const table = new Map<Readonly<Record<string, string>>, CaptureDigest>()
+	const memo = new Map<Readonly<Record<string, string>>, CaptureDigest>()
 	const references = lookups.map((lookup) => ({
 		...lookup,
-		inputs: computeCaptureTableKey(lookup.inputs, table),
+		inputs: computeCaptureTableKey(lookup.inputs, memo),
 	}))
 	return {
 		version: CAPTURE_VERSION,
 		...(manifest === undefined ? {} : { manifest }),
-		inputs: Object.fromEntries(
-			[...table.values()].map((population) => [population.digest, population.files]),
-		),
+		populations: buildCaptureTable(memo),
 		lookups: references,
 		collections,
 	}
 }
 
 /**
- * Resolves journal lookup references after verifying each stored input population's digest.
+ * Admits a decoded lookup journal, checking its declared version before its schema.
  *
- * @param journal - A structurally validated lookup journal
- * @returns Every expanded lookup in its stored order, sharing the verified input maps
- * @throws Thrown when an input digest differs from its map or a lookup names an unknown digest.
+ * @param value - The decoded journal file
+ * @param file - The journal path each refusal names
+ * @returns The journal, whose table digests `readCaptureLookups` verifies
+ * @throws Thrown with the removal and the refresh commands when the journal declares another
+ * protocol version, and thrown naming the file when its schema is invalid.
  *
  * @example
  * ```ts
- * readCaptureLookups(buildCaptureLookupJournal([], [])) // []
+ * readCaptureLookupJournal(JSON.parse(text), 'tmp/captures/states/lookups.json').lookups.length
  * ```
  */
-export function readCaptureLookups(journal: CaptureLookupJournal): readonly CaptureLookup[] {
-	const populations = readCaptureTable(journal.inputs, 'Lookup input')
+export function readCaptureLookupJournal(value: unknown, file: string): CaptureLookupJournal {
+	requireCaptureVersion(value, 'Lookup journal', file, [file])
+	if (!isCaptureLookupJournal(value))
+		throw new CaptureError(`Invalid lookup journal schema: ${file}`, {
+			code: 'EVIDENCE',
+			context: { file },
+		})
+	return value
+}
+
+/**
+ * Resolves journal lookup references after verifying each stored input population's digest.
+ *
+ * @param journal - A structurally validated lookup journal
+ * @param file - The journal path each refusal names
+ * @returns Every expanded lookup in its stored order, sharing the verified input maps
+ * @throws Thrown when a population does not hash to its key or a lookup names an unknown key.
+ *
+ * @example
+ * ```ts
+ * readCaptureLookups(buildCaptureLookupJournal([], []), 'tmp/captures/states/lookups.json') // []
+ * ```
+ */
+export function readCaptureLookups(
+	journal: CaptureLookupJournal,
+	file: string,
+): readonly CaptureLookup[] {
+	const subject = `Lookup journal at ${file}`
+	const populations = readCaptureTable(journal.populations, subject)
 	return journal.lookups.map((lookup) => ({
 		...lookup,
-		inputs: requireCaptureTableEntry(populations, lookup.inputs, 'Lookup', 'inputs'),
+		inputs: requireCaptureTableEntry(populations, lookup.inputs, subject, 'inputs'),
 	}))
 }
 
@@ -658,41 +687,62 @@ export function readCaptureLookups(journal: CaptureLookupJournal): readonly Capt
  * Computes the table key of a file map, the digest from `buildCaptureDigest([], files)`, once per map.
  *
  * @remarks
- * The table belongs to one document build: it memoizes each map by identity and holds the ordered
- * map under its key, so equal maps from different objects share one key.
+ * The memo belongs to one document build: it holds each map by identity beside its ordered,
+ * digested population, so equal maps from different objects share one key.
  *
  * @param files - The path-to-hash map a document stores once
- * @param table - The build's memo from each map to its ordered, digested population
- * @returns The digest that names the map in the document's table
+ * @param memo - The build's memo from each map to its ordered, digested population
+ * @returns The digest that names the map in the document's population table
  *
  * @example
  * ```ts
- * const table = new Map()
- * computeCaptureTableKey({ 'src/a.ts': 'f'.repeat(64) }, table).length // 64
+ * const memo = new Map()
+ * computeCaptureTableKey({ 'src/a.ts': 'f'.repeat(64) }, memo).length // 64
  * ```
  */
 export function computeCaptureTableKey(
 	files: Readonly<Record<string, string>>,
-	table: Map<Readonly<Record<string, string>>, CaptureDigest>,
+	memo: Map<Readonly<Record<string, string>>, CaptureDigest>,
 ): string {
-	const known = table.get(files)
+	const known = memo.get(files)
 	if (known !== undefined) return known.digest
 	const population = buildCaptureDigest([], files)
-	table.set(files, population)
+	memo.set(files, population)
 	return population.digest
 }
 
 /**
- * Reads a document's file table after verifying that each map hashes to the key it is stored under.
+ * Builds a document's population table from the memo its table keys were computed through.
  *
- * @param table - The stored table from each digest to its path-to-hash map
- * @param subject - The table's subject, which opens the refusal message
- * @returns Each verified map by its digest
- * @throws Thrown when a stored map's digest differs from its key.
+ * @param memo - The memo `computeCaptureTableKey` filled for one document build
+ * @returns Each distinct ordered map under its digest, in the order the build first met it
  *
  * @example
  * ```ts
- * readCaptureTable({}, 'Manifest file').size // 0
+ * const memo = new Map()
+ * const key = computeCaptureTableKey({ 'src/a.ts': 'f'.repeat(64) }, memo)
+ * buildCaptureTable(memo)[key] // { 'src/a.ts': 'ffff…' }
+ * ```
+ */
+export function buildCaptureTable(
+	memo: ReadonlyMap<Readonly<Record<string, string>>, CaptureDigest>,
+): Readonly<Record<string, Readonly<Record<string, string>>>> {
+	return Object.fromEntries(
+		[...memo.values()].map((population) => [population.digest, population.files]),
+	)
+}
+
+/**
+ * Reads a document's population table after verifying that each map hashes to the key it is stored under.
+ *
+ * @param table - The stored table from each digest to its path-to-hash map
+ * @param subject - The document and its path, which open the refusal message
+ * @returns Each verified map by its digest
+ * @throws Thrown when a stored map does not hash to its key.
+ *
+ * @example
+ * ```ts
+ * readCaptureTable({}, 'Manifest at tmp/captures/states/manifest.json').size // 0
  * ```
  */
 export function readCaptureTable(
@@ -702,9 +752,10 @@ export function readCaptureTable(
 	return new Map(
 		Object.entries(table).map(([digest, files]) => {
 			if (buildCaptureDigest([], files).digest !== digest)
-				throw new CaptureError(`${subject} digest differs from its map: ${digest}`, {
-					code: 'EVIDENCE',
-				})
+				throw new CaptureError(
+					`${subject} stores a population that does not hash to its key: ${digest}`,
+					{ code: 'EVIDENCE' },
+				)
 			return [digest, files] as const
 		}),
 	)
@@ -715,25 +766,25 @@ export function readCaptureTable(
  *
  * @param table - The verified table `readCaptureTable` returns
  * @param key - The digest a stored member names
- * @param owner - The document subject that opens the refusal message
+ * @param subject - The document and its path, which open the refusal message
  * @param field - The referencing field the refusal message names
  * @returns The file map stored under the key
  * @throws Thrown when the table holds no map under the key.
  *
  * @example
  * ```ts
- * requireCaptureTableEntry(new Map([[key, files]]), key, 'Manifest', 'files') === files // true
+ * requireCaptureTableEntry(new Map([[key, files]]), key, 'Manifest at manifest.json', 'inputs') === files // true
  * ```
  */
 export function requireCaptureTableEntry(
 	table: ReadonlyMap<string, Readonly<Record<string, string>>>,
 	key: string,
-	owner: string,
+	subject: string,
 	field: string,
 ): Readonly<Record<string, string>> {
 	const files = table.get(key)
 	if (files === undefined)
-		throw new CaptureError(`${owner} names an unknown ${field} digest: ${key}`, {
+		throw new CaptureError(`${subject} names an unknown ${field} digest: ${key}`, {
 			code: 'EVIDENCE',
 		})
 	return files
@@ -748,35 +799,33 @@ export function requireCaptureTableEntry(
  * @example
  * ```ts
  * const document = buildCaptureManifestDocument(manifest)
- * Object.keys(document.files) // one digest per distinct shared or input map
+ * Object.keys(document.populations) // one digest per distinct shared or input map
  * ```
  */
 export function buildCaptureManifestDocument(
-	manifest: CaptureStoredManifest,
+	manifest: CaptureExpandedManifest,
 ): CaptureManifestDocument {
-	const table = new Map<Readonly<Record<string, string>>, CaptureDigest>()
+	const memo = new Map<Readonly<Record<string, string>>, CaptureDigest>()
 	const entries = Object.fromEntries(
 		Object.entries(manifest.entries).map(([key, stamp]) => [
 			key,
 			{
 				...stamp,
-				shared: { ...stamp.shared, files: computeCaptureTableKey(stamp.shared.files, table) },
+				shared: { ...stamp.shared, files: computeCaptureTableKey(stamp.shared.files, memo) },
 			},
 		]),
 	)
 	const lookups = manifest.lookups.map((lookup) => ({
 		...lookup,
-		inputs: computeCaptureTableKey(lookup.inputs, table),
+		inputs: computeCaptureTableKey(lookup.inputs, memo),
 	}))
 	const collections = manifest.collections?.map((receipt) => ({
 		...receipt,
-		inputs: { ...receipt.inputs, files: computeCaptureTableKey(receipt.inputs.files, table) },
+		inputs: { ...receipt.inputs, files: computeCaptureTableKey(receipt.inputs.files, memo) },
 	}))
 	return {
 		version: manifest.version,
-		files: Object.fromEntries(
-			[...table.values()].map((population) => [population.digest, population.files]),
-		),
+		populations: buildCaptureTable(memo),
 		registry: manifest.registry,
 		entries,
 		lookups,
@@ -790,9 +839,9 @@ export function buildCaptureManifestDocument(
  * @param value - The decoded manifest file
  * @param file - The manifest path each refusal names
  * @returns The expanded manifest, whose references to one key share one verified map
- * @throws Thrown with the refresh commands when the document declares another protocol version,
- * and thrown when its schema is invalid, a table map differs from its key, or a reference names
- * no table key.
+ * @throws Thrown with the removal and the refresh commands when the document declares another
+ * protocol version, and thrown when its schema is invalid, a table map does not hash to its key,
+ * or a reference names no table key.
  *
  * @example
  * ```ts
@@ -800,16 +849,12 @@ export function buildCaptureManifestDocument(
  * manifest.lookups[0]?.inputs // the expanded input map
  * ```
  */
-export function readCaptureManifest(value: unknown, file: string): CaptureStoredManifest {
-	const version = isRecord(value) ? value.version : undefined
-	if (typeof version === 'number' && version !== CAPTURE_VERSION)
-		throw new CaptureError(
-			`Manifest version ${JSON.stringify(version)} at ${file} is not version ${String(CAPTURE_VERSION)}, and no other version is converted. Remove ${file} and its lookup journal, then refresh explicitly with: capture registry, then capture frames all`,
-			{ code: 'EVIDENCE', context: { file, version } },
-		)
+export function readCaptureManifest(value: unknown, file: string): CaptureExpandedManifest {
+	requireCaptureVersion(value, 'Manifest', file, [file, 'its lookup journal'])
 	if (!isCaptureManifestDocument(value))
 		throw new CaptureError(`Invalid inherited manifest schema: ${file}`, { code: 'EVIDENCE' })
-	const table = readCaptureTable(value.files, 'Manifest file')
+	const subject = `Manifest at ${file}`
+	const table = readCaptureTable(value.populations, subject)
 	return {
 		version: value.version,
 		registry: value.registry,
@@ -820,14 +865,14 @@ export function readCaptureManifest(value: unknown, file: string): CaptureStored
 					...stamp,
 					shared: {
 						...stamp.shared,
-						files: requireCaptureTableEntry(table, stamp.shared.files, 'Manifest', 'files'),
+						files: requireCaptureTableEntry(table, stamp.shared.files, subject, 'shared.files'),
 					},
 				},
 			]),
 		),
 		lookups: value.lookups.map((lookup) => ({
 			...lookup,
-			inputs: requireCaptureTableEntry(table, lookup.inputs, 'Manifest', 'files'),
+			inputs: requireCaptureTableEntry(table, lookup.inputs, subject, 'inputs'),
 		})),
 		...(value.collections === undefined
 			? {}
@@ -836,11 +881,125 @@ export function readCaptureManifest(value: unknown, file: string): CaptureStored
 						...receipt,
 						inputs: {
 							...receipt.inputs,
-							files: requireCaptureTableEntry(table, receipt.inputs.files, 'Manifest', 'files'),
+							files: requireCaptureTableEntry(table, receipt.inputs.files, subject, 'inputs.files'),
 						},
 					})),
 				}),
 	}
+}
+
+/**
+ * Refuses a document that declares a numeric version other than `CAPTURE_VERSION`, naming what to remove and the refresh commands.
+ *
+ * @remarks
+ * A document with no numeric version passes, so the schema check that follows names that fault.
+ * No document of another version is converted.
+ *
+ * @param value - The decoded document
+ * @param subject - The document kind that opens the refusal, such as `Registry`
+ * @param file - The document path the refusal names
+ * @param removal - The paths, or the phrases naming them, to remove before the refresh
+ * @throws Thrown as an `EVIDENCE` capture error whose context carries `file` and `version` when the
+ * document declares another numeric version.
+ *
+ * @example
+ * ```ts
+ * requireCaptureVersion({ version: 1 }, 'Registry', 'registry.json', ['registry.json'])
+ * // throws: Registry version 1 at registry.json is not version 2, … Remove registry.json, then refresh explicitly with: capture registry, then capture frames all
+ * ```
+ */
+export function requireCaptureVersion(
+	value: unknown,
+	subject: string,
+	file: string,
+	removal: readonly string[],
+): void {
+	const version = isRecord(value) ? value.version : undefined
+	if (typeof version === 'number' && version !== CAPTURE_VERSION)
+		throw new CaptureError(
+			`${subject} version ${String(version)} at ${file} is not version ${String(CAPTURE_VERSION)}, and no other version is converted. Remove ${new Intl.ListFormat('en', { type: 'conjunction' }).format(removal)}, then refresh explicitly with: capture registry, then capture frames all`,
+			{ code: 'EVIDENCE', context: { file, version } },
+		)
+}
+
+/**
+ * Checks whether an error is the refusal `requireCaptureVersion` throws for another document version.
+ *
+ * @remarks
+ * A caller that adds its own recovery to a refusal passes this one through unchanged, because it
+ * already names the removal and the refresh.
+ *
+ * @param error - The caught value
+ * @returns True if it is an `EVIDENCE` capture error whose context carries a file and a numeric version; false otherwise
+ *
+ * @example
+ * ```ts
+ * matchesCaptureVersionRefusal(captureError(() => requireCaptureVersion({ version: 1 }, 'Registry', file, [file]))) // true
+ * matchesCaptureVersionRefusal(new Error('Invalid')) // false
+ * ```
+ */
+export function matchesCaptureVersionRefusal(error: unknown): boolean {
+	return (
+		isCaptureError(error) &&
+		error.code === 'EVIDENCE' &&
+		typeof error.context?.file === 'string' &&
+		typeof error.context.version === 'number'
+	)
+}
+
+/**
+ * Collects the variants that produce each destination across the registry receipts and the lookup runs.
+ *
+ * @param evidence - The accepted registry and the authenticated lookup runs
+ * @returns Each destination description mapped to its distinct producing variants, in first-seen order
+ *
+ * @example
+ * ```ts
+ * collectCaptureProducers({ registry, runs: [] }).get(describeCaptureDestination(destination)) // ['light-390']
+ * ```
+ */
+export function collectCaptureProducers(
+	evidence: Pick<CaptureEvidence, 'registry' | 'runs'>,
+): ReadonlyMap<string, readonly string[]> {
+	const sources = [...evidence.registry.receipts, ...evidence.runs.map((entry) => entry.run)]
+	const attributions = Map.groupBy(
+		sources.flatMap((source) =>
+			source.registry.map((entry) => ({
+				description: describeCaptureDestination(entry),
+				variant: source.variant,
+			})),
+		),
+		(entry) => entry.description,
+	)
+	return new Map(
+		[...attributions].map(([description, entries]) => [
+			description,
+			[...new Set(entries.map((entry) => entry.variant))],
+		]),
+	)
+}
+
+/**
+ * Returns the one variant that produces a destination, refusing a destination with none or several.
+ *
+ * @param destination - The destination whose producer is read
+ * @param producers - The map `collectCaptureProducers` returns
+ * @returns The destination's unique producing variant
+ * @throws Thrown as an `EVIDENCE` capture error when no variant or more than one produces the destination.
+ *
+ * @example
+ * ```ts
+ * requireCaptureProducer(destination, collectCaptureProducers({ registry, runs: [] })) // 'light-390'
+ * ```
+ */
+export function requireCaptureProducer(
+	destination: CaptureDestination,
+	producers: ReadonlyMap<string, readonly string[]>,
+): string {
+	const variants = producers.get(describeCaptureDestination(destination)) ?? []
+	if (variants.length !== 1 || variants[0] === undefined)
+		throw new CaptureError('Destination has no unique producing variant', { code: 'EVIDENCE' })
+	return variants[0]
 }
 
 /**
@@ -927,7 +1086,11 @@ export function buildCaptureRegistry(inputs: readonly CaptureReceiptInput[]): Ca
 		'registry paths',
 		true,
 	)
-	const registry = { version: CAPTURE_VERSION, receipts, entries }
+	const registry: Pick<CaptureRegistry, 'version' | 'receipts' | 'entries'> = {
+		version: CAPTURE_VERSION,
+		receipts,
+		entries,
+	}
 	return { ...registry, digest: computeRegistryDigest(registry) }
 }
 
@@ -1860,6 +2023,8 @@ export function readCaptureSeparator(entry: string): string {
  * @param file - The accepted registry path
  * @param selector - The optional owner selector that bounds the case candidates
  * @returns Exact case names mapped to their original title segments within the selected owners
+ * @throws Thrown with the removal of the registry and the manifest and lookup journal beside it,
+ * and the refresh commands, when the registry declares another protocol version.
  * @example
  * ```ts
  * const titles = readCaptureTitles('/workspace', '/workspace/tmp/captures/states/registry.json')
@@ -1878,6 +2043,11 @@ export function readCaptureTitles(
 			{ code: 'EVIDENCE', cause: loaded.error },
 		)
 	const registry: unknown = parseJSON(loaded.value)
+	requireCaptureVersion(registry, 'Registry', file, [
+		file,
+		resolve(dirname(file), CAPTURE_MANIFEST_FILE),
+		resolve(dirname(file), CAPTURE_LOOKUPS_FILE),
+	])
 	if (!isCaptureRegistry(registry))
 		throw new CaptureError('Invalid accepted registry for case titles', { code: 'EVIDENCE' })
 	return Object.fromEntries(
@@ -2839,7 +3009,7 @@ export function readCaptureDescription(
 		Object.keys(value).some((key) => !keys.includes(key))
 	)
 		throw new CaptureError(
-			`The host description is malformed; ${describeCaptureFault('description', value, '{ version: 1, id: invocation id, nonce: challenge, config: wrapper path, parent: parent pid, pid: discovery child pid, projects: project[] }', keys, keys)}`,
+			`The host description is malformed; ${describeCaptureFault('description', value, `{ version: ${String(CAPTURE_VERSION)}, id: invocation id, nonce: challenge, config: wrapper path, parent: parent pid, pid: discovery child pid, projects: project[] }`, keys, keys)}`,
 			{ code: 'HOST' },
 		)
 	if (value.id !== expected.id)

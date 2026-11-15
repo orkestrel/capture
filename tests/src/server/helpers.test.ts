@@ -37,9 +37,15 @@ import {
 	buildCaptureLookupJournal,
 	buildCaptureManifestDocument,
 	computeCaptureTableKey,
+	buildCaptureTable,
 	readCaptureManifest,
+	readCaptureLookupJournal,
 	readCaptureTable,
 	requireCaptureTableEntry,
+	requireCaptureVersion,
+	matchesCaptureVersionRefusal,
+	collectCaptureProducers,
+	requireCaptureProducer,
 	buildCaptureDiscoveryConfig,
 	buildCaptureFilter,
 	buildCaptureIntegrityOptions,
@@ -138,6 +144,7 @@ import {
 	createStampFixture,
 	createReceiptFixture,
 	createRegistryFixture,
+	createRunFixture,
 	createVitestFixture,
 	createRequestFixture,
 	CAPTURE_PROVIDED_FIXTURE,
@@ -631,6 +638,8 @@ describe('filterCaptureInputs and computeCaptureMatchKey', () => {
 })
 
 describe('buildCaptureLookupJournal and readCaptureLookups', () => {
+	const file = 'tmp/captures/states/lookups.json'
+
 	it('stores a shared input map once and reads every lookup back from serialized bytes', () => {
 		const inputs = Object.fromEntries(
 			Array.from({ length: 309 }, (_, index) => [`src/input-${index}.ts`, FIXTURE_HASH]),
@@ -642,12 +651,12 @@ describe('buildCaptureLookupJournal and readCaptureLookups', () => {
 		const text = JSON.stringify(journal)
 		const decoded: unknown = parseJSON(text)
 		if (!isCaptureLookupJournal(decoded)) throw new Error('Invalid serialized lookup journal')
-		expect(Object.values(decoded.inputs)).toEqual([inputs])
+		expect(Object.values(decoded.populations)).toEqual([inputs])
 		expect(text.match(/"src\/input-0.ts"/gu)).toHaveLength(1)
 		expect(decoded.lookups).toHaveLength(lookups.length)
 		expect(new Set(decoded.lookups.map((entry) => entry.inputs)).size).toBe(1)
 		expect(decoded.manifest).toBe(FIXTURE_HASH)
-		const expanded = readCaptureLookups(decoded)
+		const expanded = readCaptureLookups(decoded, file)
 		expect(expanded).toEqual(lookups)
 		expect(expanded.every((entry) => entry.inputs === expanded[0]?.inputs)).toBe(true)
 	})
@@ -664,84 +673,265 @@ describe('buildCaptureLookupJournal and readCaptureLookups', () => {
 			createLookupFixture({ case: 'removed', inputs: { 'src/a.ts': FIXTURE_HASH } }),
 		]
 		const journal = buildCaptureLookupJournal(lookups, [])
-		expect(Object.keys(journal.inputs)).toHaveLength(3)
-		expect(readCaptureLookups(journal)).toEqual(lookups)
+		expect(Object.keys(journal.populations)).toHaveLength(3)
+		expect(readCaptureLookups(journal, file)).toEqual(lookups)
 		expect(journal.manifest).toBeUndefined()
 	})
 
 	it('preserves empty lookup collections without inventing an input population', () => {
 		const journal = buildCaptureLookupJournal([], [])
-		expect(journal).toEqual({ version: CAPTURE_VERSION, inputs: {}, lookups: [], collections: [] })
+		expect(journal).toEqual({
+			version: CAPTURE_VERSION,
+			populations: {},
+			lookups: [],
+			collections: [],
+		})
 		expect(isCaptureLookupJournal(journal)).toBe(true)
-		expect(readCaptureLookups(journal)).toEqual([])
+		expect(readCaptureLookups(journal, file)).toEqual([])
 	})
 
-	it('refuses an unknown input reference with its digest named', () => {
+	it('refuses an unknown input reference with the journal path and the digest named', () => {
 		const journal = buildCaptureLookupJournal([createLookupFixture()], [])
-		const unknown = { ...journal, inputs: {} }
+		const unknown = { ...journal, populations: {} }
 		expect(isCaptureLookupJournal(unknown)).toBe(true)
-		expect(() => readCaptureLookups(unknown)).toThrow(
-			`Lookup names an unknown inputs digest: ${journal.lookups[0]?.inputs}`,
+		expect(() => readCaptureLookups(unknown, file)).toThrow(
+			`Lookup journal at ${file} names an unknown inputs digest: ${journal.lookups[0]?.inputs}`,
 		)
 	})
 
-	it('refuses a stored map whose bytes no longer match its digest', () => {
+	it('refuses a stored map whose bytes no longer match its digest, naming the journal path', () => {
 		const journal = buildCaptureLookupJournal([createLookupFixture()], [])
 		const altered = {
 			...journal,
-			inputs: Object.fromEntries(
-				Object.keys(journal.inputs).map((digest) => [digest, { 'src/altered.ts': FIXTURE_HASH }]),
+			populations: Object.fromEntries(
+				Object.keys(journal.populations).map((digest) => [
+					digest,
+					{ 'src/altered.ts': FIXTURE_HASH },
+				]),
 			),
 		}
 		expect(isCaptureLookupJournal(altered)).toBe(true)
-		expect(() => readCaptureLookups(altered)).toThrow('Lookup input digest differs from its map')
+		expect(() => readCaptureLookups(altered, file)).toThrow(
+			`Lookup journal at ${file} stores a population that does not hash to its key`,
+		)
 	})
 })
 
-describe('computeCaptureTableKey, readCaptureTable, and requireCaptureTableEntry', () => {
+describe('readCaptureLookupJournal', () => {
+	const file = 'tmp/captures/states/lookups.json'
+	const journal = buildCaptureLookupJournal([createLookupFixture()], [], FIXTURE_HASH)
+
+	it('admits a journal of this version unchanged', () => {
+		expect(readCaptureLookupJournal(journal, file)).toBe(journal)
+	})
+
+	it.each([
+		[
+			'the version-1 journal capture 0.0.9 wrote',
+			1,
+			{ ...journal, version: 1, populations: undefined, inputs: journal.populations },
+		],
+		['a later version', 3, { ...journal, version: 3 }],
+	])(
+		'refuses %s with the removal and the refresh commands before its schema',
+		(_title, version, value) => {
+			const error = captureError(() => readCaptureLookupJournal(value, file))
+			expect(isCaptureError(error) && error.code).toBe('EVIDENCE')
+			expect(error).toHaveProperty(
+				'message',
+				`Lookup journal version ${String(version)} at ${file} is not version ${String(CAPTURE_VERSION)}, and no other version is converted. Remove ${file}, then refresh explicitly with: capture registry, then capture frames all`,
+			)
+		},
+	)
+
+	it.each([
+		['no version', { ...journal, version: undefined }],
+		['a text version', { ...journal, version: String(CAPTURE_VERSION) }],
+		['no population table', { ...journal, populations: undefined }],
+		['no document', null],
+	])('refuses %s as an invalid schema naming the file', (_title, value) => {
+		const error = captureError(() => readCaptureLookupJournal(value, file))
+		expect(isCaptureError(error) && error.code).toBe('EVIDENCE')
+		expect(error).toHaveProperty('message', `Invalid lookup journal schema: ${file}`)
+	})
+})
+
+describe('requireCaptureVersion', () => {
+	const file = 'tmp/captures/states/registry.json'
+	const removal = [file, 'tmp/captures/states/manifest.json', 'tmp/captures/states/lookups.json']
+
+	it.each([
+		['this version', { version: CAPTURE_VERSION }],
+		['no version', {}],
+		['a text version', { version: '1' }],
+		['no record', [1]],
+		['no document', undefined],
+	])('passes %s, leaving the schema check to name it', (_title, value) => {
+		expect(requireCaptureVersion(value, 'Registry', file, removal)).toBeUndefined()
+	})
+
+	it.each([0, 1, 3, 2.5])(
+		'refuses version %j with every removal and the refresh commands',
+		(version) => {
+			const error = captureError(() =>
+				requireCaptureVersion({ version }, 'Registry', file, removal),
+			)
+			expect(isCaptureError(error) && error.code).toBe('EVIDENCE')
+			expect(isCaptureError(error) && error.context).toEqual({ file, version })
+			expect(error).toHaveProperty(
+				'message',
+				`Registry version ${String(version)} at ${file} is not version ${String(CAPTURE_VERSION)}, and no other version is converted. Remove ${file}, tmp/captures/states/manifest.json, and tmp/captures/states/lookups.json, then refresh explicitly with: capture registry, then capture frames all`,
+			)
+		},
+	)
+
+	it('recognizes its own refusal and no other error', () => {
+		const refusal = captureError(() =>
+			requireCaptureVersion({ version: 1 }, 'Registry', file, [file]),
+		)
+		expect(matchesCaptureVersionRefusal(refusal)).toBe(true)
+		expect(
+			matchesCaptureVersionRefusal(
+				new CaptureError('Invalid', { code: 'EVIDENCE', context: { file } }),
+			),
+		).toBe(false)
+		expect(
+			matchesCaptureVersionRefusal(
+				new CaptureError('Invalid', { code: 'HOST', context: { file, version: 1 } }),
+			),
+		).toBe(false)
+		expect(
+			matchesCaptureVersionRefusal(
+				new CaptureError('Invalid', { code: 'EVIDENCE', context: { version: 1 } }),
+			),
+		).toBe(false)
+		expect(matchesCaptureVersionRefusal(new CaptureError('Invalid', { code: 'EVIDENCE' }))).toBe(
+			false,
+		)
+		expect(matchesCaptureVersionRefusal(Object.assign(new Error('x'), { code: 'EVIDENCE' }))).toBe(
+			false,
+		)
+		expect(matchesCaptureVersionRefusal(undefined)).toBe(false)
+	})
+
+	it('joins two removals with and and one alone', () => {
+		expect(() =>
+			requireCaptureVersion({ version: 1 }, 'Manifest', file, [file, 'its lookup journal']),
+		).toThrow(`Remove ${file} and its lookup journal, then refresh`)
+		expect(() => requireCaptureVersion({ version: 1 }, 'Manifest', file, [file])).toThrow(
+			`Remove ${file}, then refresh`,
+		)
+	})
+})
+
+describe('collectCaptureProducers and requireCaptureProducer', () => {
+	const inbox = createDestinationFixture()
+	const board = createDestinationFixture({
+		state: 'board',
+		variant: 'dark-390',
+		file: 'tmp/captures/states/pages/board--dark-390.png',
+	})
+	const snapshot = {
+		file: 'tmp/captures/states/runs/run-1/selected/dark-390.json',
+		image: { digest: FIXTURE_HASH, size: 1, modified: 0 },
+		changed: 0,
+	}
+	const registry = createRegistryFixture({
+		receipts: [createReceiptFixture({ variant: 'light-390', registry: [inbox] })],
+	})
+	const runs = [
+		{ file: snapshot, run: createRunFixture({ variant: 'dark-390', registry: [board] }) },
+		{ file: snapshot, run: createRunFixture({ variant: 'light-390', registry: [inbox] }) },
+	]
+
+	it('maps each destination to its distinct producing variants across receipts and runs', () => {
+		const producers = collectCaptureProducers({ registry, runs })
+		expect([...producers.values()]).toEqual([['light-390'], ['dark-390']])
+		expect(requireCaptureProducer(inbox, producers)).toBe('light-390')
+		expect(requireCaptureProducer(board, producers)).toBe('dark-390')
+		expect(
+			collectCaptureProducers({ registry: { ...registry, receipts: [] }, runs: [] }).size,
+		).toBe(0)
+	})
+
+	it.each([
+		[
+			'a destination two variants produce',
+			[
+				...runs,
+				{ file: snapshot, run: createRunFixture({ variant: 'light-1280', registry: [board] }) },
+			],
+		],
+		['a destination no variant produces', runs.slice(1)],
+	])('refuses %s', (_title, entries) => {
+		const error = captureError(() =>
+			requireCaptureProducer(board, collectCaptureProducers({ registry, runs: entries })),
+		)
+		expect(isCaptureError(error) && error.code).toBe('EVIDENCE')
+		expect(error).toHaveProperty('message', 'Destination has no unique producing variant')
+	})
+})
+
+describe('computeCaptureTableKey, buildCaptureTable, readCaptureTable, and requireCaptureTableEntry', () => {
 	const files = { 'src/table/b.ts': 'b'.repeat(64), 'src/table/a.ts': FIXTURE_HASH }
+	const subject = 'Manifest at tmp/captures/states/manifest.json'
 
 	it('keys a map by its digest over no patterns, once per map, and shares the key of an equal map', () => {
-		const table = new Map()
-		const key = computeCaptureTableKey(files, table)
+		const memo = new Map()
+		const key = computeCaptureTableKey(files, memo)
 		expect(key).toBe(buildCaptureDigest([], files).digest)
-		expect(computeCaptureTableKey(files, table)).toBe(key)
-		expect(table.size).toBe(1)
-		expect(computeCaptureTableKey(Object.fromEntries(Object.entries(files).reverse()), table)).toBe(
+		expect(computeCaptureTableKey(files, memo)).toBe(key)
+		expect(memo.size).toBe(1)
+		expect(computeCaptureTableKey(Object.fromEntries(Object.entries(files).reverse()), memo)).toBe(
 			key,
 		)
-		expect(computeCaptureTableKey({ 'src/table/a.ts': FIXTURE_HASH }, table)).not.toBe(key)
-		expect(computeCaptureTableKey({}, table)).toBe(buildCaptureDigest([], {}).digest)
+		expect(computeCaptureTableKey({ 'src/table/a.ts': FIXTURE_HASH }, memo)).not.toBe(key)
+		expect(computeCaptureTableKey({}, memo)).toBe(buildCaptureDigest([], {}).digest)
+	})
+
+	it('builds the table of each distinct ordered map under its key, in first-seen order', () => {
+		const memo = new Map()
+		const first = computeCaptureTableKey(files, memo)
+		const empty = computeCaptureTableKey({}, memo)
+		computeCaptureTableKey(Object.fromEntries(Object.entries(files).reverse()), memo)
+		const table = buildCaptureTable(memo)
+		expect(Object.keys(table)).toEqual([first, empty])
+		expect(Object.keys(table[first] ?? {})).toEqual(['src/table/a.ts', 'src/table/b.ts'])
+		expect(table[empty]).toEqual({})
+		expect(readCaptureTable(table, subject)).toEqual(
+			new Map([
+				[first, buildCaptureDigest([], files).files],
+				[empty, {}],
+			]),
+		)
+		expect(buildCaptureTable(new Map())).toEqual({})
 	})
 
 	it('reads a table whose maps hash to their keys and refuses an altered map with its key named', () => {
 		const key = buildCaptureDigest([], files).digest
-		expect(readCaptureTable({ [key]: files }, 'Manifest file')).toEqual(new Map([[key, files]]))
-		expect(readCaptureTable({}, 'Manifest file').size).toBe(0)
-		expect(() =>
-			readCaptureTable({ [key]: { 'src/table/a.ts': FIXTURE_HASH } }, 'Manifest file'),
-		).toThrow(`Manifest file digest differs from its map: ${key}`)
+		expect(readCaptureTable({ [key]: files }, subject)).toEqual(new Map([[key, files]]))
+		expect(readCaptureTable({}, subject).size).toBe(0)
+		expect(() => readCaptureTable({ [key]: { 'src/table/a.ts': FIXTURE_HASH } }, subject)).toThrow(
+			`${subject} stores a population that does not hash to its key: ${key}`,
+		)
 		const first = { 'src/table/c.ts': FIXTURE_HASH }
 		const later = buildCaptureDigest([], first).digest
 		expect(() =>
-			readCaptureTable(
-				{ [later]: first, [key]: { 'src/table/a.ts': FIXTURE_HASH } },
-				'Manifest file',
-			),
-		).toThrow(`Manifest file digest differs from its map: ${key}`)
+			readCaptureTable({ [later]: first, [key]: { 'src/table/a.ts': FIXTURE_HASH } }, subject),
+		).toThrow(`${subject} stores a population that does not hash to its key: ${key}`)
 	})
 
 	it('returns the map a key names and refuses a key the table does not hold', () => {
 		const key = buildCaptureDigest([], files).digest
 		const table = new Map([[key, files]])
-		expect(requireCaptureTableEntry(table, key, 'Manifest', 'files')).toBe(files)
+		expect(requireCaptureTableEntry(table, key, subject, 'inputs')).toBe(files)
 		const error = captureError(() =>
-			requireCaptureTableEntry(table, 'd'.repeat(64), 'Manifest', 'files'),
+			requireCaptureTableEntry(table, 'd'.repeat(64), subject, 'inputs'),
 		)
 		expect(isCaptureError(error) && error.code).toBe('EVIDENCE')
 		expect(error).toHaveProperty(
 			'message',
-			`Manifest names an unknown files digest: ${'d'.repeat(64)}`,
+			`${subject} names an unknown inputs digest: ${'d'.repeat(64)}`,
 		)
 	})
 })
@@ -780,7 +970,7 @@ describe('buildCaptureManifestDocument and readCaptureManifest', () => {
 		const text = JSON.stringify(document)
 		const decoded: unknown = parseJSON(text)
 		if (!isCaptureManifestDocument(decoded)) throw new Error('Invalid serialized manifest document')
-		expect(Object.keys(decoded.files).toSorted()).toEqual(
+		expect(Object.keys(decoded.populations).toSorted()).toEqual(
 			[buildCaptureDigest([], shared).digest, buildCaptureDigest([], inputs).digest].toSorted(),
 		)
 		expect(text.match(/"src\/shared\/theme.ts"/gu)).toHaveLength(1)
@@ -802,28 +992,35 @@ describe('buildCaptureManifestDocument and readCaptureManifest', () => {
 		expect(stored).not.toHaveProperty('collections')
 		expect(readCaptureManifest(stored, file)).toEqual(bare)
 		const empty = { ...bare, entries: {}, lookups: [] }
-		expect(buildCaptureManifestDocument(empty)).toEqual({ ...empty, files: {} })
+		expect(buildCaptureManifestDocument(empty)).toEqual({ ...empty, populations: {} })
 		expect(readCaptureManifest(buildCaptureManifestDocument(empty), file)).toEqual(empty)
 	})
 
 	it.each([
 		['the shared map', shared],
 		['the input map', inputs],
-	])('refuses a table entry whose content does not hash to its key: %s', (_title, files) => {
-		const key = buildCaptureDigest([], files).digest
-		const altered = {
-			...document,
-			files: { ...document.files, [key]: { ...files, 'src/table/added.ts': FIXTURE_HASH } },
-		}
-		expect(isCaptureManifestDocument(altered)).toBe(true)
-		expect(() => readCaptureManifest(altered, file)).toThrow(
-			`Manifest file digest differs from its map: ${key}`,
-		)
-	})
+	])(
+		'refuses a table entry whose content does not hash to its key, naming the manifest path: %s',
+		(_title, files) => {
+			const key = buildCaptureDigest([], files).digest
+			const altered = {
+				...document,
+				populations: {
+					...document.populations,
+					[key]: { ...files, 'src/table/added.ts': FIXTURE_HASH },
+				},
+			}
+			expect(isCaptureManifestDocument(altered)).toBe(true)
+			expect(() => readCaptureManifest(altered, file)).toThrow(
+				`Manifest at ${file} stores a population that does not hash to its key: ${key}`,
+			)
+		},
+	)
 
 	it.each([
 		[
 			'a stamp shared map',
+			'shared.files',
 			{
 				...document,
 				entries: Object.fromEntries(
@@ -836,10 +1033,12 @@ describe('buildCaptureManifestDocument and readCaptureManifest', () => {
 		],
 		[
 			'a lookup input map',
+			'inputs',
 			{ ...document, lookups: document.lookups.map((lookup) => ({ ...lookup, inputs: unknown })) },
 		],
 		[
 			'a collection input map',
+			'inputs.files',
 			{
 				...document,
 				collections: document.collections?.map((receipt) => ({
@@ -848,12 +1047,18 @@ describe('buildCaptureManifestDocument and readCaptureManifest', () => {
 				})),
 			},
 		],
-	])('refuses %s that names an unknown digest, naming the digest', (_title, value) => {
-		expect(isCaptureManifestDocument(value)).toBe(true)
-		const error = captureError(() => readCaptureManifest(value, file))
-		expect(isCaptureError(error) && error.code).toBe('EVIDENCE')
-		expect(error).toHaveProperty('message', `Manifest names an unknown files digest: ${unknown}`)
-	})
+	])(
+		'refuses %s that names an unknown digest, naming the manifest path, the field, and the digest',
+		(_title, field, value) => {
+			expect(isCaptureManifestDocument(value)).toBe(true)
+			const error = captureError(() => readCaptureManifest(value, file))
+			expect(isCaptureError(error) && error.code).toBe('EVIDENCE')
+			expect(error).toHaveProperty(
+				'message',
+				`Manifest at ${file} names an unknown ${field} digest: ${unknown}`,
+			)
+		},
+	)
 
 	it.each([
 		['the expanded manifest an earlier release wrote', { ...createManifestFixture(), version: 1 }],
@@ -871,7 +1076,11 @@ describe('buildCaptureManifestDocument and readCaptureManifest', () => {
 	it.each([
 		['an empty record', {}],
 		['an expanded manifest of the current version', createManifestFixture()],
-		['a document with no table', { ...document, files: undefined }],
+		['a document with no table', { ...document, populations: undefined }],
+		[
+			'a document with the table under its earlier name',
+			{ ...document, populations: undefined, files: document.populations },
+		],
 		['a text version', { ...document, version: '2' }],
 	])('refuses %s as an invalid schema', (_title, value) => {
 		expect(() => readCaptureManifest(value, file)).toThrow(
@@ -883,33 +1092,33 @@ describe('buildCaptureManifestDocument and readCaptureManifest', () => {
 describe('computeRegistryDigest', () => {
 	const receipt = createReceiptFixture()
 	const entries = receipt.registry
-	const base = computeRegistryDigest({ version: 1, receipts: [receipt], entries })
+	const version = CAPTURE_VERSION
+	const base = computeRegistryDigest({ version, receipts: [receipt], entries })
 
 	it('is a SHA-256 identity that ignores the order of receipts and entries', () => {
 		const other = createReceiptFixture({ variant: 'dark-390' })
 		expect(base).toMatch(/^[a-f0-9]{64}$/u)
-		expect(computeRegistryDigest({ version: 1, receipts: [receipt, other], entries })).toBe(
-			computeRegistryDigest({ version: 1, receipts: [other, receipt], entries }),
+		expect(computeRegistryDigest({ version, receipts: [receipt, other], entries })).toBe(
+			computeRegistryDigest({ version, receipts: [other, receipt], entries }),
 		)
 	})
 
-	it('changes with the version, a receipt field, and the entry population', () => {
-		expect(computeRegistryDigest({ version: 2, receipts: [receipt], entries })).not.toBe(base)
+	it('changes with a receipt field and the entry population', () => {
 		expect(
 			computeRegistryDigest({
-				version: 1,
+				version,
 				receipts: [createReceiptFixture({ time: '2026-10-29T09:00:00.000Z' })],
 				entries,
 			}),
 		).not.toBe(base)
 		expect(
 			computeRegistryDigest({
-				version: 1,
+				version,
 				receipts: [createReceiptFixture({ inputs: { 'src/mail/view.ts': 'c'.repeat(64) } })],
 				entries,
 			}),
 		).not.toBe(base)
-		expect(computeRegistryDigest({ version: 1, receipts: [receipt], entries: [] })).not.toBe(base)
+		expect(computeRegistryDigest({ version, receipts: [receipt], entries: [] })).not.toBe(base)
 	})
 })
 
@@ -2411,6 +2620,22 @@ describe('buildCaptureArguments', () => {
 		}
 	})
 
+	it('refuses a version-1 registry for case titles with the removal and the refresh commands', () => {
+		const scratch = createScratch({ prefix: 'capture-case-titles-version-' })
+		try {
+			const file = resolve(scratch.path, 'registry.json')
+			scratch.write('registry.json', JSON.stringify({ ...createRegistryFixture(), version: 1 }))
+			const error = captureError(() => readCaptureTitles(scratch.path, file))
+			expect(isCaptureError(error) && error.code).toBe('EVIDENCE')
+			expect(error).toHaveProperty(
+				'message',
+				`Registry version 1 at ${file} is not version ${String(CAPTURE_VERSION)}, and no other version is converted. Remove ${file}, ${resolve(scratch.path, 'manifest.json')}, and ${resolve(scratch.path, 'lookups.json')}, then refresh explicitly with: capture registry, then capture frames all`,
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
 	it('selects an exact nested case and final case through a real nested Vitest run', () => {
 		const scratch = createScratch({ prefix: 'capture-selection-' })
 		try {
@@ -3654,6 +3879,15 @@ describe('readCaptureDescription', () => {
 		const failure = captureError(() => readCaptureDescription(input, EXPECTED))
 		expect(failure).toMatchObject({ code: 'HOST' })
 		expect(failure instanceof Error ? failure.message : '').toContain(message)
+	})
+
+	it.each([1, 3])('refuses a version-%j description naming this protocol version', (version) => {
+		const input = createCaptureDescriptionFixture(EXPECTED, PROJECT, { version })
+		const failure = captureError(() => readCaptureDescription(input, EXPECTED))
+		expect(failure).toMatchObject({ code: 'HOST' })
+		const message = failure instanceof Error ? failure.message : ''
+		expect(message).toContain(`expected { version: ${String(CAPTURE_VERSION)}, id: invocation id`)
+		expect(message).not.toContain(`{ version: ${String(version)},`)
 	})
 
 	it.each([undefined, null, [], 'text', 42])('refuses %j as no document', (value) => {

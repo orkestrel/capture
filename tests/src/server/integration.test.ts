@@ -1,6 +1,6 @@
 import * as core from '@src/core'
 import * as server from '@src/server'
-import { existsSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
 import { requireValue } from '@orkestrel/test'
@@ -16,6 +16,7 @@ import {
 	FIXTURE_TIMEOUT,
 	readCaptureHeld,
 	countCaptureChildren,
+	downgradeCaptureFixture,
 	VARIANTS,
 	readFixtureManifest,
 } from '../../setupServer.js'
@@ -63,8 +64,10 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		const journal: unknown = parseJSON(fixture.read(LOOKUPS).toString('utf8'))
 		if (!isCaptureLookupJournal(journal)) throw new Error('Invalid journey lookup journal')
 		expect(journal.lookups.length).toBeGreaterThan(0)
-		expect(Object.keys(journal.inputs)).toHaveLength(1)
-		expect(journal.lookups.every((entry) => journal.inputs[entry.inputs] !== undefined)).toBe(true)
+		expect(Object.keys(journal.populations)).toHaveLength(1)
+		expect(journal.lookups.every((entry) => journal.populations[entry.inputs] !== undefined)).toBe(
+			true,
+		)
 		expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
 	})
 
@@ -163,5 +166,49 @@ describe('runner over the real engine', { timeout: FIXTURE_TIMEOUT }, () => {
 		const run = await fixture.run('stale', ['pages:mail'])
 		expect(run.code).toBe(1)
 		expect(new Set(readCaptureIntegrationStatuses(run.stdout))).toEqual(new Set(['stale-own']))
+	})
+})
+
+describe('a journeys-only workspace capture 0.0.9 wrote', { timeout: FIXTURE_TIMEOUT }, () => {
+	it('names the removal and the refresh commands on each refusal, and recovers through them', async () => {
+		const earlier = new ComposedFixture({ core, server })
+		try {
+			expect((await earlier.refresh()).code).toBe(0)
+			expect((await earlier.run('journey', ['all'])).code).toBe(0)
+			expect(readFixtureManifest(earlier.root)).toBeUndefined()
+			downgradeCaptureFixture(earlier.root, COMPOSED_DIRECTORY)
+			const registry = `${COMPOSED_DIRECTORY}/registry.json`
+			const manifest = `${COMPOSED_DIRECTORY}/manifest.json`
+			const refresh = 'then refresh explicitly with: capture registry, then capture frames all'
+			const version = `is not version ${String(core.CAPTURE_VERSION)}, and no other version is converted`
+
+			const stale = await earlier.run('stale', ['all'])
+			expect(stale.code).toBe(1)
+			expect(stale.stderr).toContain(
+				`Registry version 1 at ${registry} ${version}. Remove ${registry}, ${manifest}, and ${LOOKUPS}, ${refresh}`,
+			)
+			expect(stale.stderr).not.toContain('Invalid accepted registry schema or digest')
+
+			const stages = earlier.stages.length
+			const refused = await earlier.refresh()
+			expect(refused.code).toBe(1)
+			expect(refused.stderr).toContain(
+				`Lookup journal version 1 at ${LOOKUPS} ${version}. Remove ${LOOKUPS}, ${refresh}`,
+			)
+			expect(refused.stderr).not.toContain('inspect and repair')
+			expect(earlier.stages).toHaveLength(stages)
+
+			for (const file of [registry, manifest, LOOKUPS])
+				rmSync(resolve(earlier.root, file), { force: true })
+			const recovered = await earlier.refresh()
+			expect(recovered.code === 0 ? 0 : recovered.stderr).toBe(0)
+			const frames = await earlier.run('capture', ['all'])
+			expect(frames.code === 0 ? 0 : frames.stderr).toBe(0)
+			const current = await earlier.run('stale', ['all'])
+			expect(current.code === 0 ? 0 : current.stdout).toBe(0)
+			expect(new Set(readCaptureIntegrationStatuses(current.stdout))).toEqual(new Set(['current']))
+		} finally {
+			earlier.destroy()
+		}
 	})
 })

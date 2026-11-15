@@ -7,8 +7,8 @@ import type {
 	CaptureRegistry,
 	CaptureRun,
 	CaptureStamp,
+	CaptureExpandedManifest,
 	CaptureStatus,
-	CaptureStoredManifest,
 } from '@src/core'
 import type {
 	CaptureChangePlan,
@@ -56,7 +56,6 @@ import {
 	describeCaptureIdentity,
 	describeCaptureRequest,
 	isCaptureError,
-	isCaptureLookupJournal,
 	isCaptureManifestDocument,
 	isCapturePath,
 	isCapturePattern,
@@ -98,6 +97,11 @@ import {
 	describeCaptureOutput,
 	filterCaptureInputs,
 	computeCaptureMatchKey,
+	collectCaptureProducers,
+	matchesCaptureVersionRefusal,
+	readCaptureLookupJournal,
+	requireCaptureProducer,
+	requireCaptureVersion,
 } from './helpers.js'
 
 /**
@@ -426,7 +430,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		if (request.command === 'capture' && stamps.length > 0) {
 			const inherited = Object.entries(evidence.manifest?.entries ?? {})
 			const replaced = new Set(stamps.map(resolveCaptureKey))
-			const next: CaptureStoredManifest = {
+			const next: CaptureExpandedManifest = {
 				collections,
 				version: CAPTURE_VERSION,
 				registry: evidence.registry,
@@ -488,8 +492,10 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			const variants = this.#variants(destinations, options)
 			const entries = this.#select(destinations, { ...options, variants })
 			const inputs = this.#digest(this.#options.inputs, snapshots, digests)
-			const producers = this.#producers(populated)
-			for (const variant of new Set(entries.map((entry) => this.#producer(entry, producers)))) {
+			const producers = collectCaptureProducers(populated)
+			for (const variant of new Set(
+				entries.map((entry) => requireCaptureProducer(entry, producers)),
+			)) {
 				const anchor = evidence.registry.receipts.find((receipt) => receipt.variant === variant)
 				if (anchor !== undefined && collectCaptureChanges(anchor.inputs, inputs.files).length === 0)
 					continue
@@ -509,6 +515,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				throw new CaptureError('Declaration inputs changed during the read', { code: 'EVIDENCE' })
 			return { registry: evidence.registry.digest, entries }
 		} catch (error) {
+			if (matchesCaptureVersionRefusal(error)) throw error
 			throw new CaptureError(
 				`${describeCaptureError(error)}. Prepare the explicit complete-registry refresh, or an explicit capture-free owner/case run whose full collection equals that anchor for each affected producing variant; this read starts no process.`,
 				{ code: isCaptureError(error) ? error.code : 'EVIDENCE', cause: error },
@@ -681,7 +688,11 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			const snapshots = new Map<string, CaptureFileSnapshot | undefined>()
 			const digests = new Map<string, CaptureDigest>()
 			const evidence = this.#evidence(snapshots)
-			const entries = this.#select(this.#destinations(evidence), options, this.#producers(evidence))
+			const entries = this.#select(
+				this.#destinations(evidence),
+				options,
+				collectCaptureProducers(evidence),
+			)
 			this.#uniqueRegistry(entries)
 			const cases = [...new Set(entries.map((entry) => entry.case))]
 			const [name] = cases
@@ -734,6 +745,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			})
 			return { case: name, entries, lookups }
 		} catch (error) {
+			if (matchesCaptureVersionRefusal(error)) throw error
 			throw new CaptureError(
 				`${describeCaptureError(error)}. Refresh explicitly with: capture journey ${options.selector}${options.variants.map((variant) => ` --variant ${variant}`).join('')}${options.case === undefined ? '' : ` --case ${JSON.stringify(options.case)}`}. Registry declaration changes require the complete-registry refresh: capture registry.`,
 				{ code: isCaptureError(error) ? error.code : 'EVIDENCE', cause: error },
@@ -1127,6 +1139,11 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				},
 			)
 		const registry = this.#json(this.#options.registry, paths)
+		requireCaptureVersion(registry, 'Registry', this.#options.registry, [
+			this.#options.registry,
+			this.#options.manifest,
+			this.#options.lookups,
+		])
 		if (
 			!isCaptureRegistry(registry) ||
 			registry.digest !== computeRegistryDigest(registry) ||
@@ -1187,15 +1204,13 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 					this.#path(path, paths)
 			}
 		}
-		const separate: unknown = existsSync(this.#path(this.#options.lookups, paths))
-			? this.#json(this.#options.lookups, paths)
+		const separate = existsSync(this.#path(this.#options.lookups, paths))
+			? readCaptureLookupJournal(this.#json(this.#options.lookups, paths), this.#options.lookups)
 			: undefined
-		if (separate !== undefined && !isCaptureLookupJournal(separate))
-			throw new CaptureError('Invalid separate lookup schema', { code: 'EVIDENCE' })
 		const manifestDigest = this.#file(this.#options.manifest, snapshots, paths)?.image.digest
 		const current =
 			separate !== undefined && separate.manifest === manifestDigest
-				? readCaptureLookups(separate)
+				? readCaptureLookups(separate, this.#options.lookups)
 				: []
 		const lookups = mergeCaptureLookups(manifest?.lookups ?? [], current).filter(
 			(entry) => entry.registry === registry.digest,
@@ -1404,7 +1419,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			...new Set(
 				producers === undefined
 					? entries.map((entry) => entry.variant)
-					: entries.map((entry) => this.#producer(entry, producers)),
+					: entries.map((entry) => requireCaptureProducer(entry, producers)),
 			),
 		]
 		const unknown = options.variants.find((variant) => !variants.includes(variant))
@@ -1416,7 +1431,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		const selected = scoped.filter(
 			(entry) =>
 				options.variants.includes(
-					producers === undefined ? entry.variant : this.#producer(entry, producers),
+					producers === undefined ? entry.variant : requireCaptureProducer(entry, producers),
 				) &&
 				(options.state === undefined || entry.state === options.state) &&
 				(options.case === undefined || entry.case === options.case),
@@ -1429,35 +1444,6 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				},
 			)
 		return selected
-	}
-
-	#producers(evidence: CaptureEvidence): ReadonlyMap<string, readonly string[]> {
-		const sources = [...evidence.registry.receipts, ...evidence.runs.map((entry) => entry.run)]
-		const attributions = Map.groupBy(
-			sources.flatMap((source) =>
-				source.registry.map((entry) => ({
-					description: describeCaptureDestination(entry),
-					variant: source.variant,
-				})),
-			),
-			(entry) => entry.description,
-		)
-		return new Map(
-			[...attributions].map(([description, entries]) => [
-				description,
-				[...new Set(entries.map((entry) => entry.variant))],
-			]),
-		)
-	}
-
-	#producer(
-		destination: CaptureDestination,
-		producers: ReadonlyMap<string, readonly string[]>,
-	): string {
-		const variants = producers.get(describeCaptureDestination(destination)) ?? []
-		if (variants.length !== 1 || variants[0] === undefined)
-			throw new CaptureError('Destination has no unique producing variant', { code: 'EVIDENCE' })
-		return variants[0]
 	}
 
 	#reportPath(args: readonly string[], paths?: Map<string, string>): string {

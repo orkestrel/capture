@@ -35,7 +35,7 @@ import {
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { CONSUMER_DIRECTORY, CONSUMER_SOURCES } from './fixtures/capture/consumer/constants.js'
-import { createDeclarationFixture, createRequestFixture } from './setup.js'
+import { FIXTURE_HASH, createDeclarationFixture, createRequestFixture } from './setup.js'
 import {
 	CAPTURE_ARMS,
 	CAPTURE_CONSUMER_FIXTURE,
@@ -127,6 +127,7 @@ import {
 	isFixtureWrite,
 	placeFixtureFailure,
 	readFixtureManifest,
+	downgradeCaptureFixture,
 	withEnvironment,
 	writeFixtureDescription,
 	buildCaptureRacingScopes,
@@ -555,6 +556,55 @@ describe('readFixtureManifest', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(readFixtureManifest(fixture.root)).toBe('{"exact":true}\n')
 		} finally {
 			fixture.destroy()
+		}
+	})
+})
+
+describe('downgradeCaptureFixture', () => {
+	it('writes version 1 on the registry, each receipt, and the journal, and the journal table as inputs', () => {
+		const scratch = createScratch({ prefix: 'capture-downgrade-' })
+		try {
+			const table = { [FIXTURE_HASH]: { 'src/a.ts': FIXTURE_HASH } }
+			scratch.write(
+				'states/registry.json',
+				JSON.stringify({ version: 2, receipts: [{ version: 2, variant: 'wide' }], digest: 'd' }),
+			)
+			scratch.write(
+				'states/lookups.json',
+				JSON.stringify({ version: 2, manifest: 'm', populations: table, lookups: [] }),
+			)
+			downgradeCaptureFixture(scratch.path, 'states')
+			expect(
+				parseJSON(readFileSync(resolve(scratch.path, 'states/registry.json'), 'utf8')),
+			).toEqual({
+				version: 1,
+				receipts: [{ version: 1, variant: 'wide' }],
+				digest: 'd',
+			})
+			expect(parseJSON(readFileSync(resolve(scratch.path, 'states/lookups.json'), 'utf8'))).toEqual(
+				{
+					version: 1,
+					manifest: 'm',
+					inputs: table,
+					lookups: [],
+				},
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('refuses a workspace with no journal', () => {
+		const scratch = createScratch({ prefix: 'capture-downgrade-' })
+		try {
+			scratch.write('states/registry.json', JSON.stringify({ version: 2, receipts: [] }))
+			expect(() => downgradeCaptureFixture(scratch.path, 'states')).toThrow('ENOENT')
+			scratch.write('states/lookups.json', '[]')
+			expect(() => downgradeCaptureFixture(scratch.path, 'states')).toThrow(
+				'The workspace holds no registry and lookup journal to downgrade',
+			)
+		} finally {
+			scratch.destroy()
 		}
 	})
 })

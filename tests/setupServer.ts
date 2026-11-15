@@ -8,7 +8,7 @@ import type {
 	CaptureRegistry,
 	CaptureRequest,
 	CaptureRun,
-	CaptureStoredManifest,
+	CaptureExpandedManifest,
 	CaptureViewport,
 } from '@src/core'
 import type { ExecuteResult, ProcessCommand } from '@orkestrel/process'
@@ -1051,6 +1051,39 @@ export function readFixtureManifest(root: string): string | undefined {
 		if (isError(error) && 'code' in error && error.code === 'ENOENT') return undefined
 		throw error
 	}
+}
+
+/**
+ * Rewrites a workspace's registry and lookup journal in the version-1 shape capture 0.0.9 wrote.
+ *
+ * @remarks
+ * Version 1 declares version 1 on the registry, on each receipt, and on the journal, and names the
+ * journal's table `inputs`. The registry keeps the digest the refresh wrote: a reader refuses its
+ * version before it reads that digest.
+ *
+ * @param root - The workspace root
+ * @param directory - The workspace-relative evidence directory that holds both documents
+ * @throws Thrown when either document is missing or is no record.
+ */
+export function downgradeCaptureFixture(root: string, directory: string): void {
+	const registryFile = resolve(root, directory, 'registry.json')
+	const journalFile = resolve(root, directory, 'lookups.json')
+	const registry: unknown = parseJSON(readFileSync(registryFile, 'utf8'))
+	const journal: unknown = parseJSON(readFileSync(journalFile, 'utf8'))
+	if (!isRecord(registry) || !isArray(registry.receipts) || !isRecord(journal))
+		throw new Error('The workspace holds no registry and lookup journal to downgrade')
+	const { populations, ...rest } = journal
+	writeFileSync(
+		registryFile,
+		JSON.stringify({
+			...registry,
+			version: 1,
+			receipts: registry.receipts.map((receipt) =>
+				isRecord(receipt) ? { ...receipt, version: 1 } : receipt,
+			),
+		}),
+	)
+	writeFileSync(journalFile, JSON.stringify({ ...rest, version: 1, inputs: populations }))
 }
 
 /** Names the request directory, relative to the workspace, that the non-Veneer consumer declares. */
@@ -2439,7 +2472,7 @@ export class CaptureConsumer {
 		return registry
 	}
 
-	async manifest(): Promise<CaptureStoredManifest> {
+	async manifest(): Promise<CaptureExpandedManifest> {
 		const { readCaptureManifest } = await import('@src/server')
 		const file = 'tmp/captures/states/manifest.json'
 		return readCaptureManifest(this.read(file), file)
@@ -3654,7 +3687,7 @@ export class IntegrityFixture {
 		const imports = receipts.map((receipt) => ({ receipt, report: text, outcome, capped: false }))
 		this.#imports.push(...imports)
 		// Collision controls deliberately bypass the importer so check() sees the malformed external population.
-		const raw = {
+		const raw: Pick<CaptureRegistry, 'version' | 'receipts' | 'entries'> = {
 			version: this.modules.core.CAPTURE_VERSION,
 			receipts,
 			entries: receipts.flatMap((receipt) => receipt.registry),
