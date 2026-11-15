@@ -34,7 +34,7 @@ import {
 	readCaptureViewport,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { CONSUMER_SOURCES } from './fixtures/capture/consumer/constants.js'
+import { CONSUMER_DIRECTORY, CONSUMER_SOURCES } from './fixtures/capture/consumer/constants.js'
 import { createDeclarationFixture, createRequestFixture } from './setup.js'
 import {
 	CAPTURE_ARMS,
@@ -44,7 +44,11 @@ import {
 	CAPTURE_POPULATION_COPIES,
 	CAPTURE_POPULATION_INPUTS,
 	CAPTURE_POPULATION_REFUSALS,
+	CAPTURE_POPULATION_SHARED,
+	CAPTURE_POPULATION_SOURCES,
 	CAPTURE_SCALES,
+	CAPTURE_POPULATION_DIRECTORY,
+	PopulationFixture,
 	CAPTURE_SPAN_REFUSALS,
 	buildPopulationCases,
 	computeCapturePhases,
@@ -1368,6 +1372,44 @@ describe('writeCapturePopulation', () => {
 		},
 	)
 
+	it('declares the consumer fixture directory, shared sources, and test sources', () => {
+		expect(CAPTURE_POPULATION_DIRECTORY).toBe(CONSUMER_DIRECTORY)
+		expect(CAPTURE_POPULATION_SOURCES).toEqual(CONSUMER_SOURCES)
+	})
+
+	it('writes the veneer kind at the full scale with shared patterns that match most of its inputs', async () => {
+		const scratch = createScratch({ prefix: 'capture-population-' })
+		try {
+			const population = {
+				...CAPTURE_SCALES.full,
+				...CAPTURE_ARMS.veneer,
+				shared: CAPTURE_POPULATION_SHARED,
+			}
+			writeCapturePopulation(scratch.path, population)
+			const inputs = Object.keys(readCaptureInputs(scratch.path, CAPTURE_POPULATION_INPUTS))
+			const shared = Object.keys(readCaptureInputs(scratch.path, CAPTURE_POPULATION_SHARED))
+			expect(inputs).toHaveLength(population.inputs)
+			expect(shared.length * 2).toBeGreaterThan(inputs.length)
+			expect(shared.every((file) => inputs.includes(file))).toBe(true)
+			for (const pattern of CAPTURE_POPULATION_SHARED)
+				expect(Object.keys(readCaptureInputs(scratch.path, [pattern])).length).toBeGreaterThan(0)
+			// Each owner's own source and every spec stay outside the shared patterns.
+			expect(
+				shared.filter((file) => /^src\/part\d+\.ts$/u.test(file) || file.startsWith('specs/')),
+			).toEqual([])
+			const constants: unknown = await import(
+				pathToFileURL(resolve(scratch.path, 'specs/constants.ts')).href
+			)
+			expect(constants).toMatchObject({
+				CONSUMER_SOURCES: { shared: CAPTURE_POPULATION_SHARED, tests: CONSUMER_SOURCES.tests },
+				CONSUMER_FIRST: CAPTURE_ARMS.veneer.first,
+				CONSUMER_VARIANTS: CAPTURE_ARMS.veneer.variants,
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+
 	it('writes no filler at the least input count its fixed files and owner sources need', () => {
 		const scratch = createScratch({ prefix: 'capture-population-' })
 		try {
@@ -1395,6 +1437,104 @@ describe('writeCapturePopulation', () => {
 			} finally {
 				scratch.destroy()
 			}
+		},
+	)
+})
+
+describe('PopulationFixture', { timeout: FIXTURE_TIMEOUT }, () => {
+	it.for([
+		{ title: 'base arm', population: { ...CAPTURE_SCALES.rehearsal, ...CAPTURE_ARMS.base } },
+		{
+			title: 'veneer kind',
+			population: {
+				...CAPTURE_SCALES.rehearsal,
+				...CAPTURE_ARMS.veneer,
+				shared: CAPTURE_POPULATION_SHARED,
+			},
+		},
+	])(
+		'stamps, reads, and checks every destination of the $title through the engine',
+		async ({ population }) => {
+			const fixture = new PopulationFixture({ core, server }, population)
+			try {
+				const variants = population.variants.map((variant) => variant.name)
+				const total = population.states * variants.length
+				const shared = Object.keys(
+					readCaptureInputs(fixture.root, fixture.population.shared ?? CONSUMER_SOURCES.shared),
+				)
+				const stage = await fixture.engine.stamp(fixture.stage())
+				expect(stage.entries).toHaveLength(total)
+				expect(stage.lookups).toHaveLength(total)
+				const manifest: unknown = parseJSON(
+					readFileSync(resolve(fixture.root, fixture.options.manifest), 'utf8'),
+				)
+				if (!core.isCaptureStoredManifest(manifest)) throw new Error('Invalid population manifest')
+				const stamps = Object.values(manifest.entries)
+				expect(stamps).toHaveLength(total)
+				expect(new Set(stamps.map((stamp) => stamp.variant))).toEqual(new Set(variants))
+				for (const stamp of stamps)
+					expect(Object.keys(stamp.shared.files).toSorted()).toEqual(shared)
+				expect(manifest.lookups).toHaveLength(total)
+				for (const lookup of manifest.lookups)
+					expect(Object.keys(lookup.inputs)).toHaveLength(population.inputs)
+				// A second stage replaces every stamp and lookup rather than adding to them.
+				await fixture.engine.stamp(fixture.stage())
+				const next: unknown = parseJSON(
+					readFileSync(resolve(fixture.root, fixture.options.manifest), 'utf8'),
+				)
+				if (!core.isCaptureStoredManifest(next)) throw new Error('Invalid population manifest')
+				expect(Object.keys(next.entries)).toHaveLength(total)
+				expect(next.lookups).toHaveLength(total)
+				const read = await fixture.engine.read({ selector: 'all' })
+				expect(read.entries).toHaveLength(total)
+				const check = await fixture.engine.check({ selector: 'all' })
+				expect(check.entries).toHaveLength(total)
+				expect(check.entries.filter((entry) => entry.status !== 'current')).toEqual([])
+				expect(
+					readdirSync(resolve(fixture.root, CAPTURE_POPULATION_DIRECTORY, 'pages')).toSorted(),
+				).toEqual(
+					buildPopulationCases(population)
+						.flatMap(({ state }) => variants.map((variant) => `${state}--${variant}.png`))
+						.toSorted(),
+				)
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+
+	it.for([
+		{
+			title: 'stale-shared on every destination of the veneer kind',
+			population: {
+				...CAPTURE_SCALES.rehearsal,
+				...CAPTURE_ARMS.veneer,
+				shared: CAPTURE_POPULATION_SHARED,
+			},
+			status: 'stale-shared',
+		},
+		{
+			title: 'current on every destination of the base arm',
+			population: { ...CAPTURE_SCALES.rehearsal, ...CAPTURE_ARMS.base },
+			status: 'current',
+		},
+	])('reads a filler edit as $title', async ({ population, status }) => {
+		const fixture = new PopulationFixture({ core, server }, population)
+		try {
+			await fixture.engine.stamp(fixture.stage())
+			writeFileSync(resolve(fixture.root, 'src/filler/0.ts'), 'export const FILLER = -1\n')
+			const check = await fixture.engine.check({ selector: 'all' })
+			expect(check.entries).toHaveLength(population.states * population.variants.length)
+			expect(check.entries.filter((entry) => entry.status !== status)).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it.for(CAPTURE_POPULATION_REFUSALS)(
+		'refuses $title with the population writer reason',
+		({ population, reason }) => {
+			expect(() => new PopulationFixture({ core, server }, population)).toThrow(reason)
 		},
 	)
 })
