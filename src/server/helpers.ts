@@ -3010,6 +3010,25 @@ export async function buildCaptureWrapper<TProject>(
 			`Invalid variant name; ${describeCaptureFault(`variants[${String(invalid)}].name`, options.variants[invalid]?.name, 'a portable nonempty identity segment')}`,
 			{ code: 'HOST' },
 		)
+	// A scratch directory is emptied when capture is off, so it must not overlap a root it would empty.
+	const roots = [options.directory, ...options.portfolios.map((entry) => entry.directory)]
+	for (const variant of options.variants) {
+		const scratch = resolve(
+			root,
+			dirname(options.directory),
+			`${CAPTURE_WRAPPER_PREFIXES.scratch}${variant.name}`,
+		)
+		const overlap = roots.find((entry) =>
+			[relative(resolve(root, entry), scratch), relative(scratch, resolve(root, entry))].some(
+				(step) => step === '' || (!step.startsWith('..') && !isAbsolute(step)),
+			),
+		)
+		if (overlap !== undefined)
+			throw new CaptureError(
+				`Invalid evidence root; the no-capture scratch directory ${resolveCaptureRelative(root, scratch)} of variant ${variant.name} overlaps ${overlap}, which it would empty`,
+				{ code: 'HOST' },
+			)
+	}
 	const config = resolveCaptureRelative(root, path.value)
 	const argv = process.argv.slice(1)
 	const capture = process.env[CAPTURE_FLAG] === CAPTURE_FLAG_VALUE

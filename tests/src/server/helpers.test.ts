@@ -4520,6 +4520,52 @@ describe('buildCaptureWrapper', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 
+	it.each([
+		{ directory: 'no-capture-wide', portfolio: 'states' },
+		{ directory: 'states', portfolio: 'no-capture-wide/frames' },
+	])(
+		'refuses a scratch directory that overlaps the evidence root $directory or portfolio root $portfolio, before emptying any directory',
+		async ({ directory, portfolio }) => {
+			const scratch = createScratch({ parent: resolve('tmp'), prefix: 'wrapper-' })
+			const named: string[] = []
+			try {
+				const base = resolveCaptureRelative(process.cwd(), scratch.path)
+				scratch.write(`${directory}/registry.json`, 'kept')
+				scratch.write(`${portfolio}/frame.png`, 'kept')
+				const failure = await withEnvironment(
+					{ [CAPTURE_REQUESTS_FLAG]: resolve(scratch.path, 'requests'), [CAPTURE_FLAG]: '0' },
+					async () =>
+						await readCaptureRejection(
+							buildCaptureWrapper({
+								url: pathToFileURL(resolve(scratch.path, 'journey.config.ts')).href,
+								variants: [{ name: 'wide', width: 480, height: 320 }],
+								owners: ['pages:mail'],
+								first: 'wide',
+								final: RUNNER_FINAL,
+								directory: `${base}/${directory}`,
+								inputs: ['src/**'],
+								sources: { shared: [], tests: ['specs/**'] },
+								portfolios: [
+									{ portfolio: 'states', directory: `${base}/${portfolio}`, scoped: true },
+								],
+								project: (variant, override) =>
+									named.push(variant.name, override.test.provide.record),
+							}),
+						),
+				)
+				expect.soft(failure).toMatchObject({
+					code: 'HOST',
+					message: expect.stringContaining('no-capture-wide'),
+				})
+				expect.soft(scratch.read(`${directory}/registry.json`)).toBe('kept')
+				expect.soft(scratch.read(`${portfolio}/frame.png`)).toBe('kept')
+				expect(named).toEqual([])
+			} finally {
+				scratch.destroy()
+			}
+		},
+	)
+
 	it.each(['a/../src', '..', 'a b', ''])(
 		'refuses variant name %j, which is no capture segment, before emptying any directory',
 		async (name) => {

@@ -380,8 +380,8 @@ export function readCaptureReport(value: unknown): CaptureReport {
 	)
 	requireCaptureUnique(assertions.map(resolveLookupKey), 'reporter case identities')
 	return {
-		start: Math.min(value.startTime, ...files.map((file) => file.start)),
-		end: Math.max(...files.map((file) => file.end)),
+		start: files.reduce((start, file) => Math.min(start, file.start), value.startTime),
+		end: files.reduce((end, file) => Math.max(end, file.end), -Infinity),
 		assertions,
 	}
 }

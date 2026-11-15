@@ -21,7 +21,7 @@ The manifest declares these peer ranges; install the browser peers when you run 
 | `vitest`                     | `^5.1.0`  | Yes                      |
 | `vite`                       | `^8.3.8`  | Yes                      |
 | `@vitest/browser-playwright` | `^5.0.5`  | Optional                 |
-| `playwright`                 | `^1.61.0` | Optional                 |
+| `playwright`                 | `^1.65.0` | Optional                 |
 | `@orkestrel/test`            | `~0.0.41` | Yes                      |
 
 ## Requirements
