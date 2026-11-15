@@ -14,6 +14,7 @@ import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { attempt, parseJSON } from '@orkestrel/contract'
 import {
+	CAPTURE_OWNER_PREFIX,
 	CAPTURE_REGISTRY_FILE,
 	CAPTURE_VERSION,
 	CaptureError,
@@ -32,7 +33,6 @@ import { CaptureIntegrity } from './CaptureIntegrity.js'
 import { CaptureInvocation } from './CaptureInvocation.js'
 import {
 	CAPTURE_EXIT,
-	CAPTURE_OWNER_PREFIX,
 	CAPTURE_REGISTRY_LINE,
 	CAPTURE_REGISTRY_STAGE,
 	CAPTURE_RUNS_DIRECTORY,

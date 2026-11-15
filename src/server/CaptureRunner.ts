@@ -1,4 +1,4 @@
-import type { CaptureRequest } from '@src/core'
+import type { CapturePortfolioRoot, CaptureRequest } from '@src/core'
 import type {
 	CaptureChangePlan,
 	CaptureIntegrityInterface,
@@ -6,7 +6,6 @@ import type {
 	CaptureInvocationInterface,
 	CaptureOutcome,
 	CaptureOwnerOutcome,
-	CapturePortfolioRoot,
 	CaptureProject,
 	CaptureRunnerArguments,
 	CaptureRunnerInterface,
@@ -21,6 +20,7 @@ import { attempt } from '@orkestrel/contract'
 import {
 	CAPTURE_LOOKUPS_FILE,
 	CAPTURE_MANIFEST_FILE,
+	CAPTURE_OWNER_PREFIX,
 	CAPTURE_REGISTRY_FILE,
 	CaptureError,
 	describeCaptureError,
@@ -33,7 +33,6 @@ import { CaptureInvocation } from './CaptureInvocation.js'
 import {
 	CAPTURE_COMMAND_NAMES,
 	CAPTURE_EXIT,
-	CAPTURE_OWNER_PREFIX,
 	CAPTURE_RUNS_DIRECTORY,
 	CAPTURE_STAGES,
 	CAPTURE_VITEST_ENTRY,

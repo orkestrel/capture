@@ -35,6 +35,7 @@ import {
 	isCaptureRun,
 	isCaptureStoredManifest,
 	matchesCaptureSelector,
+	readCaptureArtifact,
 	resolveCaptureKey,
 	resolveCaptureOwner,
 } from '@src/core'
@@ -403,7 +404,7 @@ export class CapturePreflight implements CapturePreflightInterface {
 			if (!outcome.success)
 				return { entry, artifact: undefined, issues: [describeCaptureError(outcome.error)] }
 			const artifact = outcome.value
-			const lines = artifact.text.split(/\r\n|\n/u)
+			const lines = readCaptureArtifact(artifact.text)
 			const covered =
 				artifact.run.passed.includes(location.value.case) &&
 				artifact.run.entries.some(
@@ -414,10 +415,10 @@ export class CapturePreflight implements CapturePreflightInterface {
 				artifact,
 				issues: [
 					...(covered ? [] : [`Judged record does not cover ${entry.file}: ${artifact.record}`]),
-					...(lines.includes(`record=${artifact.record}`)
+					...(lines.records.includes(artifact.record)
 						? []
 						: [`Judged journey artifact does not cover its record: ${artifact.file}`]),
-					...(lines.includes(`case-ran=${location.value.case}`)
+					...(lines.cases.includes(location.value.case)
 						? []
 						: [`Judged journey artifact does not cover ${location.value.case}: ${artifact.file}`]),
 				],

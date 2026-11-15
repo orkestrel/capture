@@ -143,16 +143,6 @@ export const CAPTURE_COMMAND_OPTIONS = Object.freeze({
 export const CAPTURE_TAG_OPERATORS: readonly string[] = Object.freeze(['and', 'or', 'not'])
 
 /**
- * Names the tag prefix that marks a case's owner path and each ancestor of it.
- *
- * @example
- * ```ts
- * `${CAPTURE_OWNER_PREFIX}pages:mail` // 'owner:pages:mail'
- * ```
- */
-export const CAPTURE_OWNER_PREFIX = 'owner:'
-
-/**
  * Names the environment variable that turns frame capture on for a Vitest child.
  *
  * @example
