@@ -17,6 +17,7 @@ import { isArray, isRecord, parseJSON } from '@orkestrel/contract'
 import {
 	captureError,
 	createHostileValues,
+	createRecorder,
 	waitForCondition,
 	waitForAbort,
 	waitForDelay,
@@ -124,6 +125,8 @@ import {
 	readFixtureManifest,
 	withEnvironment,
 	writeFixtureDescription,
+	buildCaptureRacingScopes,
+	createCaptureWatchedPicture,
 } from './setupServer.js'
 describe('H1 shared infrastructure', () => {
 	it('X7 round 4 stops a real detached fixture and returns false once it has exited', async () => {
@@ -585,6 +588,27 @@ describe('withEnvironment', () => {
 			}),
 		).rejects.toBe(failure)
 		expect(name in process.env).toBe(false)
+	})
+})
+
+describe('createCaptureWatchedPicture', () => {
+	it('reports each read of its pixel buffer and none of its geometry', () => {
+		const reads = createRecorder<readonly []>()
+		const picture = createCaptureWatchedPicture(3, 2, reads.handler)
+		expect([picture.width, picture.height]).toEqual([3, 2])
+		expect(reads.count).toBe(0)
+		expect(picture.pixels).toHaveLength(0)
+		expect(reads.count).toBe(1)
+	})
+})
+
+describe('buildCaptureRacingScopes', () => {
+	it('runs the action before every membership check and answers each as the plain list does', () => {
+		const actions = createRecorder<readonly []>()
+		const scopes = buildCaptureRacingScopes(['pages', 'shell'], actions.handler)
+		expect([scopes.includes('pages'), scopes.includes('board')]).toEqual([true, false])
+		expect(actions.count).toBe(2)
+		expect([...scopes]).toEqual(['pages', 'shell'])
 	})
 })
 

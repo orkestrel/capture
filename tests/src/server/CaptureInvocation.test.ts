@@ -142,7 +142,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 			fixture.scratch.write(request, '{}\n')
 			fixture.scratch.write(temporary, 'unknown claim bytes')
 			fixture.scratch.write(marker, holder)
-			expect(invocation.holders()).toEqual([dead])
+			expect(invocation.holders()).toEqual([{ pid: dead, inspected: false }])
 			const refusal = attempt(() => invocation.prepare())
 			expect(refusal).toMatchObject({
 				success: false,
@@ -1856,11 +1856,31 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 				'unrelated.txt',
 			])
 				scratch.write(`${RUNNER_REQUESTS}/${name}`, `bytes of ${name}`)
-			expect(invocation.holders().toSorted()).toEqual([live.pid, process.pid].toSorted())
+			const holders = invocation.holders()
+			expect(holders.map((holder) => holder.pid).toSorted()).toEqual(
+				[live.pid, process.pid].toSorted(),
+			)
+			expect(holders.map((holder) => holder.inspected)).toEqual([true, true])
 			// Listing changes nothing: the dead process's file is pruned by `prepare`, not by this read.
 			expect(scratch.has(`${RUNNER_REQUESTS}/journey-selection-${String(dead)}.json`)).toBe(true)
 		} finally {
 			await stopFixtureChild(live)
+			fixture.destroy()
+		}
+	})
+
+	it('reads a request naming a pid above the process id range as malformed: no holder lists it and the sweep keeps it', async () => {
+		const fixture = new InvocationFixture({ core, server })
+		try {
+			const { invocation, scratch } = fixture
+			const request = `${RUNNER_REQUESTS}/journey-selection-4294967296.json`
+			scratch.write(request, 'bytes of an out-of-range request')
+			expect(invocation.holders()).toEqual([])
+			invocation.prepare()
+			expect(scratch.read(request)).toBe('bytes of an out-of-range request')
+			expect(invocation.holders()).toEqual([])
+			await invocation.release()
+		} finally {
 			fixture.destroy()
 		}
 	})

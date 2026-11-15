@@ -430,6 +430,19 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 
+	it('refreshes beside a request file naming a pid above the process id range, and keeps that file', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			const malformed = `${COMPOSED_REQUESTS}/journey-selection-4294967296.json`
+			fixture.write(malformed, 'malformed')
+			const run = await fixture.refresh()
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+			expect(fixture.read(malformed).toString('utf8')).toBe('malformed')
+		} finally {
+			fixture.destroy()
+		}
+	})
+
 	it('ends the running child on an interrupt and publishes nothing', async () => {
 		const fixture = new ComposedFixture({ core, server })
 		try {

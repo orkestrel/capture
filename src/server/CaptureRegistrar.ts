@@ -42,6 +42,7 @@ import {
 	buildCaptureArguments,
 	requireCaptureContained,
 	describeCaptureFault,
+	describeCaptureHolders,
 	buildCaptureIntegrityOptions,
 	buildCaptureRegistry,
 	computeCaptureHash,
@@ -178,8 +179,8 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		const holders = invocation.holders()
 		if (holders.length > 0)
 			throw new CaptureError(
-				`Another runner holds this workspace (process ${holders.join(', ')}); the registry refresh starts only while no runner is mid-stage`,
-				{ code: 'STAGE', context: { holders } },
+				`${describeCaptureHolders(holders, this.#options.requests)}; the registry refresh starts only while no runner is mid-stage`,
+				{ code: 'STAGE', context: { holders: holders.map((holder) => holder.pid) } },
 			)
 		// A receipt this run keeps must still match its reporter bytes, so an altered one refuses before any journey runs.
 		const retained = parsed.variants.length === 0 ? [] : this.#retain(target, variants, declared)

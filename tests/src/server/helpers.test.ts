@@ -1,6 +1,6 @@
-import type { CaptureProducer } from '@src/server'
+import type { CapturePicture, CaptureProducer } from '@src/server'
 import * as server from '@src/server'
-import { captureError, captureProduction } from '@orkestrel/test'
+import { captureError, captureProduction, createRecorder } from '@orkestrel/test'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
@@ -105,6 +105,8 @@ import {
 	buildCaptureOverride,
 	buildCaptureWrapper,
 	readCaptureFrames,
+	readCaptureListing,
+	describeCaptureHolders,
 	readCaptureProgress,
 	renderCaptureProgress,
 } from '@src/server'
@@ -131,6 +133,7 @@ import {
 	buildCaptureArgumentFaults,
 	buildCaptureComposeRefusals,
 	createCaptureGeometry,
+	createCaptureWatchedPicture,
 	createCaptureImportInput,
 	createPngBytes,
 	ALPHA_PICTURE,
@@ -156,6 +159,7 @@ import {
 	createThumbnailPicture,
 	averageThumbnailPicture,
 	buildCaptureProgressLines,
+	buildCaptureRacingScopes,
 	FIXTURE_TIMEOUT,
 } from '../../setupServer.js'
 describe('H1 extracted pure leaves', () => {
@@ -413,17 +417,29 @@ describe('readCaptureOptions', () => {
 		).toEqual(['variant', 'variant', 'case'])
 	})
 
-	it('reads --no-bail as a false bail, and --bail as the default true one', () => {
+	it('reads --no-bail as a false bail and its absence as the default true one', () => {
 		const usage = 'Usage: capture journey <selector>'
 		expect(
 			readCaptureOptions(['app', '--no-bail'], CAPTURE_COMMAND_OPTIONS.journey, usage).values.bail,
 		).toBe(false)
-		expect(
-			readCaptureOptions(['app', '--bail'], CAPTURE_COMMAND_OPTIONS.journey, usage).values.bail,
-		).toBe(true)
 		expect(readCaptureOptions(['app'], CAPTURE_COMMAND_OPTIONS.journey, usage).values.bail).toBe(
 			true,
 		)
+	})
+
+	it.each([
+		['journey', ['pages:mail', '--bail']],
+		['capture', ['pages:mail', '--bail']],
+		['registry', ['--bail']],
+	] as const)('refuses the positive --bail form under %s, naming --no-bail', (command, argv) => {
+		const error = captureError(() =>
+			readCaptureOptions(argv, CAPTURE_COMMAND_OPTIONS[command], 'Usage: capture'),
+		)
+		expect(error).toMatchObject({
+			code: 'USAGE',
+			message: expect.stringContaining("'--bail'"),
+		})
+		expect(String(error)).toContain('--no-bail')
 	})
 
 	it.each([
@@ -1290,6 +1306,26 @@ describe('composeCapturePictures', () => {
 			),
 		).toMatchObject({ width: side, height: 1 })
 	})
+
+	it.each([false, true])(
+		'C3 refuses a picture count whose composite passes the side before any pixel work (vertical %s)',
+		(vertical) => {
+			const reads = createRecorder<readonly []>()
+			const picture = createCaptureWatchedPicture(0, 0, reads.handler)
+			// Eight times the side passes the argument count one spread call takes on Node's default stack.
+			const count = CAPTURE_PNG_LIMITS.side * 8
+			const error = captureError(() =>
+				composeCapturePictures(new Array<CapturePicture>(count).fill(picture), vertical),
+			)
+			expect(error).toMatchObject({ name: 'CaptureError', code: 'EVIDENCE' })
+			expect(String(error)).toContain(
+				vertical
+					? `composite is 0 × ${String(6 * (count - 1))}`
+					: `composite is ${String(6 * (count - 1))} × 0`,
+			)
+			expect(reads.count).toBe(0)
+		},
+	)
 })
 
 describe('pixel loops', () => {
@@ -1500,6 +1536,9 @@ describe('readCaptureRequestOwner', () => {
 		{ name: 'journey-selection-4242.json.bak', expected: undefined },
 		{ name: 'prefix-journey-selection-4242.json', expected: undefined },
 		{ name: 'journey-selection-99999999999999999999.json', expected: undefined },
+		{ name: 'journey-selection-2147483647.json', expected: 2_147_483_647 },
+		{ name: 'journey-selection-2147483648.json', expected: undefined },
+		{ name: 'journey-selection-4294967296.json.tmp', expected: undefined },
 		{ name: '', expected: undefined },
 	])('reads $name as $expected', ({ name, expected }) => {
 		expect(readCaptureRequestOwner(name)).toBe(expected)
@@ -2008,12 +2047,15 @@ describe('buildCaptureArguments', () => {
 			expect(error instanceof Error ? error.message : '').toContain('valid values come from')
 		}
 	})
-	it('H1r reads each supported installed major and refuses an unsupported manifest', () => {
+	it('H1r reads the installed Vitest 5 separator and refuses every other major', () => {
 		const scratch = createScratch({ prefix: 'capture-vitest-major-' })
 		try {
 			const entry = resolve(scratch.path, 'node_modules/vitest/vitest.mjs')
 			scratch.write('node_modules/vitest/package.json', JSON.stringify({ version: '4.1.12' }))
-			expect(readCaptureSeparator(entry)).toBe(' ')
+			expect(captureError(() => readCaptureSeparator(entry))).toMatchObject({
+				code: 'HOST',
+				message: expect.stringContaining('vitest.version: received "4.1.12"'),
+			})
 			scratch.write('node_modules/vitest/package.json', JSON.stringify({ version: '5.0.5' }))
 			expect(readCaptureSeparator(entry)).toBe(' > ')
 			const args = buildCaptureArguments({
@@ -2031,63 +2073,55 @@ describe('buildCaptureArguments', () => {
 			scratch.destroy()
 		}
 	})
-	it.each(['4.1.12', '5.0.5'])(
-		'H1v reads Vitest %s space-joined JSON reporter titles and refuses altered bytes',
-		(version) => {
-			const scratch = createScratch({ prefix: `capture-case-titles-${version}-` })
-			try {
-				const report = JSON.stringify({
-					numTotalTests: 1,
-					success: true,
-					testResults: [
-						{
-							name: '/workspace/tests/journey.test.ts',
-							assertionResults: [
-								{
-									fullName: 'tests/journey.test.ts outer suite inner case',
-									ancestorTitles: ['tests/journey.test.ts', 'outer suite'],
-									title: 'inner case',
-									status: 'passed',
-									duration: 1,
-									failureMessages: [],
-								},
-							],
-						},
-					],
-				})
-				scratch.write('report.json', report)
-				const receipt = createReceiptFixture({
-					report: { file: 'report.json', digest: computeCaptureHash(report) },
-				})
-				scratch.write(
-					'registry.json',
-					JSON.stringify(createRegistryFixture({ receipts: [receipt] })),
-				)
-				expect(readCaptureTitles(scratch.path, resolve(scratch.path, 'registry.json'))).toEqual({
-					'tests/journey.test.ts outer suite inner case': [
-						'tests/journey.test.ts',
-						'outer suite',
-						'inner case',
-					],
-				})
-				scratch.write('report.json', `${report}\n`)
-				expect(() =>
-					readCaptureTitles(scratch.path, resolve(scratch.path, 'registry.json')),
-				).toThrow('digest differs')
-			} finally {
-				scratch.destroy()
-			}
-		},
-	)
+	it('H1v reads space-joined JSON reporter titles and refuses altered bytes', () => {
+		const scratch = createScratch({ prefix: 'capture-case-titles-' })
+		try {
+			const report = JSON.stringify({
+				numTotalTests: 1,
+				success: true,
+				testResults: [
+					{
+						name: '/workspace/tests/journey.test.ts',
+						assertionResults: [
+							{
+								fullName: 'tests/journey.test.ts outer suite inner case',
+								ancestorTitles: ['tests/journey.test.ts', 'outer suite'],
+								title: 'inner case',
+								status: 'passed',
+								duration: 1,
+								failureMessages: [],
+							},
+						],
+					},
+				],
+			})
+			scratch.write('report.json', report)
+			const receipt = createReceiptFixture({
+				report: { file: 'report.json', digest: computeCaptureHash(report) },
+			})
+			scratch.write('registry.json', JSON.stringify(createRegistryFixture({ receipts: [receipt] })))
+			expect(readCaptureTitles(scratch.path, resolve(scratch.path, 'registry.json'))).toEqual({
+				'tests/journey.test.ts outer suite inner case': [
+					'tests/journey.test.ts',
+					'outer suite',
+					'inner case',
+				],
+			})
+			scratch.write('report.json', `${report}\n`)
+			expect(() => readCaptureTitles(scratch.path, resolve(scratch.path, 'registry.json'))).toThrow(
+				'digest differs',
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
 
 	it('selects an exact nested case and final case through a real nested Vitest run', () => {
 		const scratch = createScratch({ prefix: 'capture-selection-' })
 		try {
 			const entry = resolve(process.env.CAPTURE_VITEST_ENTRY ?? 'node_modules/vitest/vitest.mjs')
 			const testModule = pathToFileURL(resolve(dirname(entry), 'dist/index.js')).href
-			const decoy = ['outer suite', 'inner [group]', 'exact (case)'].join(
-				readCaptureSeparator(entry) === ' ' ? ' > ' : ' ',
-			)
+			const decoy = ['outer suite', 'inner [group]', 'exact (case)'].join(' ')
 			scratch.write(
 				'nested.test.ts',
 				`import { describe, it, expect } from ${JSON.stringify(testModule)}\nit(${JSON.stringify(decoy)}, () => { throw new Error('selected the other major separator') }); describe('outer suite', () => { describe('inner [group]', () => { it('exact (case)', () => expect(true).toBe(true)); it('exact (case) extra', () => { throw new Error('selected an inexact case') }); it('final case', () => expect(true).toBe(true)); it('other', () => { throw new Error('broadened selection') }) }) })\n`,
@@ -3647,7 +3681,7 @@ describe('readCaptureRegistryArguments', () => {
 			variants: [],
 			bail: false,
 		})
-		expect('bail' in readCaptureRegistryArguments(['--bail'], ROOT, 'x')).toBe(false)
+		expect('bail' in readCaptureRegistryArguments([], ROOT, 'x')).toBe(false)
 	})
 
 	it('falls back to the default wrapper, leaves absent fields out, and accepts an absolute config', () => {
@@ -3863,6 +3897,95 @@ describe('readCaptureFrames', () => {
 			scratch.destroy()
 		}
 	})
+
+	it('lists no frame from a scope directory removed between the listing and its read', () => {
+		const scratch = createScratch({ prefix: 'frames-' })
+		try {
+			scratch.write('wide.png', 'frame')
+			scratch.write('pages/inbox--wide.png', 'frame')
+			const scopes = buildCaptureRacingScopes(['pages'], () => scratch.remove('pages'))
+			expect(readCaptureFrames(scratch.path, scopes)).toEqual(['wide.png'])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('refuses a scope directory replaced by a file between the listing and its read, naming it', () => {
+		const scratch = createScratch({ prefix: 'frames-' })
+		try {
+			scratch.write('pages/inbox--wide.png', 'frame')
+			const scopes = buildCaptureRacingScopes(['pages'], () => {
+				scratch.remove('pages')
+				scratch.write('pages', 'not a directory')
+			})
+			expect(captureError(() => readCaptureFrames(scratch.path, scopes))).toMatchObject({
+				code: 'EVIDENCE',
+				message: expect.stringContaining(resolve(scratch.path, 'pages')),
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('readCaptureListing', () => {
+	it('lists a directory through the reader, and a missing directory as empty', () => {
+		const scratch = createScratch({ prefix: 'listing-' })
+		try {
+			scratch.write('pages/inbox.png', 'frame')
+			expect(readCaptureListing(scratch.path, (path) => readdirSync(path))).toEqual(['pages'])
+			expect(
+				readCaptureListing(resolve(scratch.path, 'absent'), (path) => readdirSync(path)),
+			).toEqual([])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('refuses a directory the host cannot list as evidence, naming it', () => {
+		const scratch = createScratch({ prefix: 'listing-' })
+		try {
+			scratch.write('pages', 'not a directory')
+			const directory = resolve(scratch.path, 'pages')
+			expect(
+				captureError(() => readCaptureListing(directory, (path) => readdirSync(path))),
+			).toMatchObject({
+				code: 'EVIDENCE',
+				message: `Cannot list capture frames under ${directory}`,
+				context: { directory },
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('describeCaptureHolders', () => {
+	it.each([
+		[
+			'running holders',
+			[
+				{ pid: 11, inspected: true },
+				{ pid: 12, inspected: true },
+			],
+			'Another runner holds this workspace (process 11, 12)',
+		],
+		[
+			'a holder the host could not inspect',
+			[{ pid: 13, inspected: false }],
+			'Request holder process 13 could not be inspected; confirm no capture process or surviving child is running before deleting its request file in tmp/capture',
+		],
+		[
+			'both',
+			[
+				{ pid: 13, inspected: false },
+				{ pid: 11, inspected: true },
+			],
+			'Another runner holds this workspace (process 11). Request holder process 13 could not be inspected; confirm no capture process or surviving child is running before deleting its request file in tmp/capture',
+		],
+	])('names %s', (_title, holders, message) => {
+		expect(describeCaptureHolders(holders, 'tmp/capture')).toBe(message)
+	})
 })
 
 describe('readCaptureProgress', () => {
@@ -3960,6 +4083,57 @@ describe('readCaptureProgress', () => {
 				'  state unknown: the host could not inspect writer 4343, so the run might have ended without its end line',
 			)
 			expect(text).not.toContain('inspect writer 4242')
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it.each([
+		[
+			'finished',
+			[{ event: 'end', reason: 'passed', overhead: 1, unhandled: [], time: 20 }],
+			'passed',
+		],
+		['interrupted', [], 'interrupted'],
+	] as const)(
+		'reports the previous %s stage, naming its state, before the next stage writes its first line',
+		(_title, ending, state) => {
+			const scratch = createScratch({ prefix: 'progress-' })
+			try {
+				scratch.write(
+					`${REQUESTS}/runs/run-1/selected.progress.jsonl`,
+					`${[
+						...buildCaptureProgressLines(4242),
+						...ending.map((line) => JSON.stringify({ ...line, pid: 4242 })),
+					].join('\n')}\n`,
+				)
+				scratch.write(`${REQUESTS}/runs/run-2/selected.json`, '{}')
+				const text = renderCaptureProgress(
+					readCaptureProgress(scratch.path, REQUESTS, 61_000, () => false),
+				)
+				expect(text).toMatch(/^progress tmp\/capture\/runs\/run-1\/selected\.progress\.jsonl\n/u)
+				expect(text).toContain(`run 4242 ${state} bail=1: 2/3 cases`)
+			} finally {
+				scratch.destroy()
+			}
+		},
+	)
+
+	it('measures an interrupted run to its last line, so a later reading reports the same elapsed time', () => {
+		const scratch = createScratch({ prefix: 'progress-' })
+		try {
+			scratch.write(
+				`${REQUESTS}/runs/run-1/selected.progress.jsonl`,
+				`${buildCaptureProgressLines(4242).join('\n')}\n`,
+			)
+			const readings = [61_000, 121_000].map(
+				(now) => readCaptureProgress(scratch.path, REQUESTS, now, () => false).runs,
+			)
+			const last = parseJSON(buildCaptureProgressLines(4242).at(-1) ?? '')
+			expect(last).toMatchObject({ time: 14 })
+			for (const runs of readings)
+				expect(runs).toMatchObject([{ pid: 4242, state: 'interrupted', elapsed: 14 }])
+			expect(readings[0]).toEqual(readings[1])
 		} finally {
 			scratch.destroy()
 		}
@@ -4174,7 +4348,7 @@ describe('buildCaptureWrapper', { timeout: FIXTURE_TIMEOUT }, () => {
 				{ [CAPTURE_REQUESTS_FLAG]: resolve(scratch.path, 'requests'), [CAPTURE_FLAG]: '1' },
 				async () =>
 					await buildCaptureWrapper({
-						config: pathToFileURL(resolve(scratch.path, 'journey.config.ts')).href,
+						url: pathToFileURL(resolve(scratch.path, 'journey.config.ts')).href,
 						variants: VARIANTS,
 						owners: ['pages:mail'],
 						first: 'narrow',
@@ -4244,7 +4418,7 @@ describe('buildCaptureWrapper', { timeout: FIXTURE_TIMEOUT }, () => {
 				{ [CAPTURE_REQUESTS_FLAG]: resolve(scratch.path, 'requests'), [CAPTURE_FLAG]: '1' },
 				async () =>
 					await buildCaptureWrapper({
-						config: pathToFileURL(resolve(scratch.path, 'journey.config.ts')).href,
+						url: pathToFileURL(resolve(scratch.path, 'journey.config.ts')).href,
 						variants: VARIANTS,
 						owners: ['pages:mail'],
 						first: 'narrow',
@@ -4287,7 +4461,7 @@ describe('buildCaptureWrapper', { timeout: FIXTURE_TIMEOUT }, () => {
 				{ [CAPTURE_REQUESTS_FLAG]: resolve(scratch.path, 'requests'), [CAPTURE_FLAG]: '0' },
 				async () =>
 					await buildCaptureWrapper({
-						config: pathToFileURL(resolve(scratch.path, 'journey.config.ts')).href,
+						url: pathToFileURL(resolve(scratch.path, 'journey.config.ts')).href,
 						variants: VARIANTS,
 						owners: ['pages:mail'],
 						first: 'narrow',
@@ -4327,11 +4501,54 @@ describe('buildCaptureWrapper', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 
+	it.each(['a/../src', '..', 'a b', ''])(
+		'refuses variant name %j, which is no capture segment, before emptying any directory',
+		async (name) => {
+			const scratch = createScratch({ parent: resolve('tmp'), prefix: 'wrapper-' })
+			const named: string[] = []
+			try {
+				const base = resolveCaptureRelative(process.cwd(), scratch.path)
+				scratch.write('src/sentinel.ts', 'kept')
+				const failure = await withEnvironment(
+					{ [CAPTURE_REQUESTS_FLAG]: resolve(scratch.path, 'requests'), [CAPTURE_FLAG]: '0' },
+					async () =>
+						await readCaptureRejection(
+							buildCaptureWrapper({
+								url: pathToFileURL(resolve(scratch.path, 'journey.config.ts')).href,
+								variants: [
+									{ name: 'wide', width: 480, height: 320 },
+									{ name, width: 480, height: 320 },
+								],
+								owners: ['pages:mail'],
+								first: 'narrow',
+								final: RUNNER_FINAL,
+								directory: `${base}/states`,
+								inputs: ['src/**'],
+								sources: { shared: [], tests: ['specs/**'] },
+								portfolios: [{ portfolio: 'states', directory: `${base}/states`, scoped: true }],
+								project: (variant, override) =>
+									named.push(variant.name, override.test.provide.record),
+							}),
+						),
+				)
+				expect.soft(failure).toMatchObject({
+					code: 'HOST',
+					message: expect.stringContaining('variants[1].name'),
+				})
+				expect.soft(scratch.read('src/sentinel.ts')).toBe('kept')
+				expect(scratch.has('no-capture-wide')).toBe(false)
+				expect(named).toEqual([])
+			} finally {
+				scratch.destroy()
+			}
+		},
+	)
+
 	it.each([
-		['a config that is no file URL', { config: 'journey.config.ts' }, 'HOST'],
+		['a url that is no file URL', { url: 'journey.config.ts' }, 'HOST'],
 		[
-			'a config outside the workspace',
-			{ config: pathToFileURL(resolve('..', 'outside.config.ts')).href },
+			'a url outside the workspace',
+			{ url: pathToFileURL(resolve('..', 'outside.config.ts')).href },
 			'CONTAINMENT',
 		],
 		['an evidence root that leaves the workspace', { directory: '../states' }, 'HOST'],
@@ -4340,7 +4557,7 @@ describe('buildCaptureWrapper', { timeout: FIXTURE_TIMEOUT }, () => {
 		const named: string[] = []
 		const failure = await readCaptureRejection(
 			buildCaptureWrapper({
-				config: pathToFileURL(resolve('journey.config.ts')).href,
+				url: pathToFileURL(resolve('journey.config.ts')).href,
 				variants: VARIANTS,
 				owners: ['pages:mail'],
 				first: 'narrow',

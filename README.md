@@ -19,7 +19,7 @@ The manifest declares these peer ranges; install the browser peers when you run 
 | Peer                         | Range     | Required by the manifest |
 | ---------------------------- | --------- | ------------------------ |
 | `vitest`                     | `^5.1.0`  | Yes                      |
-| `vite`                       | `^8.3.5`  | Yes                      |
+| `vite`                       | `^8.3.8`  | Yes                      |
 | `@vitest/browser-playwright` | `^5.0.5`  | Optional                 |
 | `playwright`                 | `^1.61.0` | Optional                 |
 | `@orkestrel/test`            | `~0.0.41` | Yes                      |
@@ -109,7 +109,7 @@ return `buildCaptureDiscoveryConfig()` so discovery starts no browser or test. F
 child, read `readCaptureRequest` with the same parent, arguments, and wrapper identity plus the
 declared owners and variants. The runner passes the request directory through `CAPTURE_REQUESTS`.
 `buildCaptureWrapper` from `@orkestrel/capture/server` performs these steps from the host's
-declarations, provides each project the following values, and mounts the progress plugin the
+declarations, provides each project the following values except `standalone`, and mounts the progress plugin the
 `capture progress` command reads.
 
 Each project's `test.provide` object supplies the following host declarations:
@@ -124,7 +124,7 @@ Each project's `test.provide` object supplies the following host declarations:
 | `sources`             | The `shared` and `tests` source patterns the suite attributes to every destination.                                                     |
 | `portfolios`          | Authorized portfolio roots with their `portfolio`, `directory`, and `scoped` declarations.                                              |
 | `uniform`             | Optional owner selectors for mixed-framing checks. Omission checks every scope; an empty list checks none.                              |
-| `standalone`          | Optional portfolio roots with no stamping route through this wrapper.                                                                   |
+| `standalone`          | Optional portfolio roots with no stamping route through this wrapper. `buildCaptureWrapper` provides no standalone roots.               |
 
 Declare `owner:` tags for owners and their ancestors, and capture tags for the scopes and parts
 that produce frames. Projects must agree on shared host declarations. The final case must retain

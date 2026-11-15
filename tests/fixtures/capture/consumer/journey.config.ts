@@ -16,7 +16,7 @@ import {
 export default defineConfig(async () => ({
 	server: { host: '127.0.0.1' },
 	...(await buildCaptureWrapper({
-		config: import.meta.url,
+		url: import.meta.url,
 		variants: CONSUMER_VARIANTS,
 		owners: CONSUMER_OWNERS,
 		first: CONSUMER_FIRST,
