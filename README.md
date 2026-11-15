@@ -28,7 +28,7 @@ The manifest declares these peer ranges; install the browser peers when you run 
 
 The CLI workflow requires the following host setup:
 
-- Node.js >= 22.18.0.
+- Node.js `^22.18.0 || >=24.4.0`.
 - A Git workspace with a commit and locally installed Vitest.
 - A Vitest browser provider and its browser runtime for execution stages. The integration proof uses
   `@vitest/browser-playwright` and Chromium.
