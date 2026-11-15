@@ -1009,7 +1009,7 @@ export type CaptureProjectHandler<TProject> = (
  * Configures the journey wrapper `buildCaptureWrapper` assembles.
  *
  * @remarks
- * `config` is the wrapper module's own `import.meta.url`. `variants` declares the producing
+ * `url` is the wrapper module's own `import.meta.url`. `variants` declares the producing
  * viewports in host order, `owners` every canonical owner path, `first` the narrow-stage variant,
  * and `final` the case that writes each run record. `directory` is the workspace-relative evidence
  * root. `inputs` lists the integrity input patterns, `sources` the shared and test source patterns
@@ -1020,7 +1020,7 @@ export type CaptureProjectHandler<TProject> = (
  * @example
  * ```ts
  * const options: CaptureWrapperOptions<UserWorkspaceConfig> = {
- * 	config: import.meta.url,
+ * 	url: import.meta.url,
  * 	variants: [{ name: 'light-390', width: 390, height: 844 }],
  * 	owners: ['pages:mail'],
  * 	first: 'light-390',
@@ -1034,7 +1034,7 @@ export type CaptureProjectHandler<TProject> = (
  * ```
  */
 export interface CaptureWrapperOptions<TProject> {
-	readonly config: string
+	readonly url: string
 	readonly variants: readonly CaptureViewport[]
 	readonly owners: readonly string[]
 	readonly first: string
@@ -1278,6 +1278,22 @@ export type CaptureRetractionHandler = () => void
 export type CaptureTerminationHandler = () => Promise<boolean>
 
 /**
+ * Describes another process that holds a request file in the request directory.
+ *
+ * @remarks `inspected` is `true` when the host read the process as running, and `false` when the
+ * host could not read its state.
+ *
+ * @example
+ * ```ts
+ * const holder: CaptureHolder = { pid: 4242, inspected: true }
+ * ```
+ */
+export interface CaptureHolder {
+	readonly pid: number
+	readonly inspected: boolean
+}
+
+/**
  * Owns one runner invocation's identity, request file, children, and interruption.
  *
  * @example
@@ -1338,15 +1354,16 @@ export interface CaptureInvocationInterface {
 	/**
 	 * Lists the other live processes that hold a request file in the request directory.
 	 *
-	 * @returns The distinct holder process ids in directory order, excluding this invocation's own lease
-	 * and every process the host reads as ended; a process whose state cannot be read stays listed
+	 * @returns One holder per distinct process id in directory order, excluding this invocation's own
+	 * lease and every process the host reads as ended; a process whose state cannot be read stays
+	 * listed with `inspected` set to `false`
 	 *
 	 * @example
 	 * ```ts
 	 * invocation.holders() // [] when no other runner is mid-stage
 	 * ```
 	 */
-	holders(): readonly number[]
+	holders(): readonly CaptureHolder[]
 
 	/**
 	 * Writes the stage or discovery request atomically, so no reader sees a partial file.

@@ -1,5 +1,5 @@
 import type { ParseArgsOptionsConfig } from 'node:util'
-import type { ProgressRun } from '@orkestrel/test/server'
+import type { ProgressInitEvent, ProgressRun } from '@orkestrel/test/server'
 import type {
 	CaptureCollectionReceipt,
 	CaptureDestination,
@@ -22,6 +22,7 @@ import type {
 	CaptureDiscoveryOptions,
 	CaptureFileSnapshot,
 	CaptureHashHandler,
+	CaptureHolder,
 	CaptureHostDescription,
 	CaptureHostEntry,
 	CaptureImageResult,
@@ -79,7 +80,14 @@ import {
 	preview,
 } from '@orkestrel/contract'
 import { inspectProcess } from '@orkestrel/process/server'
-import { createProgressPlugin, readProgress, renderProgress } from '@orkestrel/test/server'
+import {
+	computeProgress,
+	computeProgressRun,
+	createProgressPlugin,
+	extractProgressEvents,
+	readFileSnapshot,
+	renderProgress,
+} from '@orkestrel/test/server'
 import {
 	CAPTURE_LOOKUPS_FILE,
 	CAPTURE_MANIFEST_FILE,
@@ -119,6 +127,7 @@ import {
 	CAPTURE_EXIT,
 	CAPTURE_FLAG,
 	CAPTURE_FLAG_VALUE,
+	CAPTURE_PID_LIMIT,
 	CAPTURE_PNG_LIMITS,
 	CAPTURE_PROGRESS_SUFFIX,
 	CAPTURE_REQUESTS_FLAG,
@@ -1187,11 +1196,11 @@ export function composeCapturePictures(
 		...(Number.isSafeInteger(gap) && gap >= 0 && gap <= side ? [] : [`gap is ${preview(gap)}`]),
 	]
 	const width = vertical
-		? Math.max(...pictures.map((entry) => entry.width))
+		? pictures.reduce((widest, entry) => Math.max(widest, entry.width), -Infinity)
 		: pictures.reduce((sum, entry) => sum + entry.width, 0) + gap * (pictures.length - 1)
 	const height = vertical
 		? pictures.reduce((sum, entry) => sum + entry.height, 0) + gap * (pictures.length - 1)
-		: Math.max(...pictures.map((entry) => entry.height))
+		: pictures.reduce((tallest, entry) => Math.max(tallest, entry.height), -Infinity)
 	if (faults.length > 0 || width > side || height > side || width * height > budget)
 		throw new CaptureError(
 			`Contact-sheet geometry is out of range: ${
@@ -1251,19 +1260,52 @@ export function composeCapturePictures(
  * Reads the process id that a request file, or its temporary sibling, names.
  *
  * @param name - A file name from the request directory
- * @returns The positive process id the name carries, or `undefined` for any other name
+ * @returns The process id the name carries, from 1 to `CAPTURE_PID_LIMIT`, or `undefined` for any
+ * other name
  *
  * @example
  * ```ts
  * readCaptureRequestOwner('journey-selection-4242.json') // 4242
  * readCaptureRequestOwner('journey-selection-4242.json.tmp') // 4242
  * readCaptureRequestOwner('journey-selection.json') // undefined
+ * readCaptureRequestOwner('journey-selection-4294967296.json') // undefined
  * ```
  */
 export function readCaptureRequestOwner(name: string): number | undefined {
 	const match = new RegExp(`^${CAPTURE_REQUEST_PREFIX}-(\\d+)\\.json(?:\\.tmp)?$`, 'u').exec(name)
 	const pid = Number(match?.[1])
-	return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined
+	return Number.isSafeInteger(pid) && pid > 0 && pid <= CAPTURE_PID_LIMIT ? pid : undefined
+}
+
+/**
+ * Describes the request holders that keep a workspace busy, naming apart those the host could not inspect.
+ *
+ * @param holders - The holders `CaptureInvocationInterface.holders` lists
+ * @param directory - The workspace-relative request directory that holds their request files
+ * @returns The running holders' sentence, then the uninspected holders' sentence with its correction
+ *
+ * @example
+ * ```ts
+ * describeCaptureHolders([{ pid: 4242, inspected: true }], 'tmp/capture')
+ * // 'Another runner holds this workspace (process 4242)'
+ * ```
+ */
+export function describeCaptureHolders(
+	holders: readonly CaptureHolder[],
+	directory: string,
+): string {
+	const running = holders.filter((holder) => holder.inspected).map((holder) => holder.pid)
+	const unknown = holders.filter((holder) => !holder.inspected).map((holder) => holder.pid)
+	return [
+		...(running.length === 0
+			? []
+			: [`Another runner holds this workspace (process ${running.join(', ')})`]),
+		...(unknown.length === 0
+			? []
+			: [
+					`Request holder process ${unknown.join(', ')} could not be inspected; confirm no capture process or surviving child is running before deleting its request file in ${directory}`,
+				]),
+	].join('. ')
 }
 
 /**
@@ -1533,7 +1575,7 @@ export function buildCaptureArguments(options: CaptureArgumentsOptions): readonl
  * Reads the installed workspace Vitest's exact title separator, refusing unsupported majors.
  * @example
  * ```ts
- * readCaptureSeparator('/workspace/node_modules/vitest/vitest.mjs') // ' ' on Vitest 4
+ * readCaptureSeparator('/workspace/node_modules/vitest/vitest.mjs') // ' > ' on Vitest 5
  * ```
  */
 export function readCaptureSeparator(entry: string): string {
@@ -1546,13 +1588,9 @@ export function readCaptureSeparator(entry: string): string {
 		})
 	const manifest: unknown = loaded.value
 	const version = isRecord(manifest) ? manifest.version : undefined
-	if (typeof version === 'string' && version.split('.')[0] === '4') return ' '
 	if (typeof version === 'string' && version.split('.')[0] === '5') return ' > '
 	throw new CaptureError(
-		describeCaptureFault('vitest.version', version, 'a supported installed Vitest major', [
-			'4',
-			'5',
-		]),
+		describeCaptureFault('vitest.version', version, 'a supported installed Vitest major', ['5']),
 		{ code: 'HOST' },
 	)
 }
@@ -1631,8 +1669,9 @@ export function readCaptureTitles(
 /**
  * Parses standard option tokens and refuses empty values, terminators, and repeated single options.
  *
- * @remarks A boolean option whose default is `true` reads its `--no-` form as `false`; the `--no-`
- * form of any other option is refused as unknown. An option and its `--no-` form repeat each other.
+ * @remarks A boolean option whose default is `true` reads its `--no-` form as `false` and refuses
+ * its positive form, so `--no-bail` is the one spelling of `bail`; the `--no-` form of any other
+ * option is refused as unknown. An option and its `--no-` form repeat each other.
  *
  * @param argv - The arguments after the subcommand
  * @param options - The command's frozen Node option definitions
@@ -1664,6 +1703,11 @@ export function readCaptureOptions<Options extends ParseArgsOptionsConfig>(
 			if (token.kind !== 'option') continue
 			if (token.rawName === `--no-${token.name}` && options[token.name]?.default !== true)
 				throw new CaptureError(`Unknown option '${token.rawName}'`, { code: 'USAGE' })
+			if (token.rawName === `--${token.name}` && options[token.name]?.default === true)
+				throw new CaptureError(
+					`Unknown option '${token.rawName}'; ${token.name} is on by default, and --no-${token.name} turns it off`,
+					{ code: 'USAGE' },
+				)
 			if (token.value === '')
 				throw new CaptureError(`Missing value: --${token.name}`, { code: 'USAGE' })
 			if (
@@ -2678,12 +2722,39 @@ export async function answerCaptureDiscovery(options: CaptureDiscoveryOptions): 
 }
 
 /**
+ * Lists a directory through a reader, answering an empty list for a missing directory.
+ *
+ * @param directory - The absolute directory to list
+ * @param list - Reads the directory's entries, such as `readdirSync` with its options
+ * @returns The entries the reader returned, or none when the directory is missing
+ * @throws Thrown as an `EVIDENCE` capture error naming the directory for any other failure to read it.
+ *
+ * @example
+ * ```ts
+ * readCaptureListing('/repo/tmp/captures/states/pages', (path) => readdirSync(path)) // ['inbox--light-390.png']
+ * ```
+ */
+export function readCaptureListing<TEntry>(
+	directory: string,
+	list: (path: string) => readonly TEntry[],
+): readonly TEntry[] {
+	const listed = attempt(() => list(directory))
+	if (listed.success) return listed.value
+	if (isError(listed.error) && 'code' in listed.error && listed.error.code === 'ENOENT') return []
+	throw new CaptureError(`Cannot list capture frames under ${directory}`, {
+		code: 'EVIDENCE',
+		cause: listed.error,
+		context: { directory },
+	})
+}
+
+/**
  * Lists the frames a portfolio directory holds, as paths relative to it, in sorted order.
  *
  * @remarks
  * A frame is a `.png` file at the directory's top level or directly inside one of the scope
  * directories. The run records directory holds no frame, and every other directory is unknown. A
- * missing directory holds no frame.
+ * missing directory, or one removed between the listing and its read, holds no frame.
  *
  * @param directory - The absolute portfolio directory
  * @param scopes - The scope directories the owners declare, each an owner path's first segment
@@ -2697,23 +2768,13 @@ export async function answerCaptureDiscovery(options: CaptureDiscoveryOptions): 
  * ```
  */
 export function readCaptureFrames(directory: string, scopes: readonly string[]): readonly string[] {
-	const listed = attempt(() => readdirSync(directory, { withFileTypes: true }))
-	if (!listed.success) {
-		if (isError(listed.error) && 'code' in listed.error && listed.error.code === 'ENOENT') return []
-		throw new CaptureError(`Cannot list capture frames under ${directory}`, {
-			code: 'EVIDENCE',
-			cause: listed.error,
-			context: { directory },
-		})
-	}
-	return listed.value
+	return readCaptureListing(directory, (path) => readdirSync(path, { withFileTypes: true }))
 		.flatMap((entry): readonly string[] => {
 			if (!entry.isDirectory()) return entry.name.endsWith('.png') ? [entry.name] : []
 			if (entry.name === CAPTURE_RUNS_DIRECTORY) {
-				const frames = readdirSync(resolve(directory, entry.name), {
-					recursive: true,
-					encoding: 'utf8',
-				}).filter((name) => name.endsWith('.png'))
+				const frames = readCaptureListing(resolve(directory, entry.name), (path) =>
+					readdirSync(path, { recursive: true, encoding: 'utf8' }),
+				).filter((name) => name.endsWith('.png'))
 				if (frames.length > 0)
 					throw new CaptureError(
 						`Frames sit beneath the run records: ${describeCaptureMembers(frames.map(normalizeSlashes))}`,
@@ -2726,16 +2787,16 @@ export function readCaptureFrames(directory: string, scopes: readonly string[]):
 					`Unknown capture directory: ${describeCaptureFault('directory', entry.name, 'a scope the owners declare, or the run records', [...scopes, CAPTURE_RUNS_DIRECTORY])}`,
 					{ code: 'EVIDENCE', context: { directory } },
 				)
-			return readdirSync(resolve(directory, entry.name), { withFileTypes: true }).flatMap(
-				(file): readonly string[] => {
-					if (file.isDirectory())
-						throw new CaptureError(
-							`Unknown capture directory: ${preview(`${entry.name}/${file.name}`)}; a scope holds frames only`,
-							{ code: 'EVIDENCE', context: { directory } },
-						)
-					return file.name.endsWith('.png') ? [`${entry.name}/${file.name}`] : []
-				},
-			)
+			return readCaptureListing(resolve(directory, entry.name), (path) =>
+				readdirSync(path, { withFileTypes: true }),
+			).flatMap((file): readonly string[] => {
+				if (file.isDirectory())
+					throw new CaptureError(
+						`Unknown capture directory: ${preview(`${entry.name}/${file.name}`)}; a scope holds frames only`,
+						{ code: 'EVIDENCE', context: { directory } },
+					)
+				return file.name.endsWith('.png') ? [`${entry.name}/${file.name}`] : []
+			})
 		})
 		.toSorted()
 }
@@ -2748,8 +2809,9 @@ export function readCaptureFrames(directory: string, scopes: readonly string[]):
  * run directories. The progress file is an observation of the run and never evidence. A partial
  * last line, which the reporter can still be appending, is not read, so a file with no complete
  * line holds no run. For each run with no `end` line, `alive` reads the process id its `init` line
- * records: a writer that has ended turns the run `interrupted`, and a writer the host cannot
- * inspect, or an id that is not a positive safe integer, lists the run's id in `uninspected`.
+ * records: a writer that has ended turns the run `interrupted`, measured to the time of its last
+ * line, and a writer the host cannot inspect, or an id that is not a positive safe integer, lists
+ * the run's id in `uninspected`.
  *
  * @param root - The absolute workspace path
  * @param requests - The workspace-relative request directory
@@ -2784,14 +2846,18 @@ export function readCaptureProgress(
 			`No stage has written a progress file under ${resolveCaptureRelative(root, runs)}; run a journey, frames, or registry command first`,
 			{ code: 'STAGE', context: { directory: resolveCaptureRelative(root, runs) } },
 		)
-	const read = attempt(() => readProgress(resolve(root, newest.file), now))
+	const read = attempt(() =>
+		extractProgressEvents(readFileSnapshot(resolve(root, newest.file)).toString('utf8')),
+	)
 	if (!read.success)
 		throw new CaptureError(
 			`Cannot read the progress file ${newest.file}: ${describeCaptureOutput(describeCaptureError(read.error))}`,
 			{ code: 'STAGE', cause: read.error, context: { file: newest.file } },
 		)
+	const events = read.value
+	const computed = computeProgress(events, now)
 	const writers = new Map(
-		read.value
+		computed
 			.filter((run) => run.state === 'live')
 			.map((run) => [
 				run.pid,
@@ -2800,11 +2866,18 @@ export function readCaptureProgress(
 	)
 	return {
 		file: newest.file,
-		runs: read.value.map((run): ProgressRun =>
-			writers.get(run.pid) === false
-				? { ...run, state: 'interrupted', running: [], remaining: undefined }
-				: run,
-		),
+		runs: computed.map((run): ProgressRun => {
+			if (writers.get(run.pid) !== false) return run
+			// An interrupted run wrote no end line, so its clock stops at the time of its last line.
+			const own = events.filter((event) => event.pid === run.pid)
+			const init = own.findLast((event): event is ProgressInitEvent => event.event === 'init')
+			const last = own.at(-1)
+			const ended =
+				init === undefined || last === undefined
+					? run
+					: (computeProgressRun(own, init.wall + last.time - init.time) ?? run)
+			return { ...ended, state: 'interrupted', running: [], remaining: undefined }
+		}),
 		uninspected: [...writers].flatMap(([pid, answer]) => (answer === undefined ? [pid] : [])),
 	}
 }
@@ -2853,7 +2926,7 @@ export function renderCaptureProgress(progress: CaptureProgress): string {
  * ```
  */
 export function buildCaptureOverride(
-	options: Omit<CaptureWrapperOptions<unknown>, 'config' | 'project'>,
+	options: Omit<CaptureWrapperOptions<unknown>, 'url' | 'project'>,
 	variant: CaptureViewport,
 	provided: Pick<CaptureProvided, 'directory' | 'record' | 'capture' | 'request'>,
 ): CaptureWrapperOverride {
@@ -2889,12 +2962,12 @@ export function buildCaptureOverride(
  *
  * @remarks
  * Call it inside the wrapper's own `defineConfig` callback, before any other work: capture imports
- * neither Vite nor Vitest, so the result is data the wrapper returns. The wrapper path is `config`
+ * neither Vite nor Vitest, so the result is data the wrapper returns. The wrapper path is `url`
  * relative to the working directory, which is the workspace root for every child the runner
  * spawns. During a discovery request it describes each variant's project as `{ name, tags,
  * provide }`, with the name the host's `project` chose, and returns `buildCaptureDiscoveryConfig()`.
  * Otherwise it reads the runner's request, provides each project the values `CaptureProvided`
- * declares, and registers the browser command `readCaptureFrames`, which lists the frames under
+ * declares except `standalone`, and registers the browser command `readCaptureFrames`, which lists the frames under
  * the provided directory. With the capture variable unset, each variant writes to its own scratch
  * sibling of the evidence root, emptied first. The result's root `plugins` holds one
  * `createProgressPlugin()`, so a stage the runner passes `--outputFile.progress` writes its
@@ -2902,14 +2975,15 @@ export function buildCaptureOverride(
  *
  * @param options - The wrapper path, variants, owners, stage and final names, evidence root, inputs, sources, portfolios, and project builder
  * @returns The discovery configuration while discovery runs, and otherwise the progress plugin and one project per variant
- * @throws Thrown as a `HOST` capture error for a `config` that is no `file:` URL, an evidence root
- * that is not a portable relative path, an invalid owner, or a runner request that fails its
- * checks, and as a `CONTAINMENT` capture error for a wrapper or scratch path outside the workspace.
+ * @throws Thrown as a `HOST` capture error, before any directory work, for a `url` that is no
+ * `file:` URL, an evidence root that is not a portable relative path, or a variant name that is no
+ * capture segment, and later for an invalid owner or a runner request that fails its checks; and as
+ * a `CONTAINMENT` capture error for a wrapper or scratch path outside the workspace.
  *
  * @example
  * ```ts
  * export default defineConfig(({ mode }) =>
- * 	buildCaptureWrapper({ ...declarations, config: import.meta.url, project: (variant, override) => appJourney(variant, mode, override) }),
+ * 	buildCaptureWrapper({ ...declarations, url: import.meta.url, project: (variant, override) => appJourney(variant, mode, override) }),
  * )
  * ```
  */
@@ -2917,16 +2991,23 @@ export async function buildCaptureWrapper<TProject>(
 	options: CaptureWrapperOptions<TProject>,
 ): Promise<CaptureWrapperConfig<TProject> | CaptureDiscoveryConfig> {
 	const root = process.cwd()
-	const path = attempt(() => fileURLToPath(options.config))
+	const path = attempt(() => fileURLToPath(options.url))
 	if (!path.success)
 		throw new CaptureError(
-			`Invalid wrapper config; ${describeCaptureFault('config', options.config, "the wrapper module's import.meta.url, a file: URL")}`,
+			`Invalid wrapper url; ${describeCaptureFault('url', options.url, "the wrapper module's import.meta.url, a file: URL")}`,
 			{ code: 'HOST', cause: path.error },
 		)
 	requireCaptureContained(root, path.value)
 	if (!isCapturePath(options.directory))
 		throw new CaptureError(
 			`Invalid evidence root; ${describeCaptureFault('directory', options.directory, 'a portable workspace-relative path')}`,
+			{ code: 'HOST' },
+		)
+	// A variant name becomes a scratch directory segment that is emptied, so it must name one segment.
+	const invalid = options.variants.findIndex((variant) => !isCaptureSegment(variant.name))
+	if (invalid !== -1)
+		throw new CaptureError(
+			`Invalid variant name; ${describeCaptureFault(`variants[${String(invalid)}].name`, options.variants[invalid]?.name, 'a portable nonempty identity segment')}`,
 			{ code: 'HOST' },
 		)
 	const config = resolveCaptureRelative(root, path.value)

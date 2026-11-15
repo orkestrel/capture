@@ -3492,7 +3492,7 @@ export class ComposedFixture extends IntegrityFixture {
 		try {
 			this.write(this.config, createComposedWrapper(this.root, options.first))
 			this.write('node_modules/vitest/vitest.mjs', createStandIn())
-			this.write('node_modules/vitest/package.json', JSON.stringify({ version: '4.1.12' }))
+			this.write('node_modules/vitest/package.json', JSON.stringify({ version: '5.1.0' }))
 			if (options.committed) {
 				execFileSync('git', ['add', '--', this.config], { cwd: this.root, windowsHide: true })
 				execFileSync(
@@ -3656,7 +3656,7 @@ export class ReaderFixture extends IntegrityFixture {
 		try {
 			this.write(READER_CONFIG, createReaderWrapper(this.root))
 			this.write('node_modules/vitest/vitest.mjs', createStandIn())
-			this.write('node_modules/vitest/package.json', JSON.stringify({ version: '4.1.12' }))
+			this.write('node_modules/vitest/package.json', JSON.stringify({ version: '5.1.0' }))
 			for (const file of [
 				'fixture-checks/Checks.ts',
 				...READER_CHECK_REFUSALS.map((entry) => entry.file),
@@ -3841,6 +3841,30 @@ export async function startCaptureZombie(): Promise<{
  */
 export function createCaptureGeometry(width: number, height: number): CapturePicture {
 	return { width, height, pixels: new Uint8Array(0) }
+}
+
+/**
+ * Creates a picture of the given geometry whose pixel buffer reports each read, so a proof sees
+ * whether any pixel work ran.
+ *
+ * @param width - The declared width
+ * @param height - The declared height
+ * @param read - Runs on each read of the pixel buffer
+ * @returns The picture, with an empty pixel buffer
+ */
+export function createCaptureWatchedPicture(
+	width: number,
+	height: number,
+	read: () => void,
+): CapturePicture {
+	return {
+		width,
+		height,
+		get pixels() {
+			read()
+			return new Uint8Array(0)
+		},
+	}
 }
 
 /**
@@ -4759,4 +4783,24 @@ export function buildCaptureProgressLines(pid: number): readonly string[] {
 		},
 		{ event: 'ready', project: 'journey:wide', id: 'c', name: 'closes the run', time: 14, pid },
 	].map((line) => JSON.stringify(line))
+}
+
+/**
+ * Builds a scope list whose membership check runs an action first, so a proof reaches the moment
+ * between a portfolio listing and the read of one of its scope directories.
+ *
+ * @param scopes - The declared scopes the list holds
+ * @param action - Runs before each membership check, such as removing a scope directory
+ * @returns A list that answers every membership check as the plain list does
+ */
+export function buildCaptureRacingScopes(
+	scopes: readonly string[],
+	action: () => void,
+): readonly string[] {
+	return Object.assign([...scopes], {
+		includes(value: string): boolean {
+			action()
+			return scopes.includes(value)
+		},
+	})
 }

@@ -39,6 +39,15 @@ export const CAPTURE_EXIT = Object.freeze({ passed: 0, failed: 1, usage: 64 } as
 export const CAPTURE_OWNER_FILE = '.capture-owner'
 
 /**
+ * Holds the largest process id a POSIX or Windows host can assign, the signed 32-bit maximum.
+ * @example
+ * ```ts
+ * CAPTURE_PID_LIMIT // 2147483647
+ * ```
+ */
+export const CAPTURE_PID_LIMIT = 2_147_483_647
+
+/**
  * Caps each refusal population so hostile records cannot flood a terminal or agent context.
  * @example
  * ```ts
@@ -73,7 +82,7 @@ export const CAPTURE_STAGES = Object.freeze({
 /**
  * Defines each command's frozen options for Node's standard argument parser.
  *
- * @remarks A boolean option whose default is `true` also reads its `--no-` form, which sets it to
+ * @remarks A boolean option whose default is `true` reads only its `--no-` form, which sets it to
  * `false`; `bail` is the one such option.
  *
  * @example

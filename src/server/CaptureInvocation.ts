@@ -3,6 +3,7 @@ import type { CaptureRequest } from '@src/core'
 import type {
 	CaptureDiscoveryRequest,
 	CaptureExecutionResult,
+	CaptureHolder,
 	CaptureInvocationInterface,
 	CaptureInvocationOptions,
 	CaptureOwnership,
@@ -191,20 +192,18 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		}
 	}
 
-	holders(): readonly number[] {
+	holders(): readonly CaptureHolder[] {
 		const requests = resolve(this.#options.root, this.#options.requests)
-		return [
-			...new Set(
-				readdirSync(requests).flatMap((name) => {
-					const pid = readCaptureRequestOwner(name)
-					return pid === undefined ||
-						(pid === process.pid && this.#lease !== undefined) ||
-						this.#alive(pid) === false
-						? []
-						: [pid]
-				}),
-			),
-		]
+		const pids = new Set(
+			readdirSync(requests).flatMap((name) => {
+				const pid = readCaptureRequestOwner(name)
+				return pid === undefined || (pid === process.pid && this.#lease !== undefined) ? [] : [pid]
+			}),
+		)
+		return [...pids].flatMap((pid) => {
+			const alive = this.#alive(pid)
+			return alive === false ? [] : [{ pid, inspected: alive === true }]
+		})
 	}
 
 	publish(request: CaptureRequest | CaptureDiscoveryRequest): void {
