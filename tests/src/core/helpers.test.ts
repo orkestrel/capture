@@ -1,9 +1,9 @@
 import type { TestOptions } from 'vitest'
 import {
-	buildCaptureCase,
 	buildCaptureDestinations,
 	buildCaptureRun,
 	buildCaptureTags,
+	buildCaptureTest,
 	collectCaptureAncestors,
 	collectCaptureCases,
 	readCaptureArtifact,
@@ -899,9 +899,9 @@ describe('buildCaptureTags', () => {
 	})
 })
 
-describe('buildCaptureCase', () => {
+describe('buildCaptureTest', () => {
 	it('derives an owner-bearing case tags from its owner and its states parts', () => {
-		const options: TestOptions = buildCaptureCase(
+		const options: TestOptions = buildCaptureTest(
 			{
 				owner: 'pages:mail',
 				states: ['mail-screen', 'mail-reader'],
@@ -919,7 +919,7 @@ describe('buildCaptureCase', () => {
 
 	it('derives a section owner and a scope owner whose states belong to one of its parts', () => {
 		expect(
-			buildCaptureCase(
+			buildCaptureTest(
 				{ owner: 'reference:components:details', states: ['details'], variant: 'light-390' },
 				CAPTURE_RECORD_RULES,
 			).tags,
@@ -931,7 +931,7 @@ describe('buildCaptureCase', () => {
 			'reference:components',
 		])
 		expect(
-			buildCaptureCase(
+			buildCaptureTest(
 				{ owner: 'pages', states: ['mail-screen'], variant: 'light-390', eligible: false },
 				CAPTURE_RECORD_RULES,
 			),
@@ -944,19 +944,19 @@ describe('buildCaptureCase', () => {
 	it('keeps an ownerless final case on the declared tags it names', () => {
 		const tags = buildCaptureTags(CAPTURE_RECORD_RULES.owners)
 		expect(
-			buildCaptureCase({ states: [], variant: 'light-390', tags }, CAPTURE_RECORD_RULES),
+			buildCaptureTest({ states: [], variant: 'light-390', tags }, CAPTURE_RECORD_RULES),
 		).toEqual({ tags: [...tags], meta: { states: [], variant: 'light-390' } })
 	})
 
 	it('refuses an undeclared owner, named tags beside an owner, and an undeclared tag', () => {
 		expect(
 			readCaptureEvidenceFailure(() =>
-				buildCaptureCase({ owner: 'pages:calendar', variant: 'light-390' }, CAPTURE_RECORD_RULES),
+				buildCaptureTest({ owner: 'pages:calendar', variant: 'light-390' }, CAPTURE_RECORD_RULES),
 			),
 		).toMatchObject({ code: 'HOST', message: expect.stringContaining('"pages:calendar"') })
 		expect(
 			readCaptureEvidenceFailure(() =>
-				buildCaptureCase(
+				buildCaptureTest(
 					{ owner: 'pages:mail', variant: 'light-390', tags: ['owner:pages:mail'] },
 					CAPTURE_RECORD_RULES,
 				),
@@ -964,7 +964,7 @@ describe('buildCaptureCase', () => {
 		).toMatchObject({ code: 'HOST', message: expect.stringContaining('derives its tags') })
 		expect(
 			readCaptureEvidenceFailure(() =>
-				buildCaptureCase(
+				buildCaptureTest(
 					{ states: [], variant: 'light-390', tags: ['pages:mail', 'pages:calendar'] },
 					CAPTURE_RECORD_RULES,
 				),
@@ -975,7 +975,7 @@ describe('buildCaptureCase', () => {
 	it('refuses capture tags on a case that declares no states', () => {
 		expect(
 			readCaptureEvidenceFailure(() =>
-				buildCaptureCase({ variant: 'light-390', tags: ['pages'] }, CAPTURE_RECORD_RULES),
+				buildCaptureTest({ variant: 'light-390', tags: ['pages'] }, CAPTURE_RECORD_RULES),
 			),
 		).toMatchObject({ code: 'HOST', message: expect.stringContaining('declares no states') })
 	})
@@ -983,7 +983,7 @@ describe('buildCaptureCase', () => {
 	it('refuses a state outside the owner and a state whose part is not a declared owner', () => {
 		expect(
 			readCaptureEvidenceFailure(() =>
-				buildCaptureCase(
+				buildCaptureTest(
 					{ owner: 'pages:mail', states: ['buttons-rest'], variant: 'light-390' },
 					CAPTURE_RECORD_RULES,
 				),
@@ -994,7 +994,7 @@ describe('buildCaptureCase', () => {
 		})
 		expect(
 			readCaptureEvidenceFailure(() =>
-				buildCaptureCase(
+				buildCaptureTest(
 					{ owner: 'shell:overview', states: ['overview-deep'], variant: 'light-390' },
 					CAPTURE_RECORD_RULES,
 				),
@@ -1008,7 +1008,7 @@ describe('buildCaptureCase', () => {
 	it('lets the host part rule refuse a state it does not declare', () => {
 		expect(
 			captureError(() =>
-				buildCaptureCase(
+				buildCaptureTest(
 					{ owner: 'pages:mail', states: ['mail-unknown'], variant: 'light-390' },
 					CAPTURE_RECORD_RULES,
 				),

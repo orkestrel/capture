@@ -5,7 +5,6 @@ declare module 'vitest' {
 		readonly owner?: string
 		readonly variant?: string
 		readonly states?: readonly string[]
-		readonly consumer?: string
 	}
 	interface ProvidedContext extends CaptureProvided {
 		readonly variant: string

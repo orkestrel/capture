@@ -1,8 +1,9 @@
-import type { CaptureDestination, CaptureEntry } from '@orkestrel/capture'
+import type { CaptureCase, CaptureDestination, CaptureRules } from '@orkestrel/capture'
 import type { TestContext } from 'vitest'
+import { buildCaptureDestinations, buildCaptureRun, collectCaptureCases } from '@orkestrel/capture'
 import { inject } from 'vitest'
 import { page, server } from 'vitest/browser'
-import { CONSUMER_CASES, CONSUMER_DIRECTORY } from './constants.js'
+import { CONSUMER_CASES, CONSUMER_DIRECTORY, CONSUMER_OWNERS } from './constants.js'
 
 /** Owns the real browser tasks whose final results become consumer evidence. */
 export class ConsumerJourney {
@@ -11,11 +12,14 @@ export class ConsumerJourney {
 	readonly #request = inject('request')
 	readonly #record = inject('record')
 	readonly #sources = inject('sources')
-	readonly #tasks: Array<TestContext['task']> = []
-	readonly #emitted: CaptureDestination[] = []
+	readonly #portfolios = inject('portfolios')
+	readonly #observed: string[] = []
+	readonly #emitted: Array<readonly [state: string, path: string]> = []
 
 	async observe(context: TestContext, name: string): Promise<HTMLCanvasElement> {
-		const destination = this.#destinations().find((entry) => entry.case === name)
+		const destination = this.#destinations(collectCaptureCases(context.task.file)).find(
+			(entry) => entry.case === name,
+		)
 		if (destination === undefined) throw new Error('Missing consumer destination')
 		const canvas = document.createElement('canvas')
 		canvas.width = 280
@@ -39,76 +43,63 @@ export class ConsumerJourney {
 		if (
 			this.#capture &&
 			(this.#request?.state === undefined || this.#request.state === destination.state)
-		) {
-			await page.screenshot({ path: `../${destination.file}` })
-			this.#emitted.push(destination)
-		}
-		this.#tasks.push(context.task)
+		)
+			this.#emitted.push([
+				destination.state,
+				await page.screenshot({ path: `../${destination.file}` }),
+			])
+		this.#observed.push(destination.state)
 		return canvas
 	}
 
-	async finish(): Promise<readonly string[]> {
+	async finish(context: TestContext): Promise<readonly string[]> {
+		const cases = collectCaptureCases(context.task.file)
 		const request = this.#request
-		const passed = this.#tasks.filter((task) => task.result?.state === 'pass')
-		const entries: readonly CaptureEntry[] = this.#emitted.map((entry) => {
-			const duration = this.#tasks.find((task) => task.meta.consumer === entry.case)?.result
-				?.duration
-			if (duration === undefined) throw new Error('Vitest supplied no completed case duration')
-			return { ...entry, duration }
-		})
-		await server.commands.persistConsumer(this.#record, {
-			version: 1,
-			...(request === undefined
-				? {}
-				: {
-						identity: {
-							id: request.id,
-							stage: request.stage,
-							pid: request.pid,
-							config: request.config,
-						},
-						request,
-					}),
+		const run = buildCaptureRun({
+			cases,
+			registry: this.#destinations(cases),
+			observed: this.#observed,
+			emitted: this.#emitted,
 			variant: this.#variant,
 			time: new Date().toISOString(),
-			complete: passed.length === CONSUMER_CASES.length,
-			reference: false,
-			declarations: CONSUMER_CASES.map((entry) => ({
-				case: entry.case,
-				owner: entry.owner,
-				variant: this.#variant,
-				eligible: true,
-				states: [entry.state],
-			})),
-			registry: this.#destinations(),
-			passed: passed.map((task) => String(task.meta.consumer)),
-			observed: passed.flatMap((task) =>
-				CONSUMER_CASES.filter((entry) => entry.case === task.meta.consumer).map(
-					(entry) => entry.state,
-				),
-			),
-			entries,
+			...(request === undefined ? {} : { request }),
 		})
+		await server.commands.persistConsumer(this.#record, run)
 		const frames = await server.commands.readCaptureFrames()
-		const missing = this.#emitted.filter(
+		const missing = run.entries.filter(
 			(entry) => !frames.includes(entry.file.slice(CONSUMER_DIRECTORY.length + 1)),
 		)
 		if (missing.length > 0)
 			throw new Error(`The frame command lists no ${missing.map((entry) => entry.file).join(', ')}`)
-		return passed.map((task) => String(task.meta.consumer))
+		return run.passed
 	}
 
-	#destinations(): readonly CaptureDestination[] {
-		return CONSUMER_CASES.map((entry) => ({
-			portfolio: 'states',
-			state: entry.state,
-			scope: 'pages',
-			part: entry.part,
-			variant: this.#variant,
+	#destinations(cases: readonly CaptureCase[]): readonly CaptureDestination[] {
+		return buildCaptureDestinations(cases, this.#rules(), {
 			project: `journey:${this.#variant}`,
-			file: `${CONSUMER_DIRECTORY}/pages/${entry.state}--${this.#variant}.png`,
-			case: entry.case,
-			sources: { own: [`src/${entry.part}.ts`], ...this.#sources },
-		}))
+			portfolios: this.#portfolios
+				.filter((root) => root.directory === CONSUMER_DIRECTORY)
+				.map((root) => ({
+					...root,
+					variant: this.#variant,
+					states: CONSUMER_CASES.map((entry) => entry.state),
+				})),
+		})
+	}
+
+	#rules(): CaptureRules {
+		return {
+			owners: CONSUMER_OWNERS,
+			part: (state) => {
+				const entry = CONSUMER_CASES.find((candidate) => candidate.state === state)
+				if (entry === undefined) throw new Error(`Undeclared consumer state: ${state}`)
+				return entry.owner
+			},
+			sources: (owner) => {
+				const entry = CONSUMER_CASES.find((candidate) => candidate.owner === owner)
+				if (entry === undefined) throw new Error(`Unattributed consumer owner: ${owner}`)
+				return { own: [`src/${entry.part}.ts`], ...this.#sources }
+			},
+		}
 	}
 }

@@ -2,7 +2,6 @@ import type {
 	CaptureArtifactLines,
 	CaptureAssertion,
 	CaptureCase,
-	CaptureCaseInput,
 	CaptureDeclaration,
 	CaptureDestination,
 	CaptureDestinationOptions,
@@ -17,6 +16,7 @@ import type {
 	CaptureSelection,
 	CaptureStatus,
 	CaptureTask,
+	CaptureTestInput,
 	CaptureTestOptions,
 } from './types.js'
 import { arrayOf, isError, isFiniteNumber, isRecord, isString, preview } from '@orkestrel/contract'
@@ -697,11 +697,11 @@ export function buildCaptureTags(owners: readonly string[]): readonly string[] {
  *
  * @example
  * ```ts
- * buildCaptureCase({ owner: 'pages:mail', states: ['inbox'], variant: 'light-390' }, rules).tags
+ * buildCaptureTest({ owner: 'pages:mail', states: ['inbox'], variant: 'light-390' }, rules).tags
  * // ['owner:pages', 'owner:pages:mail', 'pages', 'pages:mail']
  * ```
  */
-export function buildCaptureCase(input: CaptureCaseInput, rules: CaptureRules): CaptureTestOptions {
+export function buildCaptureTest(input: CaptureTestInput, rules: CaptureRules): CaptureTestOptions {
 	const declared = buildCaptureTags(rules.owners)
 	const owner = input.owner
 	if (owner !== undefined && !declared.includes(`${CAPTURE_OWNER_PREFIX}${owner}`))

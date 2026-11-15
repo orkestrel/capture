@@ -651,10 +651,10 @@ export interface CaptureCase {
  *
  * @example
  * ```ts
- * const input: CaptureCaseInput = { owner: 'pages:mail', states: ['inbox'], variant: 'light-390' }
+ * const input: CaptureTestInput = { owner: 'pages:mail', states: ['inbox'], variant: 'light-390' }
  * ```
  */
-export interface CaptureCaseInput {
+export interface CaptureTestInput {
 	readonly owner?: string
 	readonly states?: readonly string[]
 	readonly variant: string

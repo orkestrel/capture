@@ -11,9 +11,9 @@ import { INPUTS, IntegrityFixture } from '../../setupServer.js'
 // The integrity cost of one journey stage, read as the latency of `stamp` over an in-process
 // producer, at the population the capture cost map measured (131 owners declaring 185 states over
 // 310 input files, one variant, each destination attributed to its own file, one shared file, and
-// one test glob) and at a population of fixture size. A `stamp` call pays both glob-matching passes
-// over every attributed source triple, so this reading carries their cost. No gate collects this
-// file; run it with `npm run test:bench -- tests/src/server/CaptureIntegrity.bench.ts`.
+// one test glob) and at a population of fixture size. A `stamp` call on a fresh engine pays both
+// glob-matching passes over every attributed source triple, so this reading carries their cost. No
+// gate collects this file; run it with `npm run test:bench -- tests/src/server/CaptureIntegrity.bench.ts`.
 
 it.for([
 	{ label: 'veneer', owners: 131, states: 185, inputs: 310 },
@@ -81,7 +81,8 @@ it.for([
 					variants: [variant],
 					args: [`--outputFile.json=${resolve(fixture.root, report)}`],
 				}
-				const stage = await fixture.engine.stamp({
+				// An engine keeps its matched subsets across stamps, so each stage starts on a fresh engine.
+				const stage = await server.createCaptureIntegrity(fixture.options).stamp({
 					request,
 					report,
 					projects: [{ name: project, variant, inputs: INPUTS, record }],

@@ -541,39 +541,51 @@ export function buildCaptureDigest(
 }
 
 /**
- * Filters an input population's paths matching any listed pattern, memoizing each list's subset.
+ * Computes the key under which a pattern list's matched subset of one input population is memoized.
  *
  * @remarks
- * The memo belongs to one owning operation. Its key is the population's digest with the sorted
- * patterns, so a list repeated over one population is matched once. Each path is matched with the
- * `matchesGlob` function from `node:path`.
+ * The key joins the population's digest with the sorted patterns, so a list in any order over one
+ * population shares a key, and one population never answers for another.
+ *
+ * @param inputs - The digested input population the patterns match against
+ * @param patterns - The native glob patterns, in any order
+ * @returns The memo key of the population and the pattern list
+ *
+ * @example
+ * ```ts
+ * const inputs = buildCaptureDigest(['src/**'], { 'src/a.ts': 'f'.repeat(64) })
+ * computeCaptureMatchKey(inputs, ['src/*.ts', 'src/*.md']) === computeCaptureMatchKey(inputs, ['src/*.md', 'src/*.ts']) // true
+ * ```
+ */
+export function computeCaptureMatchKey(inputs: CaptureDigest, patterns: readonly string[]): string {
+	return JSON.stringify([inputs.digest, patterns.toSorted()])
+}
+
+/**
+ * Filters an input population's paths that match any listed pattern.
+ *
+ * @remarks
+ * Each path is matched with the `matchesGlob` function from `node:path`.
  *
  * @param inputs - The digested input population whose paths are matched
  * @param patterns - The native glob patterns
- * @param matches - The owning operation's memo of matched subsets
  * @returns The population's paths that match at least one pattern, in population order
  *
  * @example
  * ```ts
  * const inputs = buildCaptureDigest(['src/**'], { 'src/a.ts': 'f'.repeat(64), 'src/b.md': 'e'.repeat(64) })
- * filterCaptureInputs(inputs, ['src/*.ts'], new Map()) // Set { 'src/a.ts' }
+ * filterCaptureInputs(inputs, ['src/*.ts']) // Set { 'src/a.ts' }
  * ```
  */
 export function filterCaptureInputs(
 	inputs: CaptureDigest,
 	patterns: readonly string[],
-	matches: Map<string, ReadonlySet<string>>,
 ): ReadonlySet<string> {
-	const key = JSON.stringify([inputs.digest, patterns.toSorted()])
-	const known = matches.get(key)
-	if (known !== undefined) return known
-	const matched = new Set(
+	return new Set(
 		Object.keys(inputs.files).filter((path) =>
 			patterns.some((pattern) => matchesGlob(path, pattern)),
 		),
 	)
-	matches.set(key, matched)
-	return matched
 }
 
 /**

@@ -95,6 +95,7 @@ import {
 	readCaptureImage,
 	describeCaptureOutput,
 	filterCaptureInputs,
+	computeCaptureMatchKey,
 } from './helpers.js'
 
 /**
@@ -123,6 +124,8 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	readonly #root: string
 	readonly #roots: ReadonlyMap<string, string>
 	readonly #hash: CaptureHashHandler
+	// Glob answers read no disk and the key carries the population digest, so every stamp shares them.
+	readonly #matches = new Map<string, ReadonlySet<string>>()
 
 	/**
 	 * Binds the engine to an explicit workspace and host portfolio mapping.
@@ -269,8 +272,6 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		const snapshots = new Map<string, CaptureFileSnapshot | undefined>()
 		const digests = new Map<string, CaptureDigest>()
 		const stable = new Map<string, true>()
-		// Glob answers read no disk, so both passes share one memo of matched subsets.
-		const matches = new Map<string, ReadonlySet<string>>()
 		const reporter = this.#fresh(options.report, before, snapshots)
 		const report = readCaptureReport(this.#json(options.report))
 		if (report.start < before.time || report.end > Date.now())
@@ -311,7 +312,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				throw new CaptureError('Missing pre-execution project snapshot', { code: 'EVIDENCE' })
 			this.#attest(run, evidence, snapshot.inputs.files, snapshots)
 			for (const destination of run.registry)
-				this.#stable(destination, snapshot.inputs, snapshots, digests, stable, matches)
+				this.#stable(destination, snapshot.inputs, snapshots, digests, stable)
 			return { file, run, artifact }
 		})
 		const entries = records.flatMap(({ run }) => run.entries)
@@ -392,7 +393,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			if (project === undefined)
 				throw new CaptureError('Missing final input snapshot', { code: 'EVIDENCE' })
 			for (const destination of record.run.registry)
-				this.#stable(destination, project.inputs, finalSnapshots, redigests, restable, matches)
+				this.#stable(destination, project.inputs, finalSnapshots, redigests, restable)
 			if (
 				this.#digest(project.inputs.patterns, finalSnapshots, redigests).digest !==
 				project.inputs.digest
@@ -1040,7 +1041,6 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		snapshots: Map<string, CaptureFileSnapshot | undefined>,
 		digests: Map<string, CaptureDigest>,
 		stable: Map<string, true>,
-		matches: Map<string, ReadonlySet<string>>,
 	): void {
 		const key = JSON.stringify([
 			before.digest,
@@ -1056,7 +1056,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 					`Attribution outside the predeclared host population: ${entry.file}`,
 					{ code: 'STAGE' },
 				)
-			const matched = filterCaptureInputs(before, patterns, matches)
+			const matched = this.#match(before, patterns)
 			const previous = Object.fromEntries(
 				Object.entries(before.files).filter(([file]) => matched.has(file)),
 			)
@@ -1068,7 +1068,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			// Every current file is a member of the predeclared population, so its subsets answer here.
 			if (
 				patterns.some((pattern) => {
-					const files = filterCaptureInputs(before, [pattern], matches)
+					const files = this.#match(before, [pattern])
 					return !Object.keys(current.files).some((file) => files.has(file))
 				})
 			)
@@ -1077,6 +1077,15 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				})
 		}
 		stable.set(key, true)
+	}
+
+	#match(inputs: CaptureDigest, patterns: readonly string[]): ReadonlySet<string> {
+		const key = computeCaptureMatchKey(inputs, patterns)
+		const known = this.#matches.get(key)
+		if (known !== undefined) return known
+		const matched = filterCaptureInputs(inputs, patterns)
+		this.#matches.set(key, matched)
+		return matched
 	}
 
 	#destination(entry: CaptureDestination, paths?: Map<string, string>): void {

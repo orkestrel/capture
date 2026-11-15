@@ -1245,6 +1245,35 @@ describe('CaptureIntegrity pass-scoped file readings', { timeout: FIXTURE_TIMEOU
 	})
 })
 
+describe('CaptureIntegrity matched subsets across stamps', { timeout: FIXTURE_TIMEOUT }, () => {
+	it.for([
+		{ list: 'own', file: 'src/mail/extra.ts' },
+		{ list: 'shared', file: 'src/shared/extra.ts' },
+	] as const)(
+		'matches the $list list against each stamp population after $file joins it',
+		async ({ list, file }) => {
+			const fixture = new IntegrityFixture({ core, server })
+			try {
+				fixture.seed()
+				const first = await fixture.capture()
+				const before = first.entries.find((entry) => entry.file === MAIL_IMAGE)
+				if (before === undefined) throw new Error('The first stamp holds no mail screen entry')
+				expect(Object.keys(list === 'own' ? before.own : before.shared.files)).not.toContain(file)
+				fixture.write(file, `// ${file} joins the ${list} sources\n`)
+				fixture.seed()
+				// The same engine stamps again, so its matched subsets of the earlier population are present.
+				const second = await fixture.capture()
+				const after = second.entries.find((entry) => entry.file === MAIL_IMAGE)
+				expect(
+					Object.keys(list === 'own' ? (after?.own ?? {}) : (after?.shared.files ?? {})),
+				).toContain(file)
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+})
+
 describe(
 	'CaptureIntegrity serialized and physical containment',
 	{ timeout: FIXTURE_TIMEOUT },

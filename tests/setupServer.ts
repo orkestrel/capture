@@ -2582,14 +2582,14 @@ for (const entry of CONSUMER_CASES)
 		entry.case,
 		{
 			tags: [...entry.tags],
-			meta: { owner: entry.owner, variant, states: [entry.state], consumer: entry.case },
+			meta: { owner: entry.owner, variant, states: [entry.state] },
 		},
 		async (context) => {
 			expect((await journey.observe(context, entry.case)).isConnected).toBe(true)
 		},
 	)
-test(CONSUMER_FINAL, { tags: [...CONSUMER_TAGS] }, async () => {
-	expect((await journey.finish()).length).toBeGreaterThan(0)
+test(CONSUMER_FINAL, { tags: [...CONSUMER_TAGS] }, async (context) => {
+	expect((await journey.finish(context)).length).toBeGreaterThan(0)
 })
 `
 

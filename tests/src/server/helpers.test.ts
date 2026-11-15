@@ -30,6 +30,7 @@ import {
 	buildCaptureChangePlan,
 	buildCaptureDigest,
 	filterCaptureInputs,
+	computeCaptureMatchKey,
 	buildCaptureLookupJournal,
 	buildCaptureDiscoveryConfig,
 	buildCaptureFilter,
@@ -486,103 +487,117 @@ describe('buildCaptureDigest', () => {
 	})
 })
 
-describe('filterCaptureInputs', () => {
-	it('answers as matchesGlob over the cost map population and edge paths through one memo', () => {
-		// The cost map's population: 131 owners, each attributed to its own file, one shared file,
-		// and one test glob, over 310 input files.
-		const parts = Array.from({ length: 131 }, (_, index) => `src/parts/part-${index}.ts`)
-		const population = buildCaptureDigest(
-			INPUTS,
-			Object.fromEntries(
-				[
-					...parts,
-					...Array.from({ length: 174 }, (_, index) => `src/filler/file-${index}.ts`),
-					'src/mail/view.ts',
-					'src/board/view.ts',
-					'src/shared/theme.ts',
-					'behavior/journeys.ts',
-					'fixture with spaces.config.ts',
-				].map((path) => [path, FIXTURE_HASH]),
-			),
-		)
-		const edges = buildCaptureDigest(
-			['**'],
-			Object.fromEntries(
-				[
-					'src/a.ts',
-					'src/b.md',
-					'src/c.ts',
-					'src/d.ts',
-					'src/a1.ts',
-					'src/.hidden.ts',
-					'src/.dir/a.ts',
-					'src/x/y/a.ts',
-					'src/',
-					'src/a.ts/',
-					'src//a.ts',
-					'./src/a.ts',
-					'src/x/../a.ts',
-					'SRC/A.TS',
-					'a.ts',
-					'.git/x',
-					'src/parts/part-1.ts',
-					win32.join('src', 'a.ts'),
-					win32.join('src', 'x', 'a.ts'),
-				].map((path) => [path, FIXTURE_HASH]),
-			),
-		)
-		const lists = [
-			...parts.map((part) => [part]),
-			['src/shared/theme.ts'],
-			['behavior/**'],
-			INPUTS,
-			...[
-				'**',
-				'src/**',
-				'src/*.ts',
-				'src/**/a.ts',
-				'**/*.ts',
-				'*.ts',
+describe('filterCaptureInputs and computeCaptureMatchKey', () => {
+	// The cost map's population: 131 owners, each attributed to its own file, one shared file,
+	// and one test glob, over 310 input files.
+	const parts = Array.from({ length: 131 }, (_, index) => `src/parts/part-${index}.ts`)
+	const population = buildCaptureDigest(
+		INPUTS,
+		Object.fromEntries(
+			[
+				...parts,
+				...Array.from({ length: 174 }, (_, index) => `src/filler/file-${index}.ts`),
+				'src/mail/view.ts',
+				'src/board/view.ts',
+				'src/shared/theme.ts',
+				'behavior/journeys.ts',
+				'fixture with spaces.config.ts',
+			].map((path) => [path, FIXTURE_HASH]),
+		),
+	)
+	const edges = buildCaptureDigest(
+		['**'],
+		Object.fromEntries(
+			[
 				'src/a.ts',
+				'src/b.md',
+				'src/c.ts',
+				'src/d.ts',
+				'src/a1.ts',
+				'src/.hidden.ts',
+				'src/.dir/a.ts',
+				'src/x/y/a.ts',
+				'src/',
 				'src/a.ts/',
-				'src/{a,b}.ts',
-				'src/a{1..3}.ts',
-				'src/[a-c].ts',
-				'src/[!a-c].ts',
-				'src/+(a|b).ts',
-				'src/.*',
-			].map((pattern) => [pattern]),
-			['src/{a,b}.ts', '**/*.ts'],
-		]
-		const matches = new Map<string, ReadonlySet<string>>()
+				'src//a.ts',
+				'./src/a.ts',
+				'src/x/../a.ts',
+				'SRC/A.TS',
+				'a.ts',
+				'.git/x',
+				'src/parts/part-1.ts',
+				win32.join('src', 'a.ts'),
+				win32.join('src', 'x', 'a.ts'),
+			].map((path) => [path, FIXTURE_HASH]),
+		),
+	)
+	const lists = [
+		...parts.map((part) => [part]),
+		['src/shared/theme.ts'],
+		['behavior/**'],
+		INPUTS,
+		...[
+			'**',
+			'src/**',
+			'src/*.ts',
+			'src/**/a.ts',
+			'**/*.ts',
+			'*.ts',
+			'src/a.ts',
+			'src/a.ts/',
+			'src/{a,b}.ts',
+			'src/a{1..3}.ts',
+			'src/[a-c].ts',
+			'src/[!a-c].ts',
+			'src/+(a|b).ts',
+			'src/.*',
+		].map((pattern) => [pattern]),
+		['src/{a,b}.ts', '**/*.ts'],
+	]
+	const wide = buildCaptureDigest(['src/**'], {
+		'src/a.ts': FIXTURE_HASH,
+		'src/b.ts': FIXTURE_HASH,
+	})
+	const narrow = buildCaptureDigest(['src/**'], { 'src/b.ts': FIXTURE_HASH })
+
+	it('answers as matchesGlob over the cost map population and edge paths, leaving its arguments unchanged', () => {
+		const before = JSON.stringify([population, edges, lists])
 		const answers = [population, edges].flatMap((inputs) =>
 			lists.map((patterns) => ({
-				first: filterCaptureInputs(inputs, patterns, matches),
-				second: filterCaptureInputs(inputs, patterns.toReversed(), matches),
+				actual: [...filterCaptureInputs(inputs, patterns)],
 				expected: Object.keys(inputs.files).filter((path) =>
 					patterns.some((pattern) => matchesGlob(path, pattern)),
 				),
 			})),
 		)
-		expect(answers.map(({ first }) => [...first])).toEqual(answers.map(({ expected }) => expected))
-		expect(answers.every(({ first, second }) => first === second)).toBe(true)
-		expect(matches.size).toBe(2 * new Set(lists.map((list) => list.toSorted().join('\n'))).size)
+		expect(answers.map(({ actual }) => actual)).toEqual(answers.map(({ expected }) => expected))
 		expect(answers.filter(({ expected }) => expected.length > 0).length).toBeGreaterThan(
 			lists.length,
 		)
+		expect(JSON.stringify([population, edges, lists])).toBe(before)
+		expect([...filterCaptureInputs(wide, ['src/**'])]).toEqual(['src/a.ts', 'src/b.ts'])
+		expect([...filterCaptureInputs(narrow, ['src/**'])]).toEqual(['src/b.ts'])
+		expect([...filterCaptureInputs(narrow, ['src/a.ts'])]).toEqual([])
+		expect([...filterCaptureInputs(wide, [])]).toEqual([])
 	})
 
-	it('keeps one population from answering for another with the same patterns', () => {
-		const matches = new Map<string, ReadonlySet<string>>()
-		const wide = buildCaptureDigest(['src/**'], {
-			'src/a.ts': FIXTURE_HASH,
-			'src/b.ts': FIXTURE_HASH,
-		})
-		const narrow = buildCaptureDigest(['src/**'], { 'src/b.ts': FIXTURE_HASH })
-		expect([...filterCaptureInputs(wide, ['src/**'], matches)]).toEqual(['src/a.ts', 'src/b.ts'])
-		expect([...filterCaptureInputs(narrow, ['src/**'], matches)]).toEqual(['src/b.ts'])
-		expect([...filterCaptureInputs(narrow, ['src/a.ts'], matches)]).toEqual([])
-		expect([...filterCaptureInputs(wide, [], matches)]).toEqual([])
+	it('keys a list in any order alike within one population and apart across populations', () => {
+		const keys = [population, edges].flatMap((inputs) =>
+			lists.map((patterns) => ({
+				first: computeCaptureMatchKey(inputs, patterns),
+				second: computeCaptureMatchKey(inputs, patterns.toReversed()),
+			})),
+		)
+		expect(keys.every(({ first, second }) => first === second)).toBe(true)
+		expect(new Set(keys.map(({ first }) => first)).size).toBe(
+			2 * new Set(lists.map((list) => list.toSorted().join('\n'))).size,
+		)
+		expect(computeCaptureMatchKey(wide, ['src/**'])).not.toBe(
+			computeCaptureMatchKey(narrow, ['src/**']),
+		)
+		expect(computeCaptureMatchKey(wide, ['src/a.ts', 'src/b.ts'])).toBe(
+			computeCaptureMatchKey(wide, ['src/b.ts', 'src/a.ts']),
+		)
 	})
 })
 

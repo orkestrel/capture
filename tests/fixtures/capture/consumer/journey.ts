@@ -10,7 +10,7 @@ describe('mail [workspace]', () => {
 		'opens (inbox)',
 		{
 			tags: ['owner:pages', 'owner:pages:mail', 'pages', 'pages:mail'],
-			meta: { owner: 'pages:mail', variant, states: ['inbox'], consumer: CONSUMER_CASE },
+			meta: { owner: 'pages:mail', variant, states: ['inbox'] },
 		},
 		async (context) => {
 			expect((await journey.observe(context, CONSUMER_CASE)).isConnected).toBe(true)
@@ -20,12 +20,7 @@ describe('mail [workspace]', () => {
 		'opens (inbox) extra',
 		{
 			tags: ['owner:pages', 'owner:pages:mail', 'pages', 'pages:mail'],
-			meta: {
-				owner: 'pages:mail',
-				variant,
-				states: ['archive'],
-				consumer: 'mail [workspace] opens (inbox) extra',
-			},
+			meta: { owner: 'pages:mail', variant, states: ['archive'] },
 		},
 		async (context) => {
 			expect(
@@ -38,7 +33,7 @@ test(
 	'opens board',
 	{
 		tags: ['owner:pages', 'owner:pages:board', 'pages', 'pages:board'],
-		meta: { owner: 'pages:board', variant, states: ['board'], consumer: 'opens board' },
+		meta: { owner: 'pages:board', variant, states: ['board'] },
 	},
 	async (context) => {
 		expect((await journey.observe(context, 'opens board')).isConnected).toBe(true)
@@ -56,7 +51,7 @@ test(
 			'pages:board',
 		],
 	},
-	async () => {
-		expect((await journey.finish()).length).toBeGreaterThan(0)
+	async (context) => {
+		expect((await journey.finish(context)).length).toBeGreaterThan(0)
 	},
 )
