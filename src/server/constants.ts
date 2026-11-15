@@ -73,6 +73,9 @@ export const CAPTURE_STAGES = Object.freeze({
 /**
  * Defines each command's frozen options for Node's standard argument parser.
  *
+ * @remarks A boolean option whose default is `true` also reads its `--no-` form, which sets it to
+ * `false`; `bail` is the one such option.
+ *
  * @example
  * ```ts
  * CAPTURE_COMMAND_OPTIONS.journey.variant.multiple // true
@@ -85,6 +88,7 @@ export const CAPTURE_COMMAND_OPTIONS = Object.freeze({
 		case: Object.freeze({ type: 'string' }),
 		changed: Object.freeze({ type: 'string' }),
 		plan: Object.freeze({ type: 'boolean' }),
+		bail: Object.freeze({ type: 'boolean', default: true }),
 		mode: Object.freeze({ type: 'string' }),
 	}),
 	capture: Object.freeze({
@@ -94,6 +98,7 @@ export const CAPTURE_COMMAND_OPTIONS = Object.freeze({
 		state: Object.freeze({ type: 'string' }),
 		changed: Object.freeze({ type: 'string' }),
 		plan: Object.freeze({ type: 'boolean' }),
+		bail: Object.freeze({ type: 'boolean', default: true }),
 		mode: Object.freeze({ type: 'string' }),
 	}),
 	stale: Object.freeze({
@@ -128,8 +133,10 @@ export const CAPTURE_COMMAND_OPTIONS = Object.freeze({
 	registry: Object.freeze({
 		variant: Object.freeze({ type: 'string', multiple: true }),
 		config: Object.freeze({ type: 'string' }),
+		bail: Object.freeze({ type: 'boolean', default: true }),
 		mode: Object.freeze({ type: 'string' }),
 	}),
+	progress: Object.freeze({}),
 } as const)
 
 /**
@@ -181,6 +188,34 @@ export const CAPTURE_VITEST_ENTRY = 'node_modules/vitest/vitest.mjs'
  * ```
  */
 export const CAPTURE_RUNS_DIRECTORY = 'runs'
+
+/**
+ * Names the ending of the progress file each stage writes beneath its invocation's run directory.
+ *
+ * @remarks The stage's name precedes it, so `selected` writes `selected.progress.jsonl`.
+ *
+ * @example
+ * ```ts
+ * `tmp/capture/${CAPTURE_RUNS_DIRECTORY}/a/selected${CAPTURE_PROGRESS_SUFFIX}`
+ * ```
+ */
+export const CAPTURE_PROGRESS_SUFFIX = '.progress.jsonl'
+
+/**
+ * Names the prefixes a journey wrapper derives its own paths from.
+ *
+ * @remarks `scratch` precedes the variant in the sibling of the evidence root a run without frame
+ * capture writes to, and `direct` precedes the random identity of a run no runner started.
+ *
+ * @example
+ * ```ts
+ * `tmp/captures/${CAPTURE_WRAPPER_PREFIXES.scratch}light-390` // 'tmp/captures/no-capture-light-390'
+ * ```
+ */
+export const CAPTURE_WRAPPER_PREFIXES = Object.freeze({
+	scratch: 'no-capture-',
+	direct: 'direct-',
+} as const)
 
 /** Names the create-only child record beneath an invocation's run directory.
  * @example
@@ -325,6 +360,7 @@ export const CAPTURE_SUBCOMMANDS: readonly string[] = Object.freeze([
 	'preflight',
 	'sheets',
 	'registry',
+	'progress',
 ])
 
 /**
@@ -395,16 +431,19 @@ export const CAPTURE_DISCOVERY = Object.freeze({
 export const CAPTURE_USAGE = [
 	'Usage: capture <command> [arguments]',
 	'Commands:',
-	'  journey <selector> [--variant <name>]... [--case <full name>] [--mode <name>] [--config <file>]',
-	'  journey --changed <ref> [--plan] [--variant <name>]... [--case <full name>] [--mode <name>] [--config <file>]',
-	'  frames <selector> [--variant <name>]... [--case <full name>] [--state <name>] [--mode <name>] [--config <file>]',
-	'  frames --changed <ref> [--plan] [--variant <name>]... [--case <full name>] [--state <name>] [--mode <name>] [--config <file>]',
+	'  journey <selector> [--variant <name>]... [--case <full name>] [--no-bail] [--mode <name>] [--config <file>]',
+	'  journey --changed <ref> [--plan] [--variant <name>]... [--case <full name>] [--no-bail] [--mode <name>] [--config <file>]',
+	'  frames <selector> [--variant <name>]... [--case <full name>] [--state <name>] [--no-bail] [--mode <name>] [--config <file>]',
+	'  frames --changed <ref> [--plan] [--variant <name>]... [--case <full name>] [--state <name>] [--no-bail] [--mode <name>] [--config <file>]',
 	'  stale <selector> [--variant <name>]... [--case <full name>] [--state <name>] [--portfolio <name>] [--mode <name>] [--config <file>]',
 	'  preflight <selector> [--variant <name>]... [--state <name>] [--case <full name>] [--portfolio <name>] [--mode <name>] [--config <file>] [--journeys <directory>] [--checks <module>]',
 	'  sheets <selector> --output <new directory> [--variant <name>]... [--state <name>] [--case <full name>] [--portfolio <name>] [--mode <name>] [--config <file>] [--journeys <directory>] [--checks <module>]',
-	'  registry [--variant <name>]... [--mode <name>] [--config <file>]',
+	'  registry [--variant <name>]... [--no-bail] [--mode <name>] [--config <file>]',
+	'  progress',
 	'--changed takes one Git ref; HEAD selects uncommitted work. It cannot accompany a selector.',
 	'--plan requires --changed and prints paths and commands after read-only discovery; no execution child starts.',
-	'Only --variant repeats. Every flag except --plan takes one nonempty value, as --flag value or --flag=value; use --flag=-x for a value beginning with a dash. The -- terminator is refused.',
+	'--no-bail runs every selected case after a failure; by default a stage stops at its first failed case.',
+	'progress prints where the stage that is running, or that ran last, stands, from its progress file.',
+	'Only --variant repeats. Every flag except --plan and --no-bail takes one nonempty value, as --flag value or --flag=value; use --flag=-x for a value beginning with a dash. The -- terminator is refused.',
 	'Exit: 0 passed, 1 failed or refused by the evidence, 64 refused usage.',
 ].join('\n')

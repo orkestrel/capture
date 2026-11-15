@@ -20,6 +20,7 @@ import {
 	MAIL,
 	readCaptureRuns,
 	CAPTURE_USAGE_CASES,
+	CAPTURE_PROGRESS_LINES,
 } from '../../setupServer.js'
 describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each(['registry', 'journey'])(
@@ -398,6 +399,48 @@ describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(stderr.join('')).toContain('Capture stage child did not exit successfully')
 		} finally {
 			fixture.destroy()
+		}
+	})
+
+	it('prints where the stage that ran last stands, and refuses an argument or a workspace with no progress file', async () => {
+		const scratch = createScratch({ prefix: 'cli-progress-' })
+		const stdout: string[] = []
+		const stderr: string[] = []
+		const cli = new CaptureCLI({
+			root: scratch.path,
+			stdout: (text) => stdout.push(text),
+			stderr: (text) => stderr.push(text),
+		})
+		const file = `${CAPTURE_DEFAULTS.requests}/runs/run-1/selected.progress.jsonl`
+		try {
+			expect(await cli.execute(['progress'])).toBe(1)
+			expect(stderr.join('')).toContain(
+				`No stage has written a progress file under ${CAPTURE_DEFAULTS.requests}/runs`,
+			)
+			scratch.write(file, '{"event":"init"')
+			expect(await cli.execute(['progress'])).toBe(0)
+			expect(stdout.join('')).toBe(
+				`progress ${file}\nNo run has written a complete progress line yet\n`,
+			)
+			scratch.write(file, `${CAPTURE_PROGRESS_LINES.join('\n')}\n`)
+			expect(await cli.execute(['progress'])).toBe(0)
+			const text = stdout.slice(1).join('')
+			expect(text).toMatch(
+				new RegExp(`^progress ${file}\\nrun 7 live bail=1: 2/3 cases, elapsed `, 'u'),
+			)
+			expect(text).toContain('running')
+			expect(text).toContain('[journey:wide] closes the run')
+			expect(text).toContain('opens mail')
+			expect(text).toContain('Error: the inbox is empty')
+			scratch.write(file, '{"event":"init"}\n')
+			expect(await cli.execute(['progress'])).toBe(1)
+			expect(stderr.join('')).toContain(`Cannot read the progress file ${file}`)
+			expect(stdout).toHaveLength(2)
+			expect(await cli.execute(['progress', 'pages:mail'])).toBe(64)
+			expect(await cli.execute(['progress', '--config', 'x.ts'])).toBe(64)
+			expect(stderr.join('')).toContain('Usage: capture progress')
+		} finally {
+			scratch.destroy()
 		}
 	})
 })

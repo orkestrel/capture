@@ -22,6 +22,7 @@ The manifest declares these peer ranges; install the browser peers when you run 
 | `vite`                       | `^8.3.5`              | Yes                      |
 | `@vitest/browser-playwright` | `^4.1.12 \|\| ^5.0.5` | Optional                 |
 | `playwright`                 | `^1.61.0`             | Optional                 |
+| `@orkestrel/test`            | `~0.0.41`             | Yes                      |
 
 ## Requirements
 
@@ -60,22 +61,23 @@ contact sheets. Preflight and sheets report `acceptance: false`; they provide it
 
 ## Commands
 
-Every command accepts `--config <file>`. The principal selection and output flags are as follows:
+Every command but `progress` accepts `--config <file>`. The principal selection and output flags are as follows:
 
-| Command                                          | Flags and behavior                                                                                                                                                                       |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `capture registry`                               | `--variant <name>` repeats to refresh selected producing variants; `--mode <name>` selects the wrapper's mode. Takes no selector.                                                        |
-| `capture journey <selector>`                     | `--variant <name>` repeats; `--case <full name>` selects an exact case; `--mode <name>` selects the wrapper mode. Use `--changed <ref>` instead of the selector, with optional `--plan`. |
-| `capture frames <selector>`                      | Journey flags plus `--state <name>` to resolve a state through fresh passing lookup evidence; `--mode <name>` selects the wrapper mode.                                                  |
-| `capture stale <selector>`                       | `--variant <name>` repeats; `--case <full name>`, `--state <name>`, `--portfolio <name>`, and `--mode <name>` narrow the freshness reading.                                              |
-| `capture preflight <selector>`                   | Stale flags plus `--mode <name>`, `--journeys <directory>` for artifacts, and `--checks <module>` for the host's `CAPTURE_CHECKS` export.                                                |
-| `capture sheets <selector> --output <directory>` | Preflight flags, including `--mode <name>`, plus required `--output <directory>` for a new contained directory outside selected captures.                                                |
+| Command                                          | Flags and behavior                                                                                                                                                                                                                             |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `capture registry`                               | `--variant <name>` repeats to refresh selected producing variants; `--no-bail` runs every case after a failure; `--mode <name>` selects the wrapper's mode. Takes no selector.                                                                 |
+| `capture journey <selector>`                     | `--variant <name>` repeats; `--case <full name>` selects an exact case; `--no-bail` runs every selected case after a failure; `--mode <name>` selects the wrapper mode. Use `--changed <ref>` instead of the selector, with optional `--plan`. |
+| `capture frames <selector>`                      | Journey flags plus `--state <name>` to resolve a state through fresh passing lookup evidence; `--mode <name>` selects the wrapper mode.                                                                                                        |
+| `capture stale <selector>`                       | `--variant <name>` repeats; `--case <full name>`, `--state <name>`, `--portfolio <name>`, and `--mode <name>` narrow the freshness reading.                                                                                                    |
+| `capture preflight <selector>`                   | Stale flags plus `--mode <name>`, `--journeys <directory>` for artifacts, and `--checks <module>` for the host's `CAPTURE_CHECKS` export.                                                                                                      |
+| `capture sheets <selector> --output <directory>` | Preflight flags, including `--mode <name>`, plus required `--output <directory>` for a new contained directory outside selected captures.                                                                                                      |
+| `capture progress`                               | Takes no argument. Prints the cases done against the cases known, the failures, the case running, and the time elapsed, from the progress file of the stage that is running or that ran last.                                                  |
 
 `--mode <name>` is available on every command that reads the wrapper. It reaches discovery and execution children and wrapper project factories; omission keeps Vitest's default mode.
 
 A selector is `all` or a declared colon-separated owner path. Only `--variant` repeats. Every
-flag except `--plan` takes a nonempty value as `--flag value` or `--flag=value`; a value beginning
-with a dash needs equals form. The CLI refuses the `--` terminator and repeated single-value flags.
+flag except `--plan` and `--no-bail` takes a nonempty value as `--flag value` or `--flag=value`; a
+value beginning with a dash needs equals form. The CLI refuses the `--` terminator and repeated single-value flags.
 
 Registry refresh checks inherited manifest and lookup journal schemas before starting a stage.
 An unreadable or unsupported document refuses the refresh and names the file to inspect and repair.
@@ -106,6 +108,9 @@ parent PID, process arguments, wrapper path, and project declarations. When the 
 return `buildCaptureDiscoveryConfig()` so discovery starts no browser or test. For an execution
 child, read `readCaptureRequest` with the same parent, arguments, and wrapper identity plus the
 declared owners and variants. The runner passes the request directory through `CAPTURE_REQUESTS`.
+`buildCaptureWrapper` from `@orkestrel/capture/server` performs these steps from the host's
+declarations, provides each project the following values, and mounts the progress plugin the
+`capture progress` command reads.
 
 Each project's `test.provide` object supplies the following host declarations:
 
@@ -116,6 +121,7 @@ Each project's `test.provide` object supplies the following host declarations:
 | `final`               | The exact final case name that persists the run record, including under exact-case selection.                                           |
 | `directory`, `record` | The primary evidence directory and the project's declared record path. Stage records bind the request's invocation, stage, and variant. |
 | `inputs`              | Bounded native glob patterns for the input snapshot.                                                                                    |
+| `sources`             | The `shared` and `tests` source patterns the suite attributes to every destination.                                                     |
 | `portfolios`          | Authorized portfolio roots with their `portfolio`, `directory`, and `scoped` declarations.                                              |
 | `uniform`             | Optional owner selectors for mixed-framing checks. Omission checks every scope; an empty list checks none.                              |
 | `standalone`          | Optional portfolio roots with no stamping route through this wrapper.                                                                   |

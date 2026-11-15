@@ -1,5 +1,6 @@
 import type { ParseArgsOptionsConfig, parseArgs } from 'node:util'
 import type { DuplexInterface } from '@orkestrel/process'
+import type { ProgressPluginInterface, ProgressRun } from '@orkestrel/test/server'
 import type {
 	CaptureCollectionReceipt,
 	CaptureDeclaration,
@@ -8,11 +9,13 @@ import type {
 	CaptureFreshness,
 	CaptureLookup,
 	CapturePortfolioRoot,
+	CaptureProvided,
 	CaptureReceipt,
 	CaptureRegistry,
 	CaptureRequest,
 	CaptureRun,
 	CaptureSelection,
+	CaptureSources,
 	CaptureStamp,
 	CaptureStoredManifest,
 	CaptureViewport,
@@ -155,6 +158,7 @@ export type CaptureParsedArguments<Options extends ParseArgsOptionsConfig> = {
 				readonly tokens: true
 				readonly strict: true
 				readonly allowPositionals: true
+				readonly allowNegative: true
 			}>
 		>
 	]: Readonly<
@@ -164,6 +168,7 @@ export type CaptureParsedArguments<Options extends ParseArgsOptionsConfig> = {
 				readonly tokens: true
 				readonly strict: true
 				readonly allowPositionals: true
+				readonly allowNegative: true
 			}>
 		>[Key]
 	>
@@ -733,10 +738,13 @@ export interface CaptureStagePlan {
  *
  * @remarks
  * `entry` is the absolute Vitest entry and `config` the absolute wrapper path. `report` is the
- * absolute JSON reporter path and `projects` the Vitest project labels the stage runs. `filter`
- * is the tag expression. An exact `case` adds the anchored name pattern for that case and the
- * `final` case, so the final case still writes the run record. A `mode` adds Vitest's `--mode`
- * flag to discovery and execution children.
+ * absolute JSON reporter path and `progress` the absolute progress file path, which the stage
+ * passes as `--outputFile.progress` for a progress reporter to write. `projects` are the Vitest
+ * project labels the stage runs. `filter` is the tag expression. An exact `case` adds the anchored
+ * name pattern for that case and the `final` case, so the final case still writes the run record.
+ * A `mode` adds Vitest's `--mode` flag to discovery and execution children. If `bail` is `true`,
+ * the stage passes `--bail=1` and stops at its first failed case; if `false`, it passes no bail
+ * flag and runs every selected case. Default: `true`.
  *
  * @example
  * ```ts
@@ -744,6 +752,7 @@ export interface CaptureStagePlan {
  * 	entry: '/repo/node_modules/vitest/vitest.mjs',
  * 	config: '/repo/configs/vite.journey.config.ts',
  * 	report: '/repo/tmp/units/runs/a/journey-selected.json',
+ * 	progress: '/repo/tmp/units/runs/a/selected.progress.jsonl',
  * 	projects: ['journey:light-390'],
  * 	filter: 'owner:pages:mail',
  * 	final: 'closes the run',
@@ -754,6 +763,8 @@ export interface CaptureArgumentsOptions {
 	readonly entry: string
 	readonly config: string
 	readonly report: string
+	readonly progress: string
+	readonly bail?: boolean
 	readonly projects: readonly string[]
 	readonly filter?: string
 	readonly case?: string
@@ -932,6 +943,146 @@ export interface CaptureDiscoveryOptions {
 }
 
 /**
+ * Describes the empty Node configuration a wrapper returns after it has answered a discovery request.
+ *
+ * @remarks `include` is a mutable list because Vitest's `test.include` option declares one.
+ *
+ * @example
+ * ```ts
+ * const config: CaptureDiscoveryConfig = { test: { include: [], passWithNoTests: true, watch: false } }
+ * ```
+ */
+export interface CaptureDiscoveryConfig {
+	readonly test: {
+		readonly include: string[]
+		readonly passWithNoTests: boolean
+		readonly watch: boolean
+	}
+}
+
+/**
+ * Describes the values capture merges into each variant's Vitest project.
+ *
+ * @remarks
+ * `tags` declares every owner tag, `provide` carries the values the runner and the suite read, and
+ * `browser.commands` registers `readCaptureFrames`, which lists the frames under the project's
+ * provided directory. The lists are mutable because Vitest's `test.tags` option declares one, and
+ * the command record is an object type so it assigns to Vitest's command record.
+ *
+ * @example
+ * ```ts
+ * const override: CaptureWrapperOverride = {
+ * 	test: { tags: [{ name: 'owner:pages' }], provide, browser: { commands: { readCaptureFrames } } },
+ * }
+ * ```
+ */
+export interface CaptureWrapperOverride {
+	readonly test: {
+		readonly tags: Array<{ readonly name: string }>
+		readonly provide: CaptureProvided
+		readonly browser: {
+			readonly commands: { readonly readCaptureFrames: () => readonly string[] }
+		}
+	}
+}
+
+/**
+ * Builds one variant's Vitest project from the host's own defaults and capture's override.
+ *
+ * @remarks The host names the project and merges `override` into it last, so capture's tags,
+ * provided values, and browser command reach the project. The runner reads the project name the
+ * host chose.
+ *
+ * @example
+ * ```ts
+ * const project: CaptureProjectHandler<UserWorkspaceConfig> = (variant, override) => ({
+ * 	test: { ...override.test, name: `journey:${variant.name}` },
+ * })
+ * ```
+ */
+export type CaptureProjectHandler<TProject> = (
+	variant: CaptureViewport,
+	override: CaptureWrapperOverride,
+) => TProject
+
+/**
+ * Configures the journey wrapper `buildCaptureWrapper` assembles.
+ *
+ * @remarks
+ * `config` is the wrapper module's own `import.meta.url`. `variants` declares the producing
+ * viewports in host order, `owners` every canonical owner path, `first` the narrow-stage variant,
+ * and `final` the case that writes each run record. `directory` is the workspace-relative evidence
+ * root. `inputs` lists the integrity input patterns, `sources` the shared and test source patterns
+ * the suite attributes to every destination, `portfolios` the primary portfolio roots, and
+ * `uniform` the owner selectors the preflight judges for mixed observations. `project` builds each
+ * variant's project from capture's override.
+ *
+ * @example
+ * ```ts
+ * const options: CaptureWrapperOptions<UserWorkspaceConfig> = {
+ * 	config: import.meta.url,
+ * 	variants: [{ name: 'light-390', width: 390, height: 844 }],
+ * 	owners: ['pages:mail'],
+ * 	first: 'light-390',
+ * 	final: 'closes the run',
+ * 	directory: 'tmp/captures/states',
+ * 	inputs: ['src/**'],
+ * 	sources: { shared: ['src/core/**'], tests: ['tests/**'] },
+ * 	portfolios: [{ portfolio: 'states', directory: 'tmp/captures/states', scoped: true }],
+ * 	project: (variant, override) => ({ test: { ...override.test, name: `journey:${variant.name}` } }),
+ * }
+ * ```
+ */
+export interface CaptureWrapperOptions<TProject> {
+	readonly config: string
+	readonly variants: readonly CaptureViewport[]
+	readonly owners: readonly string[]
+	readonly first: string
+	readonly final: string
+	readonly directory: string
+	readonly inputs: readonly string[]
+	readonly sources: Pick<CaptureSources, 'shared' | 'tests'>
+	readonly portfolios: readonly CapturePortfolioRoot[]
+	readonly uniform?: readonly string[]
+	readonly project: CaptureProjectHandler<TProject>
+}
+
+/**
+ * Describes the Vitest configuration a journey wrapper returns for an execution child.
+ *
+ * @remarks `plugins` holds one progress plugin and `projects` one project per variant. Both lists
+ * are mutable because Vitest's `plugins` and `test.projects` options declare mutable lists.
+ *
+ * @example
+ * ```ts
+ * const config: CaptureWrapperConfig<UserWorkspaceConfig> = {
+ * 	plugins: [createProgressPlugin()],
+ * 	test: { projects: [project] },
+ * }
+ * ```
+ */
+export interface CaptureWrapperConfig<TProject> {
+	readonly plugins: ProgressPluginInterface[]
+	readonly test: { readonly projects: TProject[] }
+}
+
+/**
+ * Carries the progress file of the stage that ran last in a workspace, and every run it holds.
+ *
+ * @remarks `file` is workspace-relative and slash-separated. `runs` holds one reading per writing
+ * process, and is empty while the stage has not written a complete line.
+ *
+ * @example
+ * ```ts
+ * const progress: CaptureProgress = { file: 'tmp/capture/runs/a/selected.progress.jsonl', runs: [] }
+ * ```
+ */
+export interface CaptureProgress {
+	readonly file: string
+	readonly runs: readonly ProgressRun[]
+}
+
+/**
  * Configures one discovery: the workspace, the wrapper, the invocation that owns the child, and its bounds.
  *
  * @remarks
@@ -1000,7 +1151,8 @@ export interface CaptureOutcome {
  * wrapper path, and `final` the full name of the case that closes a variant's run. `filter` is
  * the tag expression. `case` and `state` appear only when the command line named them, and `case`
  * holds the resolved declaring case once a state selects one. `command` is the request command
- * every stage records. `mode` selects the wrapper's Vitest mode when present.
+ * every stage records. `mode` selects the wrapper's Vitest mode when present. A `false` `bail`
+ * runs every selected case after a failure.
  *
  * @example
  * ```ts
@@ -1026,6 +1178,7 @@ export interface CaptureRunPlan {
 	readonly directory: string
 	readonly config: string
 	readonly mode?: string
+	readonly bail?: boolean
 }
 
 /**
@@ -1287,6 +1440,9 @@ export interface CaptureRunnerOptions {
  * Carries parsed runner arguments, including an optional wrapper mode, while leaving omitted
  * selectors available to the usage diagnostic.
  *
+ * @remarks `bail` is `false` when the command line carries `--no-bail`, and absent otherwise, which
+ * keeps the stage's default first-failure stop.
+ *
  * @example
  * ```ts
  * const parsed: CaptureRunnerArguments = { config: '/repo/configs/vite.journey.config.ts', variants: [] }
@@ -1296,6 +1452,7 @@ export interface CaptureRunnerArguments {
 	readonly selector?: string
 	readonly changed?: string
 	readonly plan?: boolean
+	readonly bail?: boolean
 	readonly config: string
 	readonly mode?: string
 	readonly variants: readonly string[]
@@ -1778,6 +1935,7 @@ export interface CaptureSheetsInterface {
  * Carries the parsed registry command line: the wrapper, the variants to refresh, and the mode.
  *
  * @remarks `config` is absolute. An empty `variants` list refreshes every declared producing variant.
+ * `bail` is `false` when the command line carries `--no-bail`, and absent otherwise.
  *
  * @example
  * ```ts
@@ -1788,6 +1946,7 @@ export interface CaptureRegistryArguments {
 	readonly config: string
 	readonly variants: readonly string[]
 	readonly mode?: string
+	readonly bail?: boolean
 }
 
 /**

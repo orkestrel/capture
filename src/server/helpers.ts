@@ -6,6 +6,7 @@ import type {
 	CaptureLookup,
 	CaptureLookupJournal,
 	CapturePortfolioRoot,
+	CaptureProvided,
 	CaptureRegistry,
 	CaptureRequest,
 	CaptureViewport,
@@ -16,6 +17,7 @@ import type {
 	CaptureChangePlan,
 	CaptureCommand,
 	CaptureDescriptionExpectation,
+	CaptureDiscoveryConfig,
 	CaptureDiscoveryOptions,
 	CaptureFileSnapshot,
 	CaptureHashHandler,
@@ -27,6 +29,7 @@ import type {
 	CaptureParsedArguments,
 	CapturePicture,
 	CaptureProducer,
+	CaptureProgress,
 	CaptureProject,
 	CaptureReaderCommand,
 	CaptureReaderDefaults,
@@ -37,6 +40,9 @@ import type {
 	CaptureRequestOptions,
 	CaptureRunnerArguments,
 	CaptureStagePlan,
+	CaptureWrapperConfig,
+	CaptureWrapperOptions,
+	CaptureWrapperOverride,
 } from './types.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
@@ -48,6 +54,7 @@ import {
 	globSync,
 	lstatSync,
 	mkdirSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	renameSync,
@@ -56,6 +63,7 @@ import {
 	writeFileSync,
 } from 'node:fs'
 import { dirname, isAbsolute, matchesGlob, relative, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 import {
@@ -69,6 +77,7 @@ import {
 	parseJSON,
 	preview,
 } from '@orkestrel/contract'
+import { createProgressPlugin, readProgress } from '@orkestrel/test/server'
 import {
 	CAPTURE_LOOKUPS_FILE,
 	CAPTURE_MANIFEST_FILE,
@@ -78,6 +87,8 @@ import {
 	CAPTURE_REQUEST_PREFIX,
 	CAPTURE_VERSION,
 	CaptureError,
+	buildCaptureTags,
+	collectCaptureAncestors,
 	describeCaptureDeclaration,
 	describeCaptureDestination,
 	describeCaptureError,
@@ -104,13 +115,17 @@ import {
 	CAPTURE_DEFAULTS,
 	CAPTURE_DISCOVERY,
 	CAPTURE_EXIT,
+	CAPTURE_FLAG,
+	CAPTURE_FLAG_VALUE,
 	CAPTURE_PNG_LIMITS,
+	CAPTURE_PROGRESS_SUFFIX,
 	CAPTURE_REQUESTS_FLAG,
 	CAPTURE_RUNS_DIRECTORY,
 	CAPTURE_STAGES,
 	CAPTURE_REFUSAL_LIMIT,
 	CAPTURE_MESSAGE_LIMIT,
 	CAPTURE_TAG_OPERATORS,
+	CAPTURE_WRAPPER_PREFIXES,
 } from './constants.js'
 
 /**
@@ -183,7 +198,7 @@ export function buildCaptureChangePlan(
  * Renders an exact owner command with the selected variants and filters in host shell syntax.
  *
  * @param command - The request command, translated to its executable name, or the registry command
- * @param parsed - The parsed flags; changed and plan flags are deliberately replaced by the owner
+ * @param parsed - The parsed flags, a `false` bail rendered as `--no-bail` on every command but `stale`; changed and plan flags are deliberately replaced by the owner
  * @param selector - The explicit owner or all selector; omitted for a registry refresh
  * @param root - The workspace that makes the wrapper path relative
  * @returns The command ready to copy into the host shell
@@ -212,6 +227,7 @@ export function renderCaptureCommand(
 				? [`--case=${parsed.case}`]
 				: ['--case', parsed.case]),
 		...(parsed.state === undefined ? [] : ['--state', parsed.state]),
+		...(parsed.bail === false && command !== 'stale' ? ['--no-bail'] : []),
 		...(config.startsWith('-') ? [`--config=${config}`] : ['--config', config]),
 	]
 		.map((argument) =>
@@ -1451,7 +1467,7 @@ export function readCaptureVariants(root: string, file: string): readonly string
  * spaces and quotes. An exact case adds `-t` with the anchored pattern for that case and the
  * final case, so the final case still writes the run record.
  *
- * @param options - The entry, wrapper, report, projects, tag filter, and optional exact case and mode
+ * @param options - The entry, wrapper, report and progress files, projects, tag filter, bail switch, and optional exact case and mode
  * @returns The arguments after the Node executable
  *
  * @example
@@ -1460,6 +1476,7 @@ export function readCaptureVariants(root: string, file: string): readonly string
  * 	entry: '/repo/node_modules/vitest/vitest.mjs',
  * 	config: '/repo/vite.journey.config.ts',
  * 	report: '/repo/tmp/units/runs/a/journey-selected.json',
+ * 	progress: '/repo/tmp/units/runs/a/selected.progress.jsonl',
  * 	projects: ['journey:light-390'],
  * 	filter: 'owner:pages:mail',
  * 	final: 'closes the run',
@@ -1482,10 +1499,11 @@ export function buildCaptureArguments(options: CaptureArgumentsOptions): readonl
 		'--configLoader',
 		'runner',
 		'--no-cache',
-		'--bail=1',
+		...(options.bail === false ? [] : ['--bail=1']),
 		'--reporter=dot',
 		'--reporter=json',
 		`--outputFile.json=${options.report}`,
+		`--outputFile.progress=${options.progress}`,
 		...options.projects.flatMap((project) => ['--project', project]),
 		...(options.filter === undefined ? [] : ['--tags-filter', options.filter]),
 		...(options.case === undefined
@@ -1599,6 +1617,9 @@ export function readCaptureTitles(
 /**
  * Parses standard option tokens and refuses empty values, terminators, and repeated single options.
  *
+ * @remarks A boolean option whose default is `true` reads its `--no-` form as `false`; the `--no-`
+ * form of any other option is refused as unknown. An option and its `--no-` form repeat each other.
+ *
  * @param argv - The arguments after the subcommand
  * @param options - The command's frozen Node option definitions
  * @param usage - The command syntax appended to every parser refusal
@@ -1606,6 +1627,7 @@ export function readCaptureTitles(
  * @example
  * ```ts
  * readCaptureOptions(['--case=-draft'], CAPTURE_COMMAND_OPTIONS.journey, 'Usage: capture journey <selector>').values.case // '-draft'
+ * readCaptureOptions(['--no-bail'], CAPTURE_COMMAND_OPTIONS.journey, 'Usage: capture journey <selector>').values.bail // false
  * ```
  */
 export function readCaptureOptions<Options extends ParseArgsOptionsConfig>(
@@ -1620,11 +1642,14 @@ export function readCaptureOptions<Options extends ParseArgsOptionsConfig>(
 			tokens: true,
 			strict: true,
 			allowPositionals: true,
+			allowNegative: true,
 		})
 		for (const token of parsed.tokens) {
 			if (token.kind === 'option-terminator')
 				throw new CaptureError('The -- option terminator is refused', { code: 'USAGE' })
 			if (token.kind !== 'option') continue
+			if (token.rawName === `--no-${token.name}` && options[token.name]?.default !== true)
+				throw new CaptureError(`Unknown option '${token.rawName}'`, { code: 'USAGE' })
 			if (token.value === '')
 				throw new CaptureError(`Missing value: --${token.name}`, { code: 'USAGE' })
 			if (
@@ -1650,7 +1675,8 @@ export function readCaptureOptions<Options extends ParseArgsOptionsConfig>(
  *
  * @remarks
  * `--state` belongs to `capture` and `stale`, and `--portfolio` to `stale`. Journey and capture
- * accept `--changed <ref>` instead of a selector, with optional valueless `--plan`. Every other
+ * accept `--changed <ref>` instead of a selector, with optional valueless `--plan`, and valueless
+ * `--no-bail`, which sets `bail` to `false`. Every other
  * flag takes one nonempty value, either separated or in equals form, and only `--variant` repeats.
  * A value beginning with a dash requires equals form. A bare invocation leaves its selector absent
  * so the caller can print usage with the declared selectors.
@@ -1708,6 +1734,7 @@ export function readCaptureArguments(
 	const changed =
 		'changed' in values && typeof values.changed === 'string' ? values.changed : undefined
 	const plan = 'plan' in values && values.plan === true
+	const bail = !('bail' in values) || values.bail !== false
 	if (changed !== undefined && selector !== undefined)
 		throw new CaptureError(
 			'A selector cannot be combined with --changed; use --changed <ref> alone',
@@ -1719,6 +1746,7 @@ export function readCaptureArguments(
 		...(selector === undefined ? {} : { selector }),
 		...(changed === undefined ? {} : { changed }),
 		...(plan ? { plan: true } : {}),
+		...(bail ? {} : { bail: false }),
 		config: resolve(root, values.config ?? fallback),
 		...(mode === undefined ? {} : { mode }),
 		variants,
@@ -2458,13 +2486,7 @@ export function resolveCaptureRequests(directory?: string): string {
  * export default (await answerCaptureDiscovery(options)) ? buildCaptureDiscoveryConfig() : config
  * ```
  */
-export function buildCaptureDiscoveryConfig(): {
-	readonly test: {
-		readonly include: string[]
-		readonly passWithNoTests: boolean
-		readonly watch: boolean
-	}
-} {
+export function buildCaptureDiscoveryConfig(): CaptureDiscoveryConfig {
 	return { test: { include: [], passWithNoTests: true, watch: false } }
 }
 
@@ -2642,12 +2664,284 @@ export async function answerCaptureDiscovery(options: CaptureDiscoveryOptions): 
 }
 
 /**
+ * Lists the frames a portfolio directory holds, as paths relative to it, in sorted order.
+ *
+ * @remarks
+ * A frame is a `.png` file at the directory's top level or directly inside one of the scope
+ * directories. The run records directory holds no frame, and every other directory is unknown. A
+ * missing directory holds no frame.
+ *
+ * @param directory - The absolute portfolio directory
+ * @param scopes - The scope directories the owners declare, each an owner path's first segment
+ * @returns Each frame's slash-separated path relative to the directory
+ * @throws Thrown as an `EVIDENCE` capture error for a frame beneath the run records, an unknown
+ * directory, a directory inside a scope, or a directory the host refuses to read.
+ *
+ * @example
+ * ```ts
+ * readCaptureFrames('/repo/tmp/captures/states', ['pages']) // ['pages/inbox--light-390.png']
+ * ```
+ */
+export function readCaptureFrames(directory: string, scopes: readonly string[]): readonly string[] {
+	const listed = attempt(() => readdirSync(directory, { withFileTypes: true }))
+	if (!listed.success) {
+		if (isError(listed.error) && 'code' in listed.error && listed.error.code === 'ENOENT') return []
+		throw new CaptureError(`Cannot list capture frames under ${directory}`, {
+			code: 'EVIDENCE',
+			cause: listed.error,
+			context: { directory },
+		})
+	}
+	return listed.value
+		.flatMap((entry): readonly string[] => {
+			if (!entry.isDirectory()) return entry.name.endsWith('.png') ? [entry.name] : []
+			if (entry.name === CAPTURE_RUNS_DIRECTORY) {
+				const frames = readdirSync(resolve(directory, entry.name), {
+					recursive: true,
+					encoding: 'utf8',
+				}).filter((name) => name.endsWith('.png'))
+				if (frames.length > 0)
+					throw new CaptureError(
+						`Frames sit beneath the run records: ${describeCaptureMembers(frames.map(normalizeSlashes))}`,
+						{ code: 'EVIDENCE', context: { directory } },
+					)
+				return []
+			}
+			if (!scopes.includes(entry.name))
+				throw new CaptureError(
+					`Unknown capture directory: ${describeCaptureFault('directory', entry.name, 'a scope the owners declare, or the run records', [...scopes, CAPTURE_RUNS_DIRECTORY])}`,
+					{ code: 'EVIDENCE', context: { directory } },
+				)
+			return readdirSync(resolve(directory, entry.name), { withFileTypes: true }).flatMap(
+				(file): readonly string[] => {
+					if (file.isDirectory())
+						throw new CaptureError(
+							`Unknown capture directory: ${preview(`${entry.name}/${file.name}`)}; a scope holds frames only`,
+							{ code: 'EVIDENCE', context: { directory } },
+						)
+					return file.name.endsWith('.png') ? [`${entry.name}/${file.name}`] : []
+				},
+			)
+		})
+		.toSorted()
+}
+
+/**
+ * Reads the progress file of the stage that is running, or that ran last, in a workspace.
+ *
+ * @remarks
+ * The file is the most recently modified `<stage>.progress.jsonl` beneath the request directory's
+ * run directories. The progress file is an observation of the run and never evidence. A partial
+ * last line, which the reporter can still be appending, is not read, so a file with no complete
+ * line holds no run.
+ *
+ * @param root - The absolute workspace path
+ * @param requests - The workspace-relative request directory
+ * @param now - The wall-clock time of the reading, in milliseconds since the Unix epoch. Default: `Date.now()`
+ * @returns The workspace-relative file and one reading per process that wrote it
+ * @throws Thrown as a `STAGE` capture error when no stage has written a progress file, or when the
+ * file cannot be read or holds a complete line that is not a progress event.
+ *
+ * @example
+ * ```ts
+ * readCaptureProgress('/repo', 'tmp/capture').runs[0]?.state // 'live' while the stage runs
+ * ```
+ */
+export function readCaptureProgress(
+	root: string,
+	requests: string,
+	now: number = Date.now(),
+): CaptureProgress {
+	const runs = resolve(root, requests, CAPTURE_RUNS_DIRECTORY)
+	const [newest] = globSync(`*/*${CAPTURE_PROGRESS_SUFFIX}`, { cwd: runs })
+		.flatMap((name) => {
+			const stat = attempt(() => statSync(resolve(runs, name)))
+			return stat.success && stat.value.isFile()
+				? [{ file: resolveCaptureRelative(root, resolve(runs, name)), time: stat.value.mtimeMs }]
+				: []
+		})
+		.toSorted((left, right) => right.time - left.time || right.file.localeCompare(left.file))
+	if (newest === undefined)
+		throw new CaptureError(
+			`No stage has written a progress file under ${resolveCaptureRelative(root, runs)}; run a journey, frames, or registry command first`,
+			{ code: 'STAGE', context: { directory: resolveCaptureRelative(root, runs) } },
+		)
+	const read = attempt(() => readProgress(resolve(root, newest.file), now))
+	if (!read.success)
+		throw new CaptureError(
+			`Cannot read the progress file ${newest.file}: ${describeCaptureOutput(describeCaptureError(read.error))}`,
+			{ code: 'STAGE', cause: read.error, context: { file: newest.file } },
+		)
+	return { file: newest.file, runs: read.value }
+}
+
+/**
+ * Builds the values capture merges into one variant's Vitest project.
+ *
+ * @param options - The wrapper's declarations
+ * @param variant - The variant the project produces
+ * @param provided - The variant's frame directory, run record path, capture switch, and runner request
+ * @returns The owner tags, the provided values, and the `readCaptureFrames` browser command over the directory
+ *
+ * @example
+ * ```ts
+ * buildCaptureOverride(options, variant, { directory, record, capture: true }).test.provide.record
+ * // 'tmp/captures/states/runs/run-1/selected/light-390.json'
+ * ```
+ */
+export function buildCaptureOverride(
+	options: Omit<CaptureWrapperOptions<unknown>, 'config' | 'project'>,
+	variant: CaptureViewport,
+	provided: Pick<CaptureProvided, 'directory' | 'record' | 'capture' | 'request'>,
+): CaptureWrapperOverride {
+	const scopes = [
+		...new Set(options.owners.flatMap((owner) => collectCaptureAncestors(owner).slice(0, 1))),
+	]
+	return {
+		test: {
+			tags: buildCaptureTags(options.owners).map((name) => ({ name })),
+			provide: {
+				variant: variant.name,
+				variants: options.variants,
+				directory: provided.directory,
+				record: provided.record,
+				inputs: options.inputs,
+				sources: options.sources,
+				final: options.final,
+				first: options.first,
+				...(options.uniform === undefined ? {} : { uniform: options.uniform }),
+				portfolios: options.portfolios,
+				capture: provided.capture,
+				...(provided.request === undefined ? {} : { request: provided.request }),
+			},
+			browser: {
+				commands: { readCaptureFrames: () => readCaptureFrames(provided.directory, scopes) },
+			},
+		},
+	}
+}
+
+/**
+ * Builds a journey wrapper's Vitest configuration as plain data, answering discovery first.
+ *
+ * @remarks
+ * Call it inside the wrapper's own `defineConfig` callback, before any other work: capture imports
+ * neither Vite nor Vitest, so the result is data the wrapper returns. The wrapper path is `config`
+ * relative to the working directory, which is the workspace root for every child the runner
+ * spawns. During a discovery request it describes each variant's project as `{ name, tags,
+ * provide }`, with the name the host's `project` chose, and returns `buildCaptureDiscoveryConfig()`.
+ * Otherwise it reads the runner's request, provides each project the values `CaptureProvided`
+ * declares, and registers the browser command `readCaptureFrames`, which lists the frames under
+ * the provided directory. With the capture variable unset, each variant writes to its own scratch
+ * sibling of the evidence root, emptied first. The result's root `plugins` holds one
+ * `createProgressPlugin()`, so a stage the runner passes `--outputFile.progress` writes its
+ * progress file.
+ *
+ * @param options - The wrapper path, variants, owners, stage and final names, evidence root, inputs, sources, portfolios, and project builder
+ * @returns The discovery configuration while discovery runs, and otherwise the progress plugin and one project per variant
+ * @throws Thrown as a `HOST` capture error for a `config` that is no `file:` URL, an evidence root
+ * that is not a portable relative path, an invalid owner, or a runner request that fails its
+ * checks, and as a `CONTAINMENT` capture error for a wrapper or scratch path outside the workspace.
+ *
+ * @example
+ * ```ts
+ * export default defineConfig(({ mode }) =>
+ * 	buildCaptureWrapper({ ...declarations, config: import.meta.url, project: (variant, override) => appJourney(variant, mode, override) }),
+ * )
+ * ```
+ */
+export async function buildCaptureWrapper<TProject>(
+	options: CaptureWrapperOptions<TProject>,
+): Promise<CaptureWrapperConfig<TProject> | CaptureDiscoveryConfig> {
+	const root = process.cwd()
+	const path = attempt(() => fileURLToPath(options.config))
+	if (!path.success)
+		throw new CaptureError(
+			`Invalid wrapper config; ${describeCaptureFault('config', options.config, "the wrapper module's import.meta.url, a file: URL")}`,
+			{ code: 'HOST', cause: path.error },
+		)
+	requireCaptureContained(root, path.value)
+	if (!isCapturePath(options.directory))
+		throw new CaptureError(
+			`Invalid evidence root; ${describeCaptureFault('directory', options.directory, 'a portable workspace-relative path')}`,
+			{ code: 'HOST' },
+		)
+	const config = resolveCaptureRelative(root, path.value)
+	const argv = process.argv.slice(1)
+	const capture = process.env[CAPTURE_FLAG] === CAPTURE_FLAG_VALUE
+	const evidence = resolve(root, options.directory)
+	const answered = await answerCaptureDiscovery({
+		ppid: process.ppid,
+		argv,
+		config,
+		projects: options.variants.map((variant) => () => {
+			const override = buildCaptureOverride(options, variant, {
+				directory: evidence,
+				record: `${options.directory}/${CAPTURE_RUNS_DIRECTORY}/${CAPTURE_DISCOVERY.phase}/${variant.name}.json`,
+				capture,
+			})
+			const project: unknown = options.project(variant, override)
+			return {
+				test: {
+					name: isRecord(project) && isRecord(project.test) ? project.test.name : undefined,
+					tags: override.test.tags,
+					provide: override.test.provide,
+				},
+			}
+		}),
+	})
+	if (answered) return buildCaptureDiscoveryConfig()
+	const request = readCaptureRequest({
+		ppid: process.ppid,
+		argv,
+		config,
+		owners: options.owners,
+		variants: options.variants.map((variant) => variant.name),
+	})
+	const invocation =
+		request === undefined
+			? `${CAPTURE_WRAPPER_PREFIXES.direct}${randomUUID()}`
+			: `${request.id}/${request.stage}`
+	return {
+		plugins: [createProgressPlugin()],
+		test: {
+			projects: options.variants.map((variant) => {
+				const directory = capture
+					? evidence
+					: requireCaptureContained(
+							root,
+							resolve(
+								root,
+								dirname(options.directory),
+								`${CAPTURE_WRAPPER_PREFIXES.scratch}${variant.name}`,
+							),
+						)
+				if (!capture) {
+					rmSync(directory, { recursive: true, force: true })
+					mkdirSync(directory, { recursive: true })
+				}
+				return options.project(
+					variant,
+					buildCaptureOverride(options, variant, {
+						directory,
+						record: `${options.directory}/${CAPTURE_RUNS_DIRECTORY}/${invocation}/${variant.name}.json`,
+						capture,
+						...(request === undefined ? {} : { request }),
+					}),
+				)
+			}),
+		},
+	}
+}
+
+/**
  * Reads the registry command line into the wrapper path, the variants to refresh, and the mode.
  *
  * @remarks
  * The command takes no selector: it refreshes every producing variant the wrapper declares, or the
- * variants named by repeated `--variant` flags. Every flag takes one value, and only `--variant`
- * repeats. `--mode` is forwarded to the wrapper's Vitest process unread.
+ * variants named by repeated `--variant` flags. Every flag but valueless `--no-bail` takes one
+ * value, and only `--variant` repeats. `--mode` is forwarded to the wrapper's Vitest process
+ * unread, and `--no-bail` sets `bail` to `false`.
  *
  * @param argv - The arguments after the subcommand
  * @param root - The absolute workspace path the wrapper path resolves against
@@ -2667,7 +2961,8 @@ export function readCaptureRegistryArguments(
 	root: string,
 	fallback: string,
 ): CaptureRegistryArguments {
-	const usage = 'Usage: capture registry [--variant <name>]... [--mode <name>] [--config <file>]'
+	const usage =
+		'Usage: capture registry [--variant <name>]... [--no-bail] [--mode <name>] [--config <file>]'
 	const { values, positionals } = readCaptureOptions(argv, CAPTURE_COMMAND_OPTIONS.registry, usage)
 	if (positionals.length > 0)
 		throw new CaptureError(
@@ -2688,6 +2983,7 @@ export function readCaptureRegistryArguments(
 		config: resolve(root, values.config ?? fallback),
 		variants,
 		...(mode === undefined ? {} : { mode }),
+		...(values.bail === false ? { bail: false } : {}),
 	}
 }
 

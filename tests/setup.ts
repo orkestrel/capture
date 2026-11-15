@@ -1053,6 +1053,7 @@ export const CAPTURE_PROVIDED_FIXTURE: CaptureProvided = Object.freeze({
 	directory: 'tmp/captures/states',
 	record: 'tmp/captures/states/runs/run-1/selected/light-390.json',
 	inputs: ['src/**', 'tests/setup.ts'],
+	sources: { shared: ['src/shared/**'], tests: ['tests/setup.ts'] },
 	final: CAPTURE_RECORD_NAMES.final,
 	first: 'light-390',
 	uniform: ['pages'],

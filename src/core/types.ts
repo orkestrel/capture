@@ -551,6 +551,7 @@ export interface CaptureMeta {
  * @remarks
  * Extend Vitest's `ProvidedContext` with it in the workspace's own module declaration. `request` is
  * present only when a runner is the parent, and `capture` reports whether frames are written.
+ * `sources` holds the shared and test source patterns the suite attributes to every destination.
  *
  * @example
  * ```ts
@@ -560,6 +561,7 @@ export interface CaptureMeta {
  * 	directory: 'tmp/captures/states',
  * 	record: 'tmp/captures/states/runs/run-1/selected/light-390.json',
  * 	inputs: ['src/**'],
+ * 	sources: { shared: ['src/core/**'], tests: ['tests/**'] },
  * 	final: 'closes the run',
  * 	first: 'light-390',
  * 	portfolios: [{ portfolio: 'states', directory: 'tmp/captures/states', scoped: true }],
@@ -573,6 +575,7 @@ export interface CaptureProvided {
 	readonly directory: string
 	readonly record: string
 	readonly inputs: readonly string[]
+	readonly sources: Pick<CaptureSources, 'shared' | 'tests'>
 	readonly final: string
 	readonly first: string
 	readonly uniform?: readonly string[]

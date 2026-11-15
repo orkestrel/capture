@@ -2382,6 +2382,24 @@ export class CaptureConsumer {
 		return result
 	}
 
+	// Runs a Node entry, such as the consumer's own Vitest, in the workspace with no runner as its parent.
+	async drive(argv: readonly string[]): Promise<ExecuteResult> {
+		return await execute(
+			{
+				file: process.execPath,
+				arguments: [...argv],
+				environment: { FORCE_COLOR: '0', NO_COLOR: '1', CI: '1' },
+			},
+			{
+				workspace: this.root,
+				timeout: CONSUMER_TIMEOUT,
+				signal: this.#signal,
+				limit: 4_194_304,
+				strict: false,
+			},
+		)
+	}
+
 	// Times each stdout line on arrival, with no deadline but the consumer's signal, for a bench.
 	async measure(argv: readonly string[]): Promise<CaptureTiming> {
 		const before = { load: loadavg(), free: freemem() }
@@ -2464,6 +2482,13 @@ export function readConsumerReport(
 	return report
 }
 
+/** Holds a control wrapper: the consumer fixture's wrapper with its root plugins removed. */
+export const CAPTURE_CONTROL_CONFIG = `import type { ConfigEnv } from 'vite'
+import wrapper from './journey.config.ts'
+
+export default async (env: ConfigEnv) => ({ ...(await wrapper(env)), plugins: [] })
+`
+
 /** Locates the consumer fixture a consumer workspace is built from. */
 export const CAPTURE_CONSUMER_FIXTURE = resolve(
 	CAPTURE_WORKSPACE_ROOT,
@@ -2530,7 +2555,8 @@ export const CAPTURE_POPULATION_INPUTS = Object.freeze(['*.ts', 'src/**', 'specs
 /**
  * Names each consumer fixture file a population workspace copies unchanged, with the workspace
  * paths it lands at. The fixture's own constants land as `fixture.ts`, which the generated
- * constants re-export from.
+ * constants re-export from, and the fixture's wrapper reads its declarations from the generated
+ * constants.
  */
 export const CAPTURE_POPULATION_COPIES: ReadonlyArray<readonly [string, readonly string[]]> =
 	Object.freeze([
@@ -2539,6 +2565,7 @@ export const CAPTURE_POPULATION_COPIES: ReadonlyArray<readonly [string, readonly
 		['commands.ts', ['commands.ts']],
 		['types.ts', ['types.ts', 'specs/types.ts']],
 		['constants.ts', ['fixture.ts', 'specs/fixture.ts']],
+		['journey.config.ts', ['journey.config.ts']],
 	])
 
 /** Holds the population journey: one case per generated state, then the final case that persists the run. */
@@ -2547,7 +2574,7 @@ import { ConsumerJourney } from './ConsumerJourney.js'
 import { CONSUMER_CASES, CONSUMER_FINAL, CONSUMER_TAGS } from './constants.js'
 
 const journey = new ConsumerJourney()
-const variant = inject('consumer').variant
+const variant = inject('variant')
 
 for (const entry of CONSUMER_CASES)
 	test(
@@ -2563,110 +2590,6 @@ for (const entry of CONSUMER_CASES)
 test(CONSUMER_FINAL, { tags: [...CONSUMER_TAGS] }, async () => {
 	expect((await journey.finish()).length).toBeGreaterThan(0)
 })
-`
-
-/**
- * Holds the population wrapper: the consumer fixture's wrapper with its tags, owners, variants, and
- * viewports read from the generated constants.
- */
-export const CAPTURE_POPULATION_CONFIG = `import type { UserConfig } from 'vite'
-import { appendFileSync, mkdirSync } from 'node:fs'
-import { resolve } from 'node:path'
-import {
-	answerCaptureDiscovery,
-	buildCaptureDiscoveryConfig,
-	readCaptureRequest,
-} from '@orkestrel/capture/server'
-import { playwright } from '@vitest/browser-playwright'
-import { defineConfig } from 'vitest/config'
-import { persistConsumer } from './commands.js'
-import {
-	CONSUMER_CONFIG,
-	CONSUMER_DIRECTORY,
-	CONSUMER_FINAL,
-	CONSUMER_FIRST,
-	CONSUMER_INPUTS,
-	CONSUMER_OWNERS,
-	CONSUMER_TAGS,
-	CONSUMER_VARIANTS,
-} from './constants.js'
-
-const projects = CONSUMER_VARIANTS.map((variant) => ({
-	test: {
-		name: 'journey:' + variant.name,
-		tags: CONSUMER_TAGS.map((name) => ({ name })),
-		provide: {
-			directory: resolve(CONSUMER_DIRECTORY),
-			record: CONSUMER_DIRECTORY + '/runs/unselected/' + variant.name + '.json',
-			inputs: [...CONSUMER_INPUTS],
-			variant: variant.name,
-			variants: CONSUMER_VARIANTS,
-			final: CONSUMER_FINAL,
-			first: CONSUMER_FIRST,
-			uniform: ['pages'],
-			portfolios: [{ portfolio: 'states', directory: CONSUMER_DIRECTORY, scoped: true }],
-		},
-	},
-}))
-
-const answered = await answerCaptureDiscovery({
-	ppid: process.ppid,
-	argv: process.argv.slice(1),
-	config: CONSUMER_CONFIG,
-	projects,
-})
-
-export default answered
-	? buildCaptureDiscoveryConfig()
-	: defineConfig((): UserConfig => {
-			const request = readCaptureRequest({
-				ppid: process.ppid,
-				argv: process.argv.slice(1),
-				config: CONSUMER_CONFIG,
-				owners: [...CONSUMER_OWNERS],
-				variants: CONSUMER_VARIANTS.map((variant) => variant.name),
-			})
-			if (request === undefined) throw new Error('Run the consumer through capture')
-			mkdirSync('tmp', { recursive: true })
-			appendFileSync('tmp/selections.jsonl', JSON.stringify(request) + '\\n')
-			return {
-				server: { host: '127.0.0.1' },
-				test: {
-					fileParallelism: false,
-					projects: projects.map((project) => {
-						const viewport = CONSUMER_VARIANTS.find(
-							(variant) => variant.name === project.test.provide.variant,
-						)
-						if (viewport === undefined) throw new Error('Missing consumer viewport')
-						return {
-							...project,
-							test: {
-								...project.test,
-								name: project.test.name + ' suite',
-								include: ['specs/journey.ts'],
-								provide: {
-									...project.test.provide,
-									consumer: {
-										request,
-										variant: project.test.provide.variant,
-										capture: process.env.CAPTURE === '1',
-									},
-								},
-								browser: {
-									enabled: true,
-									headless: true,
-									api: { host: '127.0.0.1', port: 0 },
-									provider: playwright(),
-									viewport: { width: viewport.width, height: viewport.height },
-									instances: [{ browser: 'chromium', name: project.test.name }],
-									commands: { persistConsumer },
-								},
-							},
-						}
-					}),
-				},
-			}
-		})
 `
 
 /** Builds one case per declared state, spreading the states over the declared owners in turn. */
@@ -2685,8 +2608,8 @@ export function buildPopulationCases(scale: CaptureScale): readonly CapturePopul
 
 /**
  * Writes a consumer workspace's own files at a population: the unchanged consumer fixture files,
- * generated constants, journey, and wrapper, one source file per owner beside a shared one, and
- * filler sources until the input patterns match the declared input count.
+ * its wrapper included, generated constants and journey, one source file per owner beside a shared
+ * one, and filler sources until the input patterns match the declared input count.
  *
  * @remarks
  * Every refusal is thrown before the first write.
@@ -2722,7 +2645,7 @@ export function writeCapturePopulation(root: string, population: CapturePopulati
 	const constants = [
 		"import type { CaptureViewport } from '@orkestrel/capture'",
 		'',
-		"export { CONSUMER_CONFIG, CONSUMER_DIRECTORY, CONSUMER_FINAL } from './fixture.js'",
+		"export { CONSUMER_DIRECTORY, CONSUMER_FINAL, CONSUMER_SOURCES } from './fixture.js'",
 		`export const CONSUMER_FIRST = ${JSON.stringify(first)}`,
 		`export const CONSUMER_INPUTS = Object.freeze(${JSON.stringify(CAPTURE_POPULATION_INPUTS)})`,
 		`export const CONSUMER_VARIANTS: readonly CaptureViewport[] = Object.freeze(${JSON.stringify(variants)})`,
@@ -2742,7 +2665,6 @@ export function writeCapturePopulation(root: string, population: CapturePopulati
 		['specs/constants.ts', constants],
 		['journey.ts', CAPTURE_POPULATION_JOURNEY],
 		['specs/journey.ts', CAPTURE_POPULATION_JOURNEY],
-		['journey.config.ts', CAPTURE_POPULATION_CONFIG],
 		['src/shared.ts', "export const SHARED_LABEL = 'shared'\n"],
 		...[...new Set(cases.map((entry) => entry.part))].map(
 			(part) => [`src/${part}.ts`, `export const PART_LABEL = '${part}'\n`] as const,
@@ -4720,3 +4642,56 @@ export function readCaptureChildModes(fixture: IntegrityFixture): readonly Captu
 			return { phase: entry.phase, mode: entry.mode }
 		})
 }
+
+/**
+ * Holds the progress lines of one live stage that one process writes: three planned cases, one
+ * passed, one failed, and one running, with the init line written at wall time 1000.
+ */
+export const CAPTURE_PROGRESS_LINES: readonly string[] = Object.freeze(
+	[
+		{ event: 'init', version: 1, wall: 1000, bail: 1, time: 0, pid: 7 },
+		{
+			event: 'start',
+			specifications: [{ project: 'journey:wide', module: 'specs/journey.ts' }],
+			time: 1,
+			pid: 7,
+		},
+		{
+			event: 'collected',
+			project: 'journey:wide',
+			module: 'specs/journey.ts',
+			planned: 3,
+			errors: [],
+			time: 2,
+			pid: 7,
+		},
+		{ event: 'ready', project: 'journey:wide', id: 'a', name: 'opens board', time: 3, pid: 7 },
+		{
+			event: 'case',
+			project: 'journey:wide',
+			module: 'specs/journey.ts',
+			id: 'a',
+			name: 'opens board',
+			state: 'passed',
+			duration: 4,
+			start: 1003,
+			time: 7,
+			pid: 7,
+		},
+		{ event: 'ready', project: 'journey:wide', id: 'b', name: 'opens mail', time: 8, pid: 7 },
+		{
+			event: 'case',
+			project: 'journey:wide',
+			module: 'specs/journey.ts',
+			id: 'b',
+			name: 'opens mail',
+			state: 'failed',
+			duration: 5,
+			start: 1008,
+			errors: [{ message: 'Error: the inbox is empty', location: 'specs/journey.ts:4:9' }],
+			time: 13,
+			pid: 7,
+		},
+		{ event: 'ready', project: 'journey:wide', id: 'c', name: 'closes the run', time: 14, pid: 7 },
+	].map((line) => JSON.stringify(line)),
+)

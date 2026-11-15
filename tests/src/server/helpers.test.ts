@@ -9,13 +9,14 @@ import {
 	readdirSync,
 	symlinkSync,
 	truncateSync,
+	utimesSync,
 	writeFileSync,
 } from 'node:fs'
 import { dirname, matchesGlob, resolve, win32 } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { deflateSync, inflateSync } from 'node:zlib'
 import { parseJSON, preview } from '@orkestrel/contract'
-import { createScratch, supportsDirectoryLinks } from '@orkestrel/test/server'
+import { createProgressPlugin, createScratch, supportsDirectoryLinks } from '@orkestrel/test/server'
 import {
 	CAPTURE_ERROR_CODES,
 	CaptureError,
@@ -99,6 +100,12 @@ import {
 	describeCaptureOutput,
 	requireCaptureSelection,
 	CAPTURE_MESSAGE_LIMIT,
+	CAPTURE_FLAG,
+	CAPTURE_REQUESTS_FLAG,
+	buildCaptureOverride,
+	buildCaptureWrapper,
+	readCaptureFrames,
+	readCaptureProgress,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import {
@@ -115,6 +122,7 @@ import {
 	createReceiptFixture,
 	createRegistryFixture,
 	createVitestFixture,
+	createRequestFixture,
 	CAPTURE_PROVIDED_FIXTURE,
 } from '../../setup.js'
 import {
@@ -146,6 +154,8 @@ import {
 	CaptureThumbnailSequence,
 	createThumbnailPicture,
 	averageThumbnailPicture,
+	CAPTURE_PROGRESS_LINES,
+	FIXTURE_TIMEOUT,
 } from '../../setupServer.js'
 describe('H1 extracted pure leaves', () => {
 	it('H1w derives encoded PNG bytes from one immutable set of decoded bounds', () => {
@@ -395,11 +405,24 @@ describe('readCaptureOptions', () => {
 			CAPTURE_COMMAND_OPTIONS.journey,
 			'Usage: capture journey <selector>',
 		)
-		expect(parsed.values).toEqual({ variant: ['wide', 'phone'], case: '-draft' })
+		expect(parsed.values).toEqual({ variant: ['wide', 'phone'], case: '-draft', bail: true })
 		expect(parsed.positionals).toEqual(['app'])
 		expect(
 			parsed.tokens.filter((token) => token.kind === 'option').map((token) => token.name),
 		).toEqual(['variant', 'variant', 'case'])
+	})
+
+	it('reads --no-bail as a false bail, and --bail as the default true one', () => {
+		const usage = 'Usage: capture journey <selector>'
+		expect(
+			readCaptureOptions(['app', '--no-bail'], CAPTURE_COMMAND_OPTIONS.journey, usage).values.bail,
+		).toBe(false)
+		expect(
+			readCaptureOptions(['app', '--bail'], CAPTURE_COMMAND_OPTIONS.journey, usage).values.bail,
+		).toBe(true)
+		expect(readCaptureOptions(['app'], CAPTURE_COMMAND_OPTIONS.journey, usage).values.bail).toBe(
+			true,
+		)
 	})
 
 	it.each([
@@ -412,6 +435,12 @@ describe('readCaptureOptions', () => {
 		['--', 'app'],
 		['app', '--'],
 		['--unknown=value'],
+		['app', '--no-plan'],
+		['app', '--no-case'],
+		['app', '--bail', '--no-bail'],
+		['app', '--no-bail', '--no-bail'],
+		['app', '--no-bail=1'],
+		['app', '--bail=1'],
 	])('refuses ambiguous or malformed options %j with command usage', (...argv) => {
 		const error = captureError(() =>
 			readCaptureOptions(
@@ -1708,6 +1737,28 @@ describe('renderCaptureCommand', () => {
 			"capture journey app '--case=-draft' '--config=-wrapper.ts'",
 		)
 	})
+	it('carries --no-bail into every command but stale, and renders no bail flag by default', () => {
+		const root = process.cwd()
+		const parsed = readCaptureArguments(['app', '--no-bail'], 'capture', root, 'wrapper.ts')
+		expect(parsed.bail).toBe(false)
+		expect(renderCaptureCommand('capture', parsed, 'app', root)).toBe(
+			'capture frames app --no-bail --config wrapper.ts',
+		)
+		expect(renderCaptureCommand('registry', parsed, undefined, root)).toBe(
+			'capture registry --no-bail --config wrapper.ts',
+		)
+		expect(renderCaptureCommand('stale', parsed, 'app', root)).toBe(
+			'capture stale app --config wrapper.ts',
+		)
+		const bare = readCaptureArguments(['app'], 'journey', root, 'wrapper.ts')
+		expect('bail' in bare).toBe(false)
+		expect(renderCaptureCommand('journey', bare, 'app', root)).toBe(
+			'capture journey app --config wrapper.ts',
+		)
+		expect(
+			captureError(() => readCaptureArguments(['app', '--no-bail'], 'stale', root, 'wrapper.ts')),
+		).toMatchObject({ code: 'USAGE' })
+	})
 	it('prints executable names and preserves every effective selection flag without changed or plan', () => {
 		const root = process.cwd()
 		expect(
@@ -1810,6 +1861,7 @@ describe('command wrapper modes', () => {
 		entry: resolve('node_modules/vitest/vitest.mjs'),
 		config: '/workspace/wrapper.config.ts',
 		report: '/workspace/run.json',
+		progress: '/workspace/selected.progress.jsonl',
 		projects: ['journey:wide'],
 		filter: 'owner:pages:mail',
 		final: RUNNER_FINAL,
@@ -1862,6 +1914,7 @@ describe('buildCaptureArguments', () => {
 		entry: resolve('node_modules/vitest/vitest.mjs'),
 		config: '/workspace/fixture with spaces.config.ts',
 		report: '/workspace/var/requests/runs/a/journey-selected.json',
+		progress: '/workspace/var/requests/runs/a/selected.progress.jsonl',
 		projects: ['bench:compact', 'bench:wide'],
 		filter: 'owner:app:mail && app:mail',
 		final: RUNNER_FINAL,
@@ -1880,6 +1933,7 @@ describe('buildCaptureArguments', () => {
 			'--reporter=dot',
 			'--reporter=json',
 			'--outputFile.json=/workspace/var/requests/runs/a/journey-selected.json',
+			'--outputFile.progress=/workspace/var/requests/runs/a/selected.progress.jsonl',
 			'--project',
 			'bench:compact',
 			'--project',
@@ -1894,11 +1948,19 @@ describe('buildCaptureArguments', () => {
 			entry: BASE.entry,
 			config: BASE.config,
 			report: BASE.report,
+			progress: BASE.progress,
 			projects: BASE.projects,
 			final: BASE.final,
 		})
 		expect(args).not.toContain('--tags-filter')
 		expect(args.slice(-2)).toEqual(['--project', 'bench:wide'])
+	})
+
+	it('keeps --bail=1 by default and for a true bail, and omits every bail flag for a false one', () => {
+		expect(buildCaptureArguments({ ...BASE, bail: true })).toEqual(buildCaptureArguments(BASE))
+		const full = buildCaptureArguments({ ...BASE, bail: false })
+		expect(full.filter((argument) => argument.startsWith('--bail'))).toEqual([])
+		expect(full).toEqual(buildCaptureArguments(BASE).filter((argument) => argument !== '--bail=1'))
 	})
 
 	it('adds one anchored pattern for an exact case and the final case', () => {
@@ -2447,6 +2509,39 @@ describe('readCaptureRequest', () => {
 				variants: ['compact'],
 				args: ARGV,
 				state: 'inbox',
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('refuses a child whose progress argument differs from the one the stage request carries', () => {
+		const scratch = createScratch({ prefix: 'request-' })
+		try {
+			const options = {
+				entry: '/workspace/node_modules/vitest/vitest.mjs',
+				config: '/workspace/configs/bench.config.ts',
+				report: '/workspace/tmp/capture/runs/wire-1/capture-narrow.json',
+				progress: '/workspace/tmp/capture/runs/wire-1/narrow.progress.jsonl',
+				projects: ['bench:compact'],
+				filter: 'owner:app:mail && app:mail',
+				final: RUNNER_FINAL,
+			}
+			const args = buildCaptureArguments(options)
+			scratch.write(
+				`journey-selection-${String(PPID)}.json`,
+				JSON.stringify(createWireRequest(PPID, args)),
+			)
+			expect(readCaptureRequest(createWireOptions(scratch.path, PPID, args))?.args).toEqual(args)
+			const moved = buildCaptureArguments({
+				...options,
+				progress: '/workspace/tmp/capture/runs/wire-1/other.progress.jsonl',
+			})
+			expect(
+				captureError(() => readCaptureRequest(createWireOptions(scratch.path, PPID, moved))),
+			).toMatchObject({
+				code: 'HOST',
+				message: expect.stringContaining('arguments differ from the process arguments'),
 			})
 		} finally {
 			scratch.destroy()
@@ -3545,6 +3640,15 @@ describe('readCaptureRegistryArguments', () => {
 		})
 	})
 
+	it('reads --no-bail as a false bail and leaves bail out otherwise', () => {
+		expect(readCaptureRegistryArguments(['--no-bail'], ROOT, 'x')).toEqual({
+			config: resolve(ROOT, 'x'),
+			variants: [],
+			bail: false,
+		})
+		expect('bail' in readCaptureRegistryArguments(['--bail'], ROOT, 'x')).toBe(false)
+	})
+
 	it('falls back to the default wrapper, leaves absent fields out, and accepts an absolute config', () => {
 		const bare = readCaptureRegistryArguments([], ROOT, 'configs/default.config.ts')
 		expect(bare).toEqual({ config: resolve(ROOT, 'configs/default.config.ts'), variants: [] })
@@ -3563,7 +3667,7 @@ describe('readCaptureRegistryArguments', () => {
 		const failure = captureError(() => readCaptureRegistryArguments(['pages:mail'], ROOT, 'x'))
 		expect(failure).toMatchObject({
 			message: expect.stringContaining(
-				'Usage: capture registry [--variant <name>]... [--mode <name>] [--config <file>]',
+				'Usage: capture registry [--variant <name>]... [--no-bail] [--mode <name>] [--config <file>]',
 			),
 		})
 	})
@@ -3690,5 +3794,473 @@ describe('writeCaptureDocument', () => {
 		} finally {
 			scratch.destroy()
 		}
+	})
+})
+
+describe('readCaptureFrames', () => {
+	it('lists top-level and scoped frames in order, and skips other files and the run records', () => {
+		const scratch = createScratch({ prefix: 'frames-' })
+		try {
+			scratch.write('wide.png', 'frame')
+			scratch.write('registry.json', '{}')
+			scratch.write('pages/inbox--wide.png', 'frame')
+			scratch.write('pages/notes.txt', 'note')
+			scratch.write('examples/board--wide.png', 'frame')
+			scratch.write('runs/run-1/selected/wide.json', '{}')
+			expect(readCaptureFrames(scratch.path, ['pages', 'examples'])).toEqual([
+				'examples/board--wide.png',
+				'pages/inbox--wide.png',
+				'wide.png',
+			])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('lists no frame for a missing directory', () => {
+		const scratch = createScratch({ prefix: 'frames-' })
+		try {
+			expect(readCaptureFrames(resolve(scratch.path, 'absent'), ['pages'])).toEqual([])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it.each([
+		[
+			'a frame beneath the run records',
+			'runs/run-1/stray.png',
+			'Frames sit beneath the run records',
+		],
+		['a directory no owner declares as a scope', 'shell/menu.png', 'Unknown capture directory'],
+		['a directory inside a scope', 'pages/mail/inbox.png', 'a scope holds frames only'],
+	])('refuses %s as evidence', (_title, file, reason) => {
+		const scratch = createScratch({ prefix: 'frames-' })
+		try {
+			scratch.write(file, 'frame')
+			expect(captureError(() => readCaptureFrames(scratch.path, ['pages']))).toMatchObject({
+				code: 'EVIDENCE',
+				message: expect.stringContaining(reason),
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('refuses a directory path that names a file, naming the directory', () => {
+		const scratch = createScratch({ prefix: 'frames-' })
+		try {
+			scratch.write('states', 'not a directory')
+			const failure = captureError(() =>
+				readCaptureFrames(resolve(scratch.path, 'states'), ['pages']),
+			)
+			expect(failure).toMatchObject({
+				code: 'EVIDENCE',
+				message: expect.stringContaining(resolve(scratch.path, 'states')),
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('readCaptureProgress', () => {
+	const REQUESTS = 'tmp/capture'
+
+	it('reads the live stage: cases done against planned, its failure, the running case, and the elapsed time', () => {
+		const scratch = createScratch({ prefix: 'progress-' })
+		try {
+			scratch.write(
+				`${REQUESTS}/runs/run-1/selected.progress.jsonl`,
+				`${CAPTURE_PROGRESS_LINES.join('\n')}\n{"event":"ca`,
+			)
+			const progress = readCaptureProgress(scratch.path, REQUESTS, 61_000)
+			expect(progress.file).toBe(`${REQUESTS}/runs/run-1/selected.progress.jsonl`)
+			expect(progress.runs).toHaveLength(1)
+			expect(progress.runs[0]).toMatchObject({
+				pid: 7,
+				state: 'live',
+				done: 2,
+				planned: 3,
+				elapsed: 60_000,
+				running: [{ project: 'journey:wide', name: 'closes the run' }],
+				failures: [
+					{
+						name: 'opens mail',
+						error: { message: 'Error: the inbox is empty', location: 'specs/journey.ts:4:9' },
+					},
+				],
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('reads the most recently written progress file across run directories and stages', () => {
+		const scratch = createScratch({ prefix: 'progress-' })
+		try {
+			scratch.write(
+				`${REQUESTS}/runs/run-2/narrow.progress.jsonl`,
+				`${CAPTURE_PROGRESS_LINES[0]}\n`,
+			)
+			scratch.write(`${REQUESTS}/runs/run-1/rest.progress.jsonl`, `${CAPTURE_PROGRESS_LINES[0]}\n`)
+			scratch.write(`${REQUESTS}/runs/run-1/rest.json`, '{}')
+			utimesSync(resolve(scratch.path, `${REQUESTS}/runs/run-2/narrow.progress.jsonl`), 1, 1)
+			expect(readCaptureProgress(scratch.path, REQUESTS).file).toBe(
+				`${REQUESTS}/runs/run-1/rest.progress.jsonl`,
+			)
+			utimesSync(resolve(scratch.path, `${REQUESTS}/runs/run-1/rest.progress.jsonl`), 0, 0)
+			expect(readCaptureProgress(scratch.path, REQUESTS).file).toBe(
+				`${REQUESTS}/runs/run-2/narrow.progress.jsonl`,
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('reads a stage that wrote no complete line as holding no run', () => {
+		const scratch = createScratch({ prefix: 'progress-' })
+		try {
+			scratch.write(`${REQUESTS}/runs/run-1/selected.progress.jsonl`, '{"event":"init","vers')
+			expect(readCaptureProgress(scratch.path, REQUESTS)).toEqual({
+				file: `${REQUESTS}/runs/run-1/selected.progress.jsonl`,
+				runs: [],
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it.each([
+		['no request directory', undefined],
+		['run directories with no progress file', 'runs/run-1/selected.json'],
+		['a directory that carries the progress ending', 'runs/run-1/selected.progress.jsonl/x'],
+	])('refuses %s as a stage refusal', (_title, file) => {
+		const scratch = createScratch({ prefix: 'progress-' })
+		try {
+			if (file !== undefined) scratch.write(`${REQUESTS}/${file}`, '{}')
+			expect(captureError(() => readCaptureProgress(scratch.path, REQUESTS))).toMatchObject({
+				code: 'STAGE',
+				message: expect.stringContaining(
+					`No stage has written a progress file under ${REQUESTS}/runs`,
+				),
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it.each([
+		['a complete line that is not JSON', '{"event":"init"\n'],
+		['a complete line that is not a progress event', '{"event":"bogus","time":1,"pid":7}\n'],
+		[
+			'an init line of another format version',
+			'{"event":"init","version":2,"wall":1,"bail":0,"time":0,"pid":7}\n',
+		],
+	])('refuses %s as a stage refusal naming the file, never as a parse throw', (_title, text) => {
+		const scratch = createScratch({ prefix: 'progress-' })
+		try {
+			scratch.write(`${REQUESTS}/runs/run-1/selected.progress.jsonl`, text)
+			const failure = captureError(() => readCaptureProgress(scratch.path, REQUESTS))
+			expect(isCaptureError(failure)).toBe(true)
+			expect(failure).toMatchObject({
+				code: 'STAGE',
+				message: expect.stringContaining(
+					`Cannot read the progress file ${REQUESTS}/runs/run-1/selected.progress.jsonl`,
+				),
+				cause: expect.any(Error),
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('buildCaptureOverride', () => {
+	const WIDE = { name: 'wide', width: 480, height: 320 }
+	const NARROW = { name: 'narrow', width: 320, height: 320 }
+	const OPTIONS = {
+		variants: [WIDE, NARROW],
+		owners: ['pages:mail', 'pages:board', 'shell:header'],
+		first: 'narrow',
+		final: RUNNER_FINAL,
+		directory: 'tmp/captures/states',
+		inputs: ['src/**'],
+		sources: { shared: ['src/shared.ts'], tests: ['specs/**'] },
+		portfolios: [{ portfolio: 'states', directory: 'tmp/captures/states', scoped: true }],
+	}
+
+	it('provides every declared value, the owner tags, and a frame command over the directory', () => {
+		const scratch = createScratch({ prefix: 'override-' })
+		try {
+			scratch.write('pages/inbox--wide.png', 'frame')
+			scratch.write('shell/header--wide.png', 'frame')
+			const request = createRequestFixture({ variants: ['wide'] })
+			const override = buildCaptureOverride(OPTIONS, WIDE, {
+				directory: scratch.path,
+				record: 'tmp/captures/states/runs/run-1/selected/wide.json',
+				capture: true,
+				request,
+			})
+			expect(override.test.tags.map((tag) => tag.name)).toEqual([
+				'owner:pages',
+				'owner:pages:mail',
+				'pages',
+				'pages:mail',
+				'owner:pages:board',
+				'pages:board',
+				'owner:shell',
+				'owner:shell:header',
+				'shell',
+				'shell:header',
+			])
+			expect(override.test.provide).toEqual({
+				variant: 'wide',
+				variants: OPTIONS.variants,
+				directory: scratch.path,
+				record: 'tmp/captures/states/runs/run-1/selected/wide.json',
+				inputs: OPTIONS.inputs,
+				sources: OPTIONS.sources,
+				final: RUNNER_FINAL,
+				first: 'narrow',
+				portfolios: OPTIONS.portfolios,
+				capture: true,
+				request,
+			})
+			expect(override.test.browser.commands.readCaptureFrames()).toEqual([
+				'pages/inbox--wide.png',
+				'shell/header--wide.png',
+			])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('provides uniform scopes only when declared, and no request without one', () => {
+		const provided = {
+			directory: resolve('absent'),
+			record: 'tmp/captures/states/runs/direct-1/narrow.json',
+			capture: false,
+		}
+		const uniform = buildCaptureOverride({ ...OPTIONS, uniform: ['pages'] }, NARROW, provided)
+		expect(uniform.test.provide).toMatchObject({ uniform: ['pages'], capture: false })
+		expect('request' in uniform.test.provide).toBe(false)
+		expect('uniform' in buildCaptureOverride(OPTIONS, NARROW, provided).test.provide).toBe(false)
+	})
+
+	it('refuses an owner that is not a canonical selector as a host fault', () => {
+		expect(
+			captureError(() =>
+				buildCaptureOverride({ ...OPTIONS, owners: ['pages:'] }, WIDE, {
+					directory: resolve('absent'),
+					record: 'r.json',
+					capture: false,
+				}),
+			),
+		).toMatchObject({ code: 'HOST' })
+	})
+})
+
+describe('buildCaptureWrapper', { timeout: FIXTURE_TIMEOUT }, () => {
+	const VARIANTS = [
+		{ name: 'wide', width: 480, height: 320 },
+		{ name: 'narrow', width: 320, height: 320 },
+	]
+
+	it('describes each variant through the host project during discovery and answers with the empty configuration', async () => {
+		const scratch = createScratch({ parent: resolve('tmp'), prefix: 'wrapper-' })
+		const named: string[] = []
+		try {
+			const base = resolveCaptureRelative(process.cwd(), scratch.path)
+			const config = `${base}/journey.config.ts`
+			scratch.write(
+				`requests/journey-selection-${String(process.ppid)}.json`,
+				JSON.stringify(createCaptureDiscoveryRequest(process.ppid, process.argv.slice(1), config)),
+			)
+			const result = await withEnvironment(
+				{ [CAPTURE_REQUESTS_FLAG]: resolve(scratch.path, 'requests'), [CAPTURE_FLAG]: '1' },
+				async () =>
+					await buildCaptureWrapper({
+						config: pathToFileURL(resolve(scratch.path, 'journey.config.ts')).href,
+						variants: VARIANTS,
+						owners: ['pages:mail'],
+						first: 'narrow',
+						final: RUNNER_FINAL,
+						directory: `${base}/states`,
+						inputs: ['src/**'],
+						sources: { shared: [], tests: ['specs/**'] },
+						portfolios: [{ portfolio: 'states', directory: `${base}/states`, scoped: true }],
+						project: (variant, override) => {
+							named.push(variant.name)
+							return { test: { ...override.test, name: { label: `journey:${variant.name}` } } }
+						},
+					}),
+			)
+			expect(result).toEqual(buildCaptureDiscoveryConfig())
+			expect(named).toEqual(['wide', 'narrow'])
+			const written: unknown = parseJSON(scratch.read('requests/runs/run-1/description.json') ?? '')
+			const description = readCaptureDescription(written, {
+				id: 'run-1',
+				nonce: 'nonce-1',
+				config,
+				parent: process.ppid,
+				pid: process.pid,
+			})
+			expect(description.projects.map((entry) => entry.project)).toEqual(
+				VARIANTS.map((variant) => ({
+					name: `journey:${variant.name}`,
+					variant: variant.name,
+					tags: ['owner:pages', 'owner:pages:mail', 'pages', 'pages:mail'],
+					variants: ['wide', 'narrow'],
+					directory: resolve(scratch.path, 'states'),
+					record: `${base}/states/runs/discover/${variant.name}.json`,
+					inputs: ['src/**'],
+					final: RUNNER_FINAL,
+					first: 'narrow',
+					portfolios: [{ portfolio: 'states', directory: `${base}/states`, scoped: true }],
+					standalone: [],
+				})),
+			)
+			expect(description.projects.map((entry) => entry.viewport)).toEqual(VARIANTS)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('mounts one progress plugin, provides the runner request and its record, and writes frames to the evidence root', async () => {
+		const scratch = createScratch({ parent: resolve('tmp'), prefix: 'wrapper-' })
+		try {
+			const base = resolveCaptureRelative(process.cwd(), scratch.path)
+			const config = `${base}/journey.config.ts`
+			const request = createRequestFixture({
+				id: 'run-1',
+				stage: 'selected',
+				pid: process.ppid,
+				config,
+				command: 'journey',
+				selector: 'pages:mail',
+				variants: ['wide'],
+				args: process.argv.slice(1),
+			})
+			scratch.write(
+				`requests/journey-selection-${String(process.ppid)}.json`,
+				JSON.stringify(request),
+			)
+			scratch.write('states/pages/inbox--wide.png', 'frame')
+			const result = await withEnvironment(
+				{ [CAPTURE_REQUESTS_FLAG]: resolve(scratch.path, 'requests'), [CAPTURE_FLAG]: '1' },
+				async () =>
+					await buildCaptureWrapper({
+						config: pathToFileURL(resolve(scratch.path, 'journey.config.ts')).href,
+						variants: VARIANTS,
+						owners: ['pages:mail'],
+						first: 'narrow',
+						final: RUNNER_FINAL,
+						directory: `${base}/states`,
+						inputs: ['src/**'],
+						sources: { shared: [], tests: ['specs/**'] },
+						portfolios: [{ portfolio: 'states', directory: `${base}/states`, scoped: true }],
+						project: (variant, override) => ({ variant: variant.name, override }),
+					}),
+			)
+			if (!('plugins' in result)) throw new Error('The wrapper answered discovery')
+			expect(result.plugins.map((plugin) => plugin.name)).toEqual([createProgressPlugin().name])
+			expect(result.test.projects.map((project) => project.variant)).toEqual(['wide', 'narrow'])
+			for (const project of result.test.projects) {
+				expect(project.override.test.provide).toMatchObject({
+					variant: project.variant,
+					directory: resolve(scratch.path, 'states'),
+					record: `${base}/states/runs/run-1/selected/${project.variant}.json`,
+					capture: true,
+					request: { id: 'run-1', stage: 'selected', args: process.argv.slice(1) },
+				})
+				expect(project.override.test.browser.commands.readCaptureFrames()).toEqual([
+					'pages/inbox--wide.png',
+				])
+			}
+			expect(scratch.names('states/pages')).toEqual(['inbox--wide.png'])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('gives each variant an emptied scratch sibling and a direct record when no runner is the parent and capture is off', async () => {
+		const scratch = createScratch({ parent: resolve('tmp'), prefix: 'wrapper-' })
+		try {
+			const base = resolveCaptureRelative(process.cwd(), scratch.path)
+			scratch.write('no-capture-wide/pages/stale--wide.png', 'stale frame')
+			scratch.write('states/pages/inbox--wide.png', 'frame')
+			const result = await withEnvironment(
+				{ [CAPTURE_REQUESTS_FLAG]: resolve(scratch.path, 'requests'), [CAPTURE_FLAG]: '0' },
+				async () =>
+					await buildCaptureWrapper({
+						config: pathToFileURL(resolve(scratch.path, 'journey.config.ts')).href,
+						variants: VARIANTS,
+						owners: ['pages:mail'],
+						first: 'narrow',
+						final: RUNNER_FINAL,
+						directory: `${base}/states`,
+						inputs: ['src/**'],
+						sources: { shared: [], tests: ['specs/**'] },
+						portfolios: [{ portfolio: 'states', directory: `${base}/states`, scoped: true }],
+						project: (variant, override) => ({ variant: variant.name, override }),
+					}),
+			)
+			if (!('plugins' in result)) throw new Error('The wrapper answered discovery')
+			const [wide, narrow] = result.test.projects
+			expect(wide?.override.test.provide).toMatchObject({
+				directory: resolve(scratch.path, 'no-capture-wide'),
+				capture: false,
+				record: expect.stringMatching(
+					new RegExp(
+						`^${escapeCapturePattern(base)}/states/runs/direct-[0-9a-f-]{36}/wide\\.json$`,
+						'u',
+					),
+				),
+			})
+			expect(narrow?.override.test.provide.directory).toBe(
+				resolve(scratch.path, 'no-capture-narrow'),
+			)
+			expect(wide?.override.test.provide.record.split('/').at(-2)).toBe(
+				narrow?.override.test.provide.record.split('/').at(-2),
+			)
+			expect('request' in (wide?.override.test.provide ?? {})).toBe(false)
+			expect(scratch.names('no-capture-wide')).toEqual([])
+			expect(scratch.names('no-capture-narrow')).toEqual([])
+			expect(wide?.override.test.browser.commands.readCaptureFrames()).toEqual([])
+			expect(scratch.names('states/pages')).toEqual(['inbox--wide.png'])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it.each([
+		['a config that is no file URL', { config: 'journey.config.ts' }, 'HOST'],
+		[
+			'a config outside the workspace',
+			{ config: pathToFileURL(resolve('..', 'outside.config.ts')).href },
+			'CONTAINMENT',
+		],
+		['an evidence root that leaves the workspace', { directory: '../states' }, 'HOST'],
+		['an absolute evidence root', { directory: resolve('tmp', 'states') }, 'HOST'],
+	])('refuses %s before any work', async (_title, patch, code) => {
+		const named: string[] = []
+		const failure = await readCaptureRejection(
+			buildCaptureWrapper({
+				config: pathToFileURL(resolve('journey.config.ts')).href,
+				variants: VARIANTS,
+				owners: ['pages:mail'],
+				first: 'narrow',
+				final: RUNNER_FINAL,
+				directory: 'tmp/captures/states',
+				inputs: ['src/**'],
+				sources: { shared: [], tests: [] },
+				portfolios: [{ portfolio: 'states', directory: 'tmp/captures/states', scoped: true }],
+				project: (variant) => named.push(variant.name),
+				...patch,
+			}),
+		)
+		expect(failure).toMatchObject({ code })
+		expect(named).toEqual([])
 	})
 })

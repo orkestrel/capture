@@ -33,6 +33,7 @@ import { CaptureInvocation } from './CaptureInvocation.js'
 import {
 	CAPTURE_COMMAND_NAMES,
 	CAPTURE_EXIT,
+	CAPTURE_PROGRESS_SUFFIX,
 	CAPTURE_RUNS_DIRECTORY,
 	CAPTURE_STAGES,
 	CAPTURE_VITEST_ENTRY,
@@ -351,6 +352,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			directory: resolveCaptureRelative(root, primary.directory),
 			config: resolveCaptureRelative(root, parsed.config),
 			...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
+			...(parsed.bail === undefined ? {} : { bail: parsed.bail }),
 		}
 		const outcomes: CaptureOutcome[] = []
 		const stages = resolveCaptureStages(variants, primary.first, command)
@@ -418,6 +420,8 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			entry: resolve(root, CAPTURE_VITEST_ENTRY),
 			config: resolve(root, plan.config),
 			report,
+			progress: resolve(invocation.directory, `${stage.name}${CAPTURE_PROGRESS_SUFFIX}`),
+			...(plan.bail === undefined ? {} : { bail: plan.bail }),
 			projects: selected.map((project) => project.name),
 			filter: plan.filter,
 			...(plan.mode === undefined ? {} : { mode: plan.mode }),

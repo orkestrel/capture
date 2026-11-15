@@ -32,6 +32,7 @@ import { CaptureIntegrity } from './CaptureIntegrity.js'
 import { CaptureInvocation } from './CaptureInvocation.js'
 import {
 	CAPTURE_EXIT,
+	CAPTURE_PROGRESS_SUFFIX,
 	CAPTURE_REGISTRY_LINE,
 	CAPTURE_REGISTRY_STAGE,
 	CAPTURE_RUNS_DIRECTORY,
@@ -248,6 +249,8 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 			entry: resolve(root, CAPTURE_VITEST_ENTRY),
 			config: parsed.config,
 			report: reportFile,
+			progress: resolve(invocation.directory, `${stage}${CAPTURE_PROGRESS_SUFFIX}`),
+			...(parsed.bail === undefined ? {} : { bail: parsed.bail }),
 			projects: selected.map((project) => project.name),
 			final: primary.final,
 			...(parsed.mode === undefined ? {} : { mode: parsed.mode }),

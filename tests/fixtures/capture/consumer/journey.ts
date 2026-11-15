@@ -3,7 +3,7 @@ import { ConsumerJourney } from './ConsumerJourney.js'
 import { CONSUMER_CASE } from './constants.js'
 
 const journey = new ConsumerJourney()
-const variant = inject('consumer').variant
+const variant = inject('variant')
 
 describe('mail [workspace]', () => {
 	test(
