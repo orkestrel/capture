@@ -6,10 +6,12 @@ import type {
 	CaptureDigest,
 	CaptureLookup,
 	CaptureLookupJournal,
+	CaptureManifestDocument,
 	CapturePortfolioRoot,
 	CaptureProvided,
 	CaptureRegistry,
 	CaptureRequest,
+	CaptureStoredManifest,
 	CaptureViewport,
 } from '@src/core'
 import type {
@@ -104,6 +106,7 @@ import {
 	describeCaptureError,
 	isCaptureGeometry,
 	isCaptureError,
+	isCaptureManifestDocument,
 	isCapturePath,
 	isCapturePattern,
 	isCaptureReceipt,
@@ -615,18 +618,16 @@ export function buildCaptureLookupJournal(
 	collections: readonly CaptureCollectionReceipt[],
 	manifest?: string,
 ): CaptureLookupJournal {
-	const populations = new Map<Readonly<Record<string, string>>, CaptureDigest>()
-	const references = lookups.map((lookup) => {
-		const known = populations.get(lookup.inputs)
-		const population = known ?? buildCaptureDigest([], lookup.inputs)
-		if (known === undefined) populations.set(lookup.inputs, population)
-		return { ...lookup, inputs: population.digest }
-	})
+	const table = new Map<Readonly<Record<string, string>>, CaptureDigest>()
+	const references = lookups.map((lookup) => ({
+		...lookup,
+		inputs: computeCaptureTableKey(lookup.inputs, table),
+	}))
 	return {
 		version: CAPTURE_VERSION,
 		...(manifest === undefined ? {} : { manifest }),
 		inputs: Object.fromEntries(
-			[...populations.values()].map((population) => [population.digest, population.files]),
+			[...table.values()].map((population) => [population.digest, population.files]),
 		),
 		lookups: references,
 		collections,
@@ -646,23 +647,200 @@ export function buildCaptureLookupJournal(
  * ```
  */
 export function readCaptureLookups(journal: CaptureLookupJournal): readonly CaptureLookup[] {
-	const populations = new Map(
-		Object.entries(journal.inputs).map(([digest, inputs]) => {
-			if (buildCaptureDigest([], inputs).digest !== digest)
-				throw new CaptureError(`Lookup input digest differs from its map: ${digest}`, {
+	const populations = readCaptureTable(journal.inputs, 'Lookup input')
+	return journal.lookups.map((lookup) => ({
+		...lookup,
+		inputs: requireCaptureTableEntry(populations, lookup.inputs, 'Lookup', 'inputs'),
+	}))
+}
+
+/**
+ * Computes the table key of a file map, the digest from `buildCaptureDigest([], files)`, once per map.
+ *
+ * @remarks
+ * The table belongs to one document build: it memoizes each map by identity and holds the ordered
+ * map under its key, so equal maps from different objects share one key.
+ *
+ * @param files - The path-to-hash map a document stores once
+ * @param table - The build's memo from each map to its ordered, digested population
+ * @returns The digest that names the map in the document's table
+ *
+ * @example
+ * ```ts
+ * const table = new Map()
+ * computeCaptureTableKey({ 'src/a.ts': 'f'.repeat(64) }, table).length // 64
+ * ```
+ */
+export function computeCaptureTableKey(
+	files: Readonly<Record<string, string>>,
+	table: Map<Readonly<Record<string, string>>, CaptureDigest>,
+): string {
+	const known = table.get(files)
+	if (known !== undefined) return known.digest
+	const population = buildCaptureDigest([], files)
+	table.set(files, population)
+	return population.digest
+}
+
+/**
+ * Reads a document's file table after verifying that each map hashes to the key it is stored under.
+ *
+ * @param table - The stored table from each digest to its path-to-hash map
+ * @param subject - The table's subject, which opens the refusal message
+ * @returns Each verified map by its digest
+ * @throws Thrown when a stored map's digest differs from its key.
+ *
+ * @example
+ * ```ts
+ * readCaptureTable({}, 'Manifest file').size // 0
+ * ```
+ */
+export function readCaptureTable(
+	table: Readonly<Record<string, Readonly<Record<string, string>>>>,
+	subject: string,
+): ReadonlyMap<string, Readonly<Record<string, string>>> {
+	return new Map(
+		Object.entries(table).map(([digest, files]) => {
+			if (buildCaptureDigest([], files).digest !== digest)
+				throw new CaptureError(`${subject} digest differs from its map: ${digest}`, {
 					code: 'EVIDENCE',
 				})
-			return [digest, inputs] as const
+			return [digest, files] as const
 		}),
 	)
-	return journal.lookups.map((lookup) => {
-		const inputs = populations.get(lookup.inputs)
-		if (inputs === undefined)
-			throw new CaptureError(`Lookup names an unknown inputs digest: ${lookup.inputs}`, {
-				code: 'EVIDENCE',
-			})
-		return { ...lookup, inputs }
-	})
+}
+
+/**
+ * Returns the verified map a table key names, refusing a key the table does not hold.
+ *
+ * @param table - The verified table `readCaptureTable` returns
+ * @param key - The digest a stored member names
+ * @param owner - The document subject that opens the refusal message
+ * @param field - The referencing field the refusal message names
+ * @returns The file map stored under the key
+ * @throws Thrown when the table holds no map under the key.
+ *
+ * @example
+ * ```ts
+ * requireCaptureTableEntry(new Map([[key, files]]), key, 'Manifest', 'files') === files // true
+ * ```
+ */
+export function requireCaptureTableEntry(
+	table: ReadonlyMap<string, Readonly<Record<string, string>>>,
+	key: string,
+	owner: string,
+	field: string,
+): Readonly<Record<string, string>> {
+	const files = table.get(key)
+	if (files === undefined)
+		throw new CaptureError(`${owner} names an unknown ${field} digest: ${key}`, {
+			code: 'EVIDENCE',
+		})
+	return files
+}
+
+/**
+ * Stores each distinct file map of an expanded manifest once, in a table keyed by the map's digest.
+ *
+ * @param manifest - The expanded manifest the engine publishes
+ * @returns The document whose stamps, lookups, and collections name their maps by table key
+ *
+ * @example
+ * ```ts
+ * const document = buildCaptureManifestDocument(manifest)
+ * Object.keys(document.files) // one digest per distinct shared or input map
+ * ```
+ */
+export function buildCaptureManifestDocument(
+	manifest: CaptureStoredManifest,
+): CaptureManifestDocument {
+	const table = new Map<Readonly<Record<string, string>>, CaptureDigest>()
+	const entries = Object.fromEntries(
+		Object.entries(manifest.entries).map(([key, stamp]) => [
+			key,
+			{
+				...stamp,
+				shared: { ...stamp.shared, files: computeCaptureTableKey(stamp.shared.files, table) },
+			},
+		]),
+	)
+	const lookups = manifest.lookups.map((lookup) => ({
+		...lookup,
+		inputs: computeCaptureTableKey(lookup.inputs, table),
+	}))
+	const collections = manifest.collections?.map((receipt) => ({
+		...receipt,
+		inputs: { ...receipt.inputs, files: computeCaptureTableKey(receipt.inputs.files, table) },
+	}))
+	return {
+		version: manifest.version,
+		files: Object.fromEntries(
+			[...table.values()].map((population) => [population.digest, population.files]),
+		),
+		registry: manifest.registry,
+		entries,
+		lookups,
+		...(collections === undefined ? {} : { collections }),
+	}
+}
+
+/**
+ * Admits a stored manifest and expands every table reference into the file map it names.
+ *
+ * @param value - The decoded manifest file
+ * @param file - The manifest path each refusal names
+ * @returns The expanded manifest, whose references to one key share one verified map
+ * @throws Thrown with the refresh commands when the document declares another protocol version,
+ * and thrown when its schema is invalid, a table map differs from its key, or a reference names
+ * no table key.
+ *
+ * @example
+ * ```ts
+ * const manifest = readCaptureManifest(JSON.parse(text), 'tmp/captures/states/manifest.json')
+ * manifest.lookups[0]?.inputs // the expanded input map
+ * ```
+ */
+export function readCaptureManifest(value: unknown, file: string): CaptureStoredManifest {
+	const version = isRecord(value) ? value.version : undefined
+	if (typeof version === 'number' && version !== CAPTURE_VERSION)
+		throw new CaptureError(
+			`Manifest version ${JSON.stringify(version)} at ${file} is not version ${String(CAPTURE_VERSION)}, and no other version is converted. Remove ${file} and its lookup journal, then refresh explicitly with: capture registry, then capture frames all`,
+			{ code: 'EVIDENCE', context: { file, version } },
+		)
+	if (!isCaptureManifestDocument(value))
+		throw new CaptureError(`Invalid inherited manifest schema: ${file}`, { code: 'EVIDENCE' })
+	const table = readCaptureTable(value.files, 'Manifest file')
+	return {
+		version: value.version,
+		registry: value.registry,
+		entries: Object.fromEntries(
+			Object.entries(value.entries).map(([key, stamp]) => [
+				key,
+				{
+					...stamp,
+					shared: {
+						...stamp.shared,
+						files: requireCaptureTableEntry(table, stamp.shared.files, 'Manifest', 'files'),
+					},
+				},
+			]),
+		),
+		lookups: value.lookups.map((lookup) => ({
+			...lookup,
+			inputs: requireCaptureTableEntry(table, lookup.inputs, 'Manifest', 'files'),
+		})),
+		...(value.collections === undefined
+			? {}
+			: {
+					collections: value.collections.map((receipt) => ({
+						...receipt,
+						inputs: {
+							...receipt.inputs,
+							files: requireCaptureTableEntry(table, receipt.inputs.files, 'Manifest', 'files'),
+						},
+					})),
+				}),
+	}
 }
 
 /**
@@ -673,7 +851,7 @@ export function readCaptureLookups(journal: CaptureLookupJournal): readonly Capt
  *
  * @example
  * ```ts
- * computeRegistryDigest({ version: 1, receipts: [], entries: [] }).length // 64
+ * computeRegistryDigest({ version: 2, receipts: [], entries: [] }).length // 64
  * ```
  */
 export function computeRegistryDigest(
@@ -2260,7 +2438,7 @@ export function readCaptureRequest(options: CaptureRequestOptions): CaptureReque
 			`Journey selection request arguments differ from the process arguments: ${file}`,
 			{ code: 'HOST', context: { file } },
 		)
-	if (parsed.version !== 1)
+	if (parsed.version !== CAPTURE_VERSION)
 		throw new CaptureError('Journey selection request has invalid version', { code: 'HOST' })
 	if (!isCaptureSegment(parsed.id) || !isCaptureSegment(parsed.stage))
 		throw new CaptureError('Journey selection request has invalid identity', { code: 'HOST' })
@@ -2294,7 +2472,7 @@ export function readCaptureRequest(options: CaptureRequestOptions): CaptureReque
 			{ code: 'HOST' },
 		)
 	return {
-		version: 1,
+		version: CAPTURE_VERSION,
 		id: parsed.id,
 		stage: parsed.stage,
 		config: options.config,

@@ -22,7 +22,6 @@ import {
 	isCapturePath,
 	isCaptureRegistry,
 	isCaptureLookupJournal,
-	isCaptureStoredManifest,
 	isCaptureRun,
 	readCaptureReport,
 	validateCaptureRun,
@@ -47,6 +46,7 @@ import {
 	buildCaptureRegistry,
 	computeCaptureHash,
 	readCaptureInputs,
+	readCaptureManifest,
 	readCaptureRegistryArguments,
 	requireCaptureProjects,
 	resolveCaptureRelative,
@@ -215,15 +215,14 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 	}
 
 	#inherit(options: CaptureIntegrityOptions): void {
-		for (const [file, guard] of [
-			[options.manifest, isCaptureStoredManifest],
-			[options.lookups, isCaptureLookupJournal],
-		] as const) {
+		for (const file of [options.manifest, options.lookups]) {
 			const path = resolve(options.root, file)
 			try {
 				requireCaptureContained(options.root, path)
 				if (!existsSync(path)) continue
-				if (!guard(parseJSON(readFileSync(path, 'utf8'))))
+				const value: unknown = parseJSON(readFileSync(path, 'utf8'))
+				if (file === options.manifest) readCaptureManifest(value, file)
+				else if (!isCaptureLookupJournal(value))
 					throw new CaptureError('Invalid inherited evidence schema', { code: 'EVIDENCE' })
 			} catch (error) {
 				throw new CaptureError(
@@ -257,7 +256,7 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 			...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
 		})
 		const request: CaptureRequest = {
-			version: 1,
+			version: CAPTURE_VERSION,
 			id: invocation.id,
 			stage,
 			config: resolveCaptureRelative(root, parsed.config),

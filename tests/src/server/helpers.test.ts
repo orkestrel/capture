@@ -20,9 +20,11 @@ import { parseJSON, preview } from '@orkestrel/contract'
 import { createProgressPlugin, createScratch, supportsDirectoryLinks } from '@orkestrel/test/server'
 import {
 	CAPTURE_ERROR_CODES,
+	CAPTURE_VERSION,
 	CaptureError,
 	isCaptureError,
 	isCaptureLookupJournal,
+	isCaptureManifestDocument,
 } from '@src/core'
 import {
 	CAPTURE_DEFAULTS,
@@ -33,6 +35,11 @@ import {
 	filterCaptureInputs,
 	computeCaptureMatchKey,
 	buildCaptureLookupJournal,
+	buildCaptureManifestDocument,
+	computeCaptureTableKey,
+	readCaptureManifest,
+	readCaptureTable,
+	requireCaptureTableEntry,
 	buildCaptureDiscoveryConfig,
 	buildCaptureFilter,
 	buildCaptureIntegrityOptions,
@@ -124,8 +131,11 @@ import {
 	createCaptureDiscoveryRequest,
 	readCaptureRejection,
 	FIXTURE_HASH,
+	CAPTURE_COLLECTION_FIXTURE,
 	createDestinationFixture,
 	createLookupFixture,
+	createManifestFixture,
+	createStampFixture,
 	createReceiptFixture,
 	createRegistryFixture,
 	createVitestFixture,
@@ -661,7 +671,7 @@ describe('buildCaptureLookupJournal and readCaptureLookups', () => {
 
 	it('preserves empty lookup collections without inventing an input population', () => {
 		const journal = buildCaptureLookupJournal([], [])
-		expect(journal).toEqual({ version: 1, inputs: {}, lookups: [], collections: [] })
+		expect(journal).toEqual({ version: CAPTURE_VERSION, inputs: {}, lookups: [], collections: [] })
 		expect(isCaptureLookupJournal(journal)).toBe(true)
 		expect(readCaptureLookups(journal)).toEqual([])
 	})
@@ -685,6 +695,188 @@ describe('buildCaptureLookupJournal and readCaptureLookups', () => {
 		}
 		expect(isCaptureLookupJournal(altered)).toBe(true)
 		expect(() => readCaptureLookups(altered)).toThrow('Lookup input digest differs from its map')
+	})
+})
+
+describe('computeCaptureTableKey, readCaptureTable, and requireCaptureTableEntry', () => {
+	const files = { 'src/table/b.ts': 'b'.repeat(64), 'src/table/a.ts': FIXTURE_HASH }
+
+	it('keys a map by its digest over no patterns, once per map, and shares the key of an equal map', () => {
+		const table = new Map()
+		const key = computeCaptureTableKey(files, table)
+		expect(key).toBe(buildCaptureDigest([], files).digest)
+		expect(computeCaptureTableKey(files, table)).toBe(key)
+		expect(table.size).toBe(1)
+		expect(computeCaptureTableKey(Object.fromEntries(Object.entries(files).reverse()), table)).toBe(
+			key,
+		)
+		expect(computeCaptureTableKey({ 'src/table/a.ts': FIXTURE_HASH }, table)).not.toBe(key)
+		expect(computeCaptureTableKey({}, table)).toBe(buildCaptureDigest([], {}).digest)
+	})
+
+	it('reads a table whose maps hash to their keys and refuses an altered map with its key named', () => {
+		const key = buildCaptureDigest([], files).digest
+		expect(readCaptureTable({ [key]: files }, 'Manifest file')).toEqual(new Map([[key, files]]))
+		expect(readCaptureTable({}, 'Manifest file').size).toBe(0)
+		expect(() =>
+			readCaptureTable({ [key]: { 'src/table/a.ts': FIXTURE_HASH } }, 'Manifest file'),
+		).toThrow(`Manifest file digest differs from its map: ${key}`)
+		const first = { 'src/table/c.ts': FIXTURE_HASH }
+		const later = buildCaptureDigest([], first).digest
+		expect(() =>
+			readCaptureTable(
+				{ [later]: first, [key]: { 'src/table/a.ts': FIXTURE_HASH } },
+				'Manifest file',
+			),
+		).toThrow(`Manifest file digest differs from its map: ${key}`)
+	})
+
+	it('returns the map a key names and refuses a key the table does not hold', () => {
+		const key = buildCaptureDigest([], files).digest
+		const table = new Map([[key, files]])
+		expect(requireCaptureTableEntry(table, key, 'Manifest', 'files')).toBe(files)
+		const error = captureError(() =>
+			requireCaptureTableEntry(table, 'd'.repeat(64), 'Manifest', 'files'),
+		)
+		expect(isCaptureError(error) && error.code).toBe('EVIDENCE')
+		expect(error).toHaveProperty(
+			'message',
+			`Manifest names an unknown files digest: ${'d'.repeat(64)}`,
+		)
+	})
+})
+
+describe('buildCaptureManifestDocument and readCaptureManifest', () => {
+	const file = 'tmp/captures/states/manifest.json'
+	const shared = { 'src/shared/theme.ts': 'b'.repeat(64), 'src/shared/index.ts': FIXTURE_HASH }
+	const inputs = { 'src/input/view.ts': FIXTURE_HASH, 'src/input/list.ts': 'c'.repeat(64) }
+	const manifest = {
+		...createManifestFixture(),
+		entries: Object.fromEntries(
+			['inbox', 'reader', 'details'].map((state) => [
+				`pages/${state}--light-390.png`,
+				createStampFixture({
+					state,
+					file: `tmp/captures/states/pages/${state}--light-390.png`,
+					// Each stamp holds its own copy, as a manifest parsed from JSON does.
+					shared: { patterns: ['src/shared/**'], files: { ...shared }, digest: FIXTURE_HASH },
+				}),
+			]),
+		),
+		lookups: ['first', 'second'].map((name) =>
+			createLookupFixture({ case: name, inputs: { ...inputs } }),
+		),
+		collections: [
+			{
+				...CAPTURE_COLLECTION_FIXTURE,
+				inputs: { patterns: ['src/**'], files: { ...inputs }, digest: FIXTURE_HASH },
+			},
+		],
+	}
+	const document = buildCaptureManifestDocument(manifest)
+	const unknown = 'd'.repeat(64)
+
+	it('stores each distinct map once under its digest and reads back the manifest it was built from', () => {
+		const text = JSON.stringify(document)
+		const decoded: unknown = parseJSON(text)
+		if (!isCaptureManifestDocument(decoded)) throw new Error('Invalid serialized manifest document')
+		expect(Object.keys(decoded.files).toSorted()).toEqual(
+			[buildCaptureDigest([], shared).digest, buildCaptureDigest([], inputs).digest].toSorted(),
+		)
+		expect(text.match(/"src\/shared\/theme.ts"/gu)).toHaveLength(1)
+		expect(text.match(/"src\/input\/view.ts"/gu)).toHaveLength(1)
+		expect(Object.values(decoded.entries).map((stamp) => stamp.shared.files)).toEqual(
+			Array.from({ length: 3 }, () => buildCaptureDigest([], shared).digest),
+		)
+		const expanded = readCaptureManifest(decoded, file)
+		expect(expanded).toEqual(manifest)
+		const stamps = Object.values(expanded.entries)
+		expect(stamps.every((stamp) => stamp.shared.files === stamps[0]?.shared.files)).toBe(true)
+		expect(expanded.lookups[1]?.inputs).toBe(expanded.lookups[0]?.inputs)
+		expect(expanded.collections?.[0]?.inputs.files).toBe(expanded.lookups[0]?.inputs)
+	})
+
+	it('keeps an absent collection list absent and an empty manifest empty', () => {
+		const { collections: _collections, ...bare } = manifest
+		const stored = buildCaptureManifestDocument(bare)
+		expect(stored).not.toHaveProperty('collections')
+		expect(readCaptureManifest(stored, file)).toEqual(bare)
+		const empty = { ...bare, entries: {}, lookups: [] }
+		expect(buildCaptureManifestDocument(empty)).toEqual({ ...empty, files: {} })
+		expect(readCaptureManifest(buildCaptureManifestDocument(empty), file)).toEqual(empty)
+	})
+
+	it.each([
+		['the shared map', shared],
+		['the input map', inputs],
+	])('refuses a table entry whose content does not hash to its key: %s', (_title, files) => {
+		const key = buildCaptureDigest([], files).digest
+		const altered = {
+			...document,
+			files: { ...document.files, [key]: { ...files, 'src/table/added.ts': FIXTURE_HASH } },
+		}
+		expect(isCaptureManifestDocument(altered)).toBe(true)
+		expect(() => readCaptureManifest(altered, file)).toThrow(
+			`Manifest file digest differs from its map: ${key}`,
+		)
+	})
+
+	it.each([
+		[
+			'a stamp shared map',
+			{
+				...document,
+				entries: Object.fromEntries(
+					Object.entries(document.entries).map(([key, stamp]) => [
+						key,
+						{ ...stamp, shared: { ...stamp.shared, files: unknown } },
+					]),
+				),
+			},
+		],
+		[
+			'a lookup input map',
+			{ ...document, lookups: document.lookups.map((lookup) => ({ ...lookup, inputs: unknown })) },
+		],
+		[
+			'a collection input map',
+			{
+				...document,
+				collections: document.collections?.map((receipt) => ({
+					...receipt,
+					inputs: { ...receipt.inputs, files: unknown },
+				})),
+			},
+		],
+	])('refuses %s that names an unknown digest, naming the digest', (_title, value) => {
+		expect(isCaptureManifestDocument(value)).toBe(true)
+		const error = captureError(() => readCaptureManifest(value, file))
+		expect(isCaptureError(error) && error.code).toBe('EVIDENCE')
+		expect(error).toHaveProperty('message', `Manifest names an unknown files digest: ${unknown}`)
+	})
+
+	it.each([
+		['the expanded manifest an earlier release wrote', { ...createManifestFixture(), version: 1 }],
+		['a version-1 document', { ...document, version: 1 }],
+		['a later version', { ...document, version: 3 }],
+	])('refuses %s with the refresh commands', (_title, value) => {
+		const error = captureError(() => readCaptureManifest(value, file))
+		expect(isCaptureError(error) && error.code).toBe('EVIDENCE')
+		expect(error).toHaveProperty(
+			'message',
+			`Manifest version ${String(value.version)} at ${file} is not version ${String(CAPTURE_VERSION)}, and no other version is converted. Remove ${file} and its lookup journal, then refresh explicitly with: capture registry, then capture frames all`,
+		)
+	})
+
+	it.each([
+		['an empty record', {}],
+		['an expanded manifest of the current version', createManifestFixture()],
+		['a document with no table', { ...document, files: undefined }],
+		['a text version', { ...document, version: '2' }],
+	])('refuses %s as an invalid schema', (_title, value) => {
+		expect(() => readCaptureManifest(value, file)).toThrow(
+			`Invalid inherited manifest schema: ${file}`,
+		)
 	})
 })
 
@@ -727,7 +919,7 @@ describe('buildCaptureRegistry', () => {
 		const registry = buildCaptureRegistry([input])
 		expect(registry.receipts).toEqual([input.receipt])
 		expect(registry.entries).toEqual(input.receipt.registry)
-		expect(registry.version).toBe(1)
+		expect(registry.version).toBe(CAPTURE_VERSION)
 		expect(registry.digest).toBe(
 			computeRegistryDigest({
 				version: registry.version,
@@ -2636,7 +2828,7 @@ describe('readCaptureRequest', () => {
 			const record = createWireRequest(PPID, ARGV, { case: 'a case', state: 'inbox' })
 			scratch.write(`journey-selection-${String(PPID)}.json`, JSON.stringify(record))
 			expect(readCaptureRequest(createWireOptions(scratch.path, PPID, ARGV))).toEqual({
-				version: 1,
+				version: CAPTURE_VERSION,
 				id: 'wire-1',
 				stage: 'narrow',
 				config: WIRE_CONFIG,
@@ -3409,7 +3601,7 @@ describe('readCaptureDescription', () => {
 	it('accepts a description that echoes this exchange and validates each project', () => {
 		const input = createCaptureDescriptionFixture(EXPECTED, PROJECT)
 		const description = readCaptureDescription(input, EXPECTED)
-		expect(description).toMatchObject({ version: 1, ...EXPECTED })
+		expect(description).toMatchObject({ version: CAPTURE_VERSION, ...EXPECTED })
 		expect(description.projects).toEqual([readCaptureEntry(PROJECT)])
 	})
 
@@ -3448,7 +3640,7 @@ describe('readCaptureDescription', () => {
 		},
 		{
 			title: 'another version',
-			patch: { version: 2 },
+			patch: { version: 1 },
 			message: 'The host description is malformed',
 		},
 		{ title: 'a project list that is no list', patch: { projects: 'x' }, message: 'malformed' },
@@ -3515,7 +3707,7 @@ describe('answerCaptureDiscovery', () => {
 			).toBe(true)
 			const written: unknown = parseJSON(scratch.read('requests/runs/run-1/description.json') ?? '')
 			expect(written).toEqual({
-				version: 1,
+				version: CAPTURE_VERSION,
 				id: 'run-1',
 				nonce: 'nonce-1',
 				config: CONFIG,
@@ -3674,7 +3866,7 @@ describe('answerCaptureDiscovery', () => {
 			message: 'Invalid journey selection request',
 		},
 		{ title: 'different arguments', patch: { args: ['other'] }, message: 'arguments differ' },
-		{ title: 'another version', patch: { version: 2 }, message: 'invalid version' },
+		{ title: 'another version', patch: { version: 1 }, message: 'invalid version' },
 		{ title: 'an identity with a separator', patch: { id: '../run' }, message: 'invalid identity' },
 		{ title: 'a challenge with a space', patch: { nonce: 'a b' }, message: 'invalid identity' },
 		{ title: 'no challenge', patch: { nonce: undefined }, message: 'invalid identity' },

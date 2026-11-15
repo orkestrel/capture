@@ -106,6 +106,22 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 
+	it('refuses a version-1 manifest before starting any registry stage and names the refresh commands', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			const file = `${COMPOSED_DIRECTORY}/manifest.json`
+			fixture.write(file, JSON.stringify({ version: 1, entries: {}, lookups: [] }))
+			const run = await fixture.refresh()
+			expect(run.code).toBe(1)
+			expect(fixture.stages).toEqual([])
+			expect(run.stderr).toContain(
+				`Manifest version 1 at ${file} is not version ${String(core.CAPTURE_VERSION)}, and no other version is converted. Remove ${file} and its lookup journal, then refresh explicitly with: capture registry, then capture frames all`,
+			)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
 	it('refuses an outside publication root before a producer writes', async () => {
 		const fixture = new ComposedFixture({ core, server })
 		const outside = createScratch({ prefix: 'capture-publication-' })

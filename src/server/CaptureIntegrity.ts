@@ -57,6 +57,7 @@ import {
 	describeCaptureRequest,
 	isCaptureError,
 	isCaptureLookupJournal,
+	isCaptureManifestDocument,
 	isCapturePath,
 	isCapturePattern,
 	isCaptureRegistry,
@@ -64,7 +65,6 @@ import {
 	isCaptureRun,
 	isCaptureSegment,
 	isCaptureSelector,
-	isCaptureStoredManifest,
 	matchesCaptureMembers,
 	matchesCaptureSelector,
 	readCaptureDirty,
@@ -80,6 +80,8 @@ import {
 	buildCaptureChangePlan,
 	buildCaptureDigest,
 	buildCaptureLookupJournal,
+	buildCaptureManifestDocument,
+	readCaptureManifest,
 	computeCaptureHash,
 	computeRegistryDigest,
 	matchesCaptureSignature,
@@ -434,9 +436,10 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				]),
 				lookups: merged,
 			}
-			if (!isCaptureStoredManifest(next))
+			const document = buildCaptureManifestDocument(next)
+			if (!isCaptureManifestDocument(document))
 				throw new CaptureError('Invalid next manifest', { code: 'EVIDENCE' })
-			this.#commit(this.#options.manifest, next, options.signal)
+			this.#commit(this.#options.manifest, document, options.signal)
 		} else if (request.command === 'journey' && collected.length > 0) {
 			const manifest = before.files.find((file) => file.file === this.#options.manifest)?.image
 				.digest
@@ -1160,10 +1163,8 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		const paths = new Map<string, string>()
 		const registry = this.#registry(snapshots, paths)
 		const manifest = existsSync(this.#path(this.#options.manifest, paths))
-			? this.#json(this.#options.manifest, paths)
+			? readCaptureManifest(this.#json(this.#options.manifest, paths), this.#options.manifest)
 			: undefined
-		if (manifest !== undefined && !isCaptureStoredManifest(manifest))
-			throw new CaptureError('Invalid inherited manifest schema', { code: 'EVIDENCE' })
 		if (manifest !== undefined) {
 			requireCaptureUnique(Object.keys(manifest.entries), 'manifest keys', true)
 			if (manifest.registry.digest !== computeRegistryDigest(manifest.registry))

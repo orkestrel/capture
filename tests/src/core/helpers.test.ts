@@ -1,5 +1,6 @@
 import type { TestOptions } from 'vitest'
 import {
+	CAPTURE_VERSION,
 	buildCaptureDestinations,
 	buildCaptureRun,
 	buildCaptureTags,
@@ -1239,7 +1240,7 @@ describe('buildCaptureRun', () => {
 			requireValue(new Map(CAPTURE_RECORD_SCENARIOS).get('a run that wrote each passed frame')),
 		)
 		expect(written.run).toMatchObject({
-			version: 1,
+			version: CAPTURE_VERSION,
 			variant: 'light-390',
 			time: CAPTURE_RECORD_TIME,
 			complete: false,

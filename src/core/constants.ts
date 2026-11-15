@@ -72,10 +72,10 @@ export const CAPTURE_REQUEST_PREFIX = 'journey-selection'
  *
  * @example
  * ```ts
- * CAPTURE_VERSION // 1
+ * CAPTURE_VERSION // 2
  * ```
  */
-export const CAPTURE_VERSION = 1
+export const CAPTURE_VERSION = 2
 
 /**
  * Holds the eight bytes every PNG file opens with.

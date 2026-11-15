@@ -1,7 +1,10 @@
 import {
+	CAPTURE_VERSION,
 	isCaptureDestination,
+	isCaptureDigestReference,
 	isCaptureHash,
 	isCaptureHashes,
+	isCaptureManifestDocument,
 	isCapturePath,
 	isCapturePattern,
 	isCaptureRequest,
@@ -19,9 +22,12 @@ import {
 	REFUSED_PATHS,
 	createDestinationFixture,
 	createIdentityFixture,
+	createLookupFixture,
 	createManifestFixture,
+	createRegistryFixture,
 	createRequestFixture,
 	createRunFixture,
+	createStampFixture,
 } from '../../setup.js'
 
 describe('capture guards', () => {
@@ -51,7 +57,96 @@ describe('capture guards', () => {
 		const manifest = { ...createManifestFixture(), collections: [CAPTURE_COLLECTION_FIXTURE] }
 		expect(isCaptureStoredManifest(manifest)).toBe(true)
 		expect(isCaptureStoredManifest({ ...createManifestFixture(), collections: [{}] })).toBe(false)
-		expect(isCaptureStoredManifest({ ...createManifestFixture(), version: 2 })).toBe(false)
+		expect(isCaptureStoredManifest({ ...createManifestFixture(), version: 1 })).toBe(false)
+	})
+
+	it('accepts a digest that names its map by a table key and refuses an embedded or short one', () => {
+		const reference = { patterns: ['src/**'], files: FIXTURE_HASH, digest: FIXTURE_HASH }
+		expect(isCaptureDigestReference(reference)).toBe(true)
+		expect(isCaptureDigestReference({ ...reference, files: {} })).toBe(false)
+		expect(isCaptureDigestReference({ ...reference, files: 'abc' })).toBe(false)
+		expect(isCaptureDigestReference({ ...reference, digest: undefined })).toBe(false)
+		expect(isCaptureDigestReference({ ...reference, patterns: ['../src'] })).toBe(false)
+	})
+})
+
+describe('isCaptureManifestDocument', () => {
+	const stamp = createStampFixture()
+	const inputs = 'b'.repeat(64)
+	const document = {
+		version: CAPTURE_VERSION,
+		files: { [FIXTURE_HASH]: stamp.shared.files, [inputs]: createLookupFixture().inputs },
+		registry: createRegistryFixture(),
+		entries: {
+			'pages/inbox--light-390.png': { ...stamp, shared: { ...stamp.shared, files: FIXTURE_HASH } },
+		},
+		lookups: [{ ...createLookupFixture(), inputs }],
+		collections: [
+			{
+				...CAPTURE_COLLECTION_FIXTURE,
+				inputs: { ...CAPTURE_COLLECTION_FIXTURE.inputs, files: inputs },
+			},
+		],
+	}
+
+	it('accepts a document with and without collection receipts', () => {
+		expect(isCaptureManifestDocument(document)).toBe(true)
+		const { collections: _collections, ...bare } = document
+		expect(isCaptureManifestDocument(bare)).toBe(true)
+		expect(isCaptureManifestDocument({ ...bare, entries: {}, lookups: [], files: {} })).toBe(true)
+	})
+
+	it.each([
+		['version 1', { ...document, version: 1 }],
+		['no version', { ...document, version: undefined }],
+		['no file table', { ...document, files: undefined }],
+		['a short table key', { ...document, files: { abc: {} } }],
+		[
+			'a malformed table map',
+			{ ...document, files: { [FIXTURE_HASH]: { '../escape': FIXTURE_HASH } } },
+		],
+		['no registry', { ...document, registry: undefined }],
+		[
+			'an escaping stamp key',
+			{ ...document, entries: { '../a.png': document.entries['pages/inbox--light-390.png'] } },
+		],
+		[
+			'a stamp with an embedded shared map',
+			{ ...document, entries: { 'pages/inbox--light-390.png': stamp } },
+		],
+		[
+			'a stamp with a short shared key',
+			{
+				...document,
+				entries: {
+					'pages/inbox--light-390.png': { ...stamp, shared: { ...stamp.shared, files: 'abc' } },
+				},
+			},
+		],
+		[
+			'a malformed stamp',
+			{
+				...document,
+				entries: {
+					'pages/inbox--light-390.png': {
+						shared: document.entries['pages/inbox--light-390.png'].shared,
+					},
+				},
+			},
+		],
+		['a lookup with an embedded input map', { ...document, lookups: [createLookupFixture()] }],
+		['a malformed lookup', { ...document, lookups: [{ inputs }] }],
+		[
+			'a collection with an embedded input map',
+			{ ...document, collections: [CAPTURE_COLLECTION_FIXTURE] },
+		],
+		[
+			'a malformed collection',
+			{ ...document, collections: [{ inputs: document.collections[0]?.inputs }] },
+		],
+		['an expanded manifest', createManifestFixture()],
+	])('refuses %s', (_title, value) => {
+		expect(isCaptureManifestDocument(value)).toBe(false)
 	})
 
 	it('accepts a destination with and without its optional section', () => {
@@ -182,6 +277,8 @@ describe('capture guard totality', () => {
 			isCaptureHash,
 			isCaptureHashes,
 			isCaptureStoredManifest,
+			isCaptureDigestReference,
+			isCaptureManifestDocument,
 		]
 		for (const value of hostile) {
 			for (const guard of predicates) expect(typeof guard(value)).toBe('boolean')
@@ -199,6 +296,8 @@ describe('capture guard totality', () => {
 			expect(isCaptureHash(value)).toBe(false)
 			// An empty record is a valid hash map, so this guard is held to totality above, not to refusal.
 			expect(isCaptureStoredManifest(value)).toBe(false)
+			expect(isCaptureDigestReference(value)).toBe(false)
+			expect(isCaptureManifestDocument(value)).toBe(false)
 		}
 	})
 

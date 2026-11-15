@@ -33,7 +33,6 @@ import {
 	isCapturePath,
 	isCaptureError,
 	isCaptureRun,
-	isCaptureStoredManifest,
 	matchesCaptureSelector,
 	readCaptureArtifact,
 	resolveCaptureKey,
@@ -62,6 +61,7 @@ import {
 	requireCaptureContained,
 	resolveCaptureExit,
 	readCaptureImage,
+	readCaptureManifest,
 	requireCaptureSelection,
 	readCaptureVariants,
 	shrinkCapturePicture,
@@ -449,10 +449,10 @@ export class CapturePreflight implements CapturePreflightInterface {
 	#manifest(directory: string): CaptureStoredManifest | undefined {
 		const file = resolve(this.#options.root, directory, CAPTURE_MANIFEST_FILE)
 		if (!existsSync(file)) return undefined
-		const manifest = parseJSON(readFileSync(file, 'utf8'))
-		if (!isCaptureStoredManifest(manifest))
-			throw new CaptureError('Invalid stamped manifest schema', { code: 'EVIDENCE' })
-		return manifest
+		return readCaptureManifest(
+			parseJSON(readFileSync(file, 'utf8')),
+			`${directory}/${CAPTURE_MANIFEST_FILE}`,
+		)
 	}
 
 	// Resolves the run record a judged frame's stamp names through its wrapper's producing variant.

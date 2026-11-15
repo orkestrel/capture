@@ -5,11 +5,13 @@ import type {
 	CaptureDeclaration,
 	CaptureDestination,
 	CaptureDigest,
+	CaptureDigestReference,
 	CaptureEntry,
 	CaptureIdentity,
 	CaptureLookup,
 	CaptureLookupJournal,
 	CaptureManifest,
+	CaptureManifestDocument,
 	CaptureReceipt,
 	CaptureRegistry,
 	CaptureRequest,
@@ -20,6 +22,7 @@ import type {
 	CaptureViewport,
 } from './types.js'
 import { arrayOf, holds, isFiniteNumber, isObject, isRecord, isString } from '@orkestrel/contract'
+import { CAPTURE_VERSION } from './constants.js'
 
 /**
  * Checks whether a serialized path stays within the portable relative-path vocabulary.
@@ -211,7 +214,7 @@ export function isCaptureIdentity(value: unknown): value is CaptureIdentity {
  * @example
  * ```ts
  * isCaptureRequest(JSON.parse(text)) // true for a well-formed runner request
- * isCaptureRequest({ version: 2 }) // false
+ * isCaptureRequest({ version: 1 }) // false
  * ```
  */
 export function isCaptureRequest(value: unknown): value is CaptureRequest {
@@ -219,7 +222,7 @@ export function isCaptureRequest(value: unknown): value is CaptureRequest {
 		() =>
 			isRecord(value) &&
 			isCaptureIdentity(value) &&
-			value.version === 1 &&
+			value.version === CAPTURE_VERSION &&
 			(value.command === 'journey' || value.command === 'capture') &&
 			(value.mode === undefined || (typeof value.mode === 'string' && value.mode.trim() !== '')) &&
 			isCaptureSelector(value.selector) &&
@@ -346,7 +349,7 @@ export function isCaptureRun(value: unknown): value is CaptureRun {
 	return holds(
 		() =>
 			isRecord(value) &&
-			value.version === 1 &&
+			value.version === CAPTURE_VERSION &&
 			isCaptureSegment(value.variant) &&
 			typeof value.time === 'string' &&
 			Number.isFinite(Date.parse(value.time)) &&
@@ -401,7 +404,7 @@ export function isCaptureReceipt(value: unknown): value is CaptureReceipt {
 	return holds(
 		() =>
 			isRecord(value) &&
-			value.version === 1 &&
+			value.version === CAPTURE_VERSION &&
 			isCaptureSegment(value.variant) &&
 			typeof value.time === 'string' &&
 			Number.isFinite(Date.parse(value.time)) &&
@@ -431,7 +434,7 @@ export function isCaptureRegistry(value: unknown): value is CaptureRegistry {
 	return holds(
 		() =>
 			isRecord(value) &&
-			value.version === 1 &&
+			value.version === CAPTURE_VERSION &&
 			arrayOf(isCaptureReceipt)(value.receipts) &&
 			arrayOf(isCaptureDestination)(value.entries) &&
 			isCaptureHash(value.digest),
@@ -476,8 +479,8 @@ export function isCaptureLookup(value: unknown): value is CaptureLookup {
  *
  * @example
  * ```ts
- * isCaptureLookupJournal({ version: 1, inputs: {}, lookups: [] }) // true
- * isCaptureLookupJournal({ version: 2, inputs: {}, lookups: [] }) // false
+ * isCaptureLookupJournal({ version: 2, inputs: {}, lookups: [] }) // true
+ * isCaptureLookupJournal({ version: 1, inputs: {}, lookups: [] }) // false
  * ```
  */
 export function isCaptureLookupJournal(value: unknown): value is CaptureLookupJournal {
@@ -485,7 +488,7 @@ export function isCaptureLookupJournal(value: unknown): value is CaptureLookupJo
 		() =>
 			isRecord(value) &&
 			(value.collections === undefined || arrayOf(isCaptureCollection)(value.collections)) &&
-			value.version === 1 &&
+			value.version === CAPTURE_VERSION &&
 			(value.manifest === undefined || isCaptureHash(value.manifest)) &&
 			isRecord(value.inputs) &&
 			Object.entries(value.inputs).every(
@@ -545,7 +548,7 @@ export function isCaptureStamp(value: unknown): value is CaptureStamp {
  *
  * @example
  * ```ts
- * isCaptureManifest(JSON.parse(text)) // true for a published manifest.json
+ * isCaptureManifest(readCaptureManifest(JSON.parse(text), file)) // true for an expanded manifest.json
  * isCaptureManifest('manifest') // false
  * ```
  */
@@ -553,7 +556,7 @@ export function isCaptureManifest(value: unknown): value is CaptureManifest {
 	return holds(
 		() =>
 			isRecord(value) &&
-			value.version === 1 &&
+			value.version === CAPTURE_VERSION &&
 			isCaptureRegistry(value.registry) &&
 			isRecord(value.entries) &&
 			Object.entries(value.entries).every(
@@ -601,7 +604,7 @@ export function isCaptureCollection(value: unknown): value is CaptureCollectionR
  *
  * @example
  * ```ts
- * isCaptureStoredManifest(JSON.parse(text)) // true for a manifest with or without collections
+ * isCaptureStoredManifest(readCaptureManifest(JSON.parse(text), file)) // true with or without collections
  * isCaptureStoredManifest(null) // false
  * ```
  */
@@ -611,6 +614,70 @@ export function isCaptureStoredManifest(value: unknown): value is CaptureStoredM
 			isCaptureManifest(value) &&
 			isRecord(value) &&
 			(value.collections === undefined || arrayOf(isCaptureCollection)(value.collections)),
+	)
+}
+
+/**
+ * Checks whether a digest names its file map by a table key beside its patterns and combined digest.
+ *
+ * @param value - The stored digest reference
+ * @returns True if the patterns are valid and both digests are SHA-256 hexadecimal; false otherwise
+ *
+ * @example
+ * ```ts
+ * isCaptureDigestReference({ patterns: ['src/**'], files: 'a'.repeat(64), digest: 'b'.repeat(64) }) // true
+ * isCaptureDigestReference({ patterns: ['src/**'], files: {}, digest: 'b'.repeat(64) }) // false
+ * ```
+ */
+export function isCaptureDigestReference(value: unknown): value is CaptureDigestReference {
+	return holds(
+		() =>
+			isRecord(value) &&
+			arrayOf(isCapturePattern)(value.patterns) &&
+			isCaptureHash(value.files) &&
+			isCaptureHash(value.digest),
+	)
+}
+
+/**
+ * Checks whether a stored manifest holds its file table and every member that names a table key.
+ *
+ * @param value - The decoded manifest file
+ * @returns True if the version, table, registry, stamps, lookups, and collections are valid; false otherwise
+ * @remarks Table digests and reference existence are verified when the document is read.
+ *
+ * @example
+ * ```ts
+ * isCaptureManifestDocument(JSON.parse(text)) // true for a written manifest.json
+ * isCaptureManifestDocument({ version: 1, files: {}, entries: {}, lookups: [] }) // false
+ * ```
+ */
+export function isCaptureManifestDocument(value: unknown): value is CaptureManifestDocument {
+	return holds(
+		() =>
+			isRecord(value) &&
+			// The file table and the lookup references follow the journal's table rule.
+			isCaptureLookupJournal({
+				version: value.version,
+				inputs: value.files,
+				lookups: value.lookups,
+			}) &&
+			isCaptureRegistry(value.registry) &&
+			isRecord(value.entries) &&
+			Object.entries(value.entries).every(
+				([key, stamp]) =>
+					isCapturePath(key) &&
+					isRecord(stamp) &&
+					isCaptureDigestReference(stamp.shared) &&
+					isCaptureStamp({ ...stamp, shared: { ...stamp.shared, files: {} } }),
+			) &&
+			(value.collections === undefined ||
+				arrayOf(
+					(entry) =>
+						isRecord(entry) &&
+						isCaptureDigestReference(entry.inputs) &&
+						isCaptureCollection({ ...entry, inputs: { ...entry.inputs, files: {} } }),
+				)(value.collections)),
 	)
 }
 

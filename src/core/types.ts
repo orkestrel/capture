@@ -1,4 +1,8 @@
-import type { CAPTURE_ERROR_CODES, CAPTURE_STATUS_PRECEDENCE } from './constants.js'
+import type {
+	CAPTURE_ERROR_CODES,
+	CAPTURE_STATUS_PRECEDENCE,
+	CAPTURE_VERSION,
+} from './constants.js'
 
 /**
  * Names one condition axis a capture failure carries.
@@ -83,7 +87,7 @@ export interface CaptureIdentity {
  * ```
  */
 export interface CaptureRequest extends CaptureSelection, CaptureIdentity {
-	readonly version: 1
+	readonly version: typeof CAPTURE_VERSION
 	readonly command: 'journey' | 'capture'
 	readonly mode?: string
 	readonly variants: readonly string[]
@@ -116,6 +120,20 @@ export interface CaptureSources {
 export interface CaptureDigest {
 	readonly patterns: readonly string[]
 	readonly files: Readonly<Record<string, string>>
+	readonly digest: string
+}
+
+/**
+ * Names a digest's file map by the key a document's file table stores it under.
+ *
+ * @example
+ * ```ts
+ * const shared: CaptureDigestReference = { patterns: ['src/core/**'], files: key, digest }
+ * ```
+ */
+export interface CaptureDigestReference {
+	readonly patterns: readonly string[]
+	readonly files: string
 	readonly digest: string
 }
 
@@ -311,8 +329,8 @@ export interface CaptureStamp extends CaptureEntry {
  *
  * @example
  * ```ts
- * const manifest: unknown = JSON.parse(text)
- * if (isCaptureManifest(manifest)) Object.keys(manifest.entries) // stamped image keys
+ * const manifest: CaptureManifest = readCaptureManifest(JSON.parse(text), file)
+ * Object.keys(manifest.entries) // stamped image keys
  * ```
  */
 export interface CaptureManifest {
@@ -398,8 +416,8 @@ export interface CaptureCollectionReceipt {
  *
  * @example
  * ```ts
- * const manifest: unknown = JSON.parse(text)
- * if (isCaptureStoredManifest(manifest)) manifest.collections // readonly receipts or undefined
+ * const manifest = readCaptureManifest(JSON.parse(text), file)
+ * manifest.collections // readonly receipts or undefined
  * ```
  */
 export interface CaptureStoredManifest extends CaptureManifest {
@@ -417,15 +435,43 @@ export interface CaptureStoredManifest extends CaptureManifest {
  *
  * @example
  * ```ts
- * const journal: CaptureLookupJournal = { version: 1, inputs: {}, lookups: [] }
+ * const journal: CaptureLookupJournal = { version: 2, inputs: {}, lookups: [] }
  * ```
  */
 export interface CaptureLookupJournal {
 	readonly collections?: readonly CaptureCollectionReceipt[]
-	readonly version: 1
+	readonly version: typeof CAPTURE_VERSION
 	readonly manifest?: string
 	readonly inputs: Readonly<Record<string, Readonly<Record<string, string>>>>
 	readonly lookups: ReadonlyArray<Omit<CaptureLookup, 'inputs'> & { readonly inputs: string }>
+}
+
+/**
+ * Stores a manifest with each distinct file map once, in a table keyed by the map's digest.
+ *
+ * @remarks
+ * Each `files` key is the digest from `buildCaptureDigest([], files)` over the path-to-hash map it
+ * stores. Each stamp's `shared.files`, each lookup's `inputs`, and each collection receipt's
+ * `inputs.files` names a key in that table. The expanded `CaptureStoredManifest` carries every map
+ * in place.
+ *
+ * @example
+ * ```ts
+ * const document: unknown = JSON.parse(text)
+ * if (isCaptureManifestDocument(document)) Object.keys(document.files) // distinct map digests
+ * ```
+ */
+export interface CaptureManifestDocument {
+	readonly version: number
+	readonly files: Readonly<Record<string, Readonly<Record<string, string>>>>
+	readonly registry: CaptureRegistry
+	readonly entries: Readonly<
+		Record<string, Omit<CaptureStamp, 'shared'> & { readonly shared: CaptureDigestReference }>
+	>
+	readonly lookups: CaptureLookupJournal['lookups']
+	readonly collections?: ReadonlyArray<
+		Omit<CaptureCollectionReceipt, 'inputs'> & { readonly inputs: CaptureDigestReference }
+	>
 }
 
 /**

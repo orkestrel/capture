@@ -24,12 +24,12 @@ import {
 // The integrity cost of a frames pass, read as the latency of a `capture` stamp that writes the
 // manifest, of `read`, and of `check`, each over every destination after one stamp has written the
 // manifest. The base arm runs one variant with one shared file; the veneer kind runs veneer's four
-// variants over a shared list that matches most inputs, so its manifest repeats that list's map in
-// every stamp, and its `read` resolves every destination's producer across four receipts. Each
+// variants over a shared list that matches most inputs, so every stamp shares that list's map, and
+// its `read` resolves every destination's producer across four receipts. Each
 // `stamp` reading runs on a fresh engine, because an engine keeps its matched subsets across stamps;
-// `read` and `check` never read that memo and share the fixture's engine. Each reading
-// line carries the manifest's bytes and the bytes its repeated file maps take beyond each distinct
-// map's first copy. No gate collects this file; run it with
+// `read` and `check` never read that memo and share the fixture's engine. Each reading line carries
+// the stored manifest's bytes, the bytes of its expanded form, and the bytes its stored file maps
+// take beyond each distinct map's first copy. No gate collects this file; run it with
 // `npm run test:bench -- tests/src/server/CaptureIntegrity.bench.ts`, and select one case with `-t`.
 
 it.for([
@@ -116,7 +116,7 @@ it.for([
 						fixture.write(
 							record,
 							JSON.stringify({
-								version: 1,
+								version: core.CAPTURE_VERSION,
 								request,
 								identity: { id, stage: request.stage, pid: request.pid, config: request.config },
 								variant,
@@ -206,16 +206,15 @@ it.for(
 			expect(reached.length).toBeGreaterThan(iterations)
 			expect(new Set(reached)).toEqual(new Set([total]))
 			const text = readFileSync(resolve(fixture.root, fixture.options.manifest), 'utf8')
-			const manifest: unknown = parseJSON(text)
-			if (!core.isCaptureStoredManifest(manifest)) throw new Error('Invalid population manifest')
-			const maps = [
-				...Object.values(manifest.entries).map((stamp) => JSON.stringify(stamp.shared.files)),
-				...manifest.lookups.map((lookup) => JSON.stringify(lookup.inputs)),
-			]
+			const document: unknown = parseJSON(text)
+			if (!core.isCaptureManifestDocument(document)) throw new Error('Invalid population manifest')
+			const manifest = server.readCaptureManifest(document, fixture.options.manifest)
+			// The table stores every map the document holds; members hold only table keys.
+			const maps = Object.values(document.files).map((files) => JSON.stringify(files))
 			const repeated =
 				Buffer.byteLength(maps.join('')) - Buffer.byteLength([...new Set(maps)].join(''))
 			console.log(
-				`integrity ${operation} ${label} manifest=${String(Buffer.byteLength(text))} repeated=${String(repeated)} p50=${String(result.latency.p50)}`,
+				`integrity ${operation} ${label} manifest=${String(Buffer.byteLength(text))} expanded=${String(Buffer.byteLength(JSON.stringify(manifest)))} repeated=${String(repeated)} p50=${String(result.latency.p50)}`,
 			)
 			expect(result.latency.p50).toBeGreaterThan(0)
 		} finally {

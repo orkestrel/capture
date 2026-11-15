@@ -18,11 +18,17 @@ import { createScratch, supportsDirectoryLinks, supportsFileLinks } from '@orkes
 import {
 	isCaptureError,
 	isCaptureLookupJournal,
-	isCaptureManifest,
+	isCaptureManifestDocument,
 	isCaptureRegistry,
 	isCaptureRun,
 } from '@src/core'
-import { CaptureIntegrity, computeCaptureHash, computeRegistryDigest } from '@src/server'
+import {
+	CaptureIntegrity,
+	buildCaptureManifestDocument,
+	computeCaptureHash,
+	computeRegistryDigest,
+	readCaptureManifest,
+} from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { REFUSED_PATHS } from '../../setup.js'
 import {
@@ -345,22 +351,26 @@ describe(
 					if (change === 'shared-add') fixture.write('src/shared/new.ts', '// shared added\n')
 					if (change === 'shared-remove') rmSync(resolve(fixture.root, 'src/shared/theme.ts'))
 					if (change === 'unstamped' || change === 'obsolete-owner') {
-						const manifest = readCaptureFixtureJSON(fixture, fixture.options.manifest)
-						if (!isCaptureManifest(manifest)) throw new Error('Missing baseline manifest')
+						const manifest = readCaptureManifest(
+							readCaptureFixtureJSON(fixture, fixture.options.manifest),
+							fixture.options.manifest,
+						)
 						fixture.write(
 							fixture.options.manifest,
-							JSON.stringify({
-								...manifest,
-								entries: Object.fromEntries(
-									Object.entries(manifest.entries).flatMap(([key, entry]) =>
-										key !== 'pages/mail-screen--light-390.png'
-											? [[key, entry]]
-											: change === 'unstamped'
-												? []
-												: [[key, { ...entry, part: 'obsolete' }]],
+							JSON.stringify(
+								buildCaptureManifestDocument({
+									...manifest,
+									entries: Object.fromEntries(
+										Object.entries(manifest.entries).flatMap(([key, entry]) =>
+											key !== 'pages/mail-screen--light-390.png'
+												? [[key, entry]]
+												: change === 'unstamped'
+													? []
+													: [[key, { ...entry, part: 'obsolete' }]],
+										),
 									),
-								),
-							}),
+								}),
+							),
 						)
 					}
 					const after = await fixture.engine.check(MAIL_LIGHT)
@@ -558,16 +568,20 @@ describe(
 		it('projects a singleton after explicit lookup and leaves sibling image stamps and full observations intact', async () => {
 			const fixture = await IntegrityFixture.current({ core, server })
 			try {
-				const before = parseJSON(readFixtureManifest(fixture.root) ?? '')
-				if (!isCaptureManifest(before)) throw new Error('Missing baseline manifest')
+				const before = readCaptureManifest(
+					parseJSON(readFixtureManifest(fixture.root) ?? ''),
+					fixture.options.manifest,
+				)
 				const result = await fixture.capture({
 					selector: 'pages:mail',
 					state: 'mail-screen',
 					case: MAIL,
 				})
 				expect(result.entries.map((entry) => entry.state)).toEqual(['mail-screen'])
-				const after = parseJSON(readFixtureManifest(fixture.root) ?? '')
-				if (!isCaptureManifest(after)) throw new Error('Missing singleton manifest')
+				const after = readCaptureManifest(
+					parseJSON(readFixtureManifest(fixture.root) ?? ''),
+					fixture.options.manifest,
+				)
 				expect(after.entries['pages/mail-reader--light-390.png']).toEqual(
 					before.entries['pages/mail-reader--light-390.png'],
 				)
@@ -1362,19 +1376,23 @@ describe(
 		it('refuses case-colliding manifest keys whatever the host folds', async () => {
 			const fixture = await IntegrityFixture.current({ core, server })
 			try {
-				const value = readCaptureFixtureJSON(fixture, fixture.options.manifest)
-				if (!isCaptureManifest(value)) throw new Error('Missing baseline manifest')
+				const value = readCaptureManifest(
+					readCaptureFixtureJSON(fixture, fixture.options.manifest),
+					fixture.options.manifest,
+				)
 				const stamp = value.entries['pages/mail-screen--light-390.png']
 				if (stamp === undefined) throw new Error('Missing baseline stamp')
 				fixture.write(
 					fixture.options.manifest,
-					JSON.stringify({
-						...value,
-						entries: {
-							...value.entries,
-							'Pages/mail-screen--light-390.png': { ...stamp, scope: 'Pages' },
-						},
-					}),
+					JSON.stringify(
+						buildCaptureManifestDocument({
+							...value,
+							entries: {
+								...value.entries,
+								'Pages/mail-screen--light-390.png': { ...stamp, scope: 'Pages' },
+							},
+						}),
+					),
 				)
 				await expect(fixture.engine.check(MAIL_LIGHT)).rejects.toThrow('Duplicate manifest keys')
 			} finally {
@@ -1395,6 +1413,101 @@ describe(
 				fixture.write(receipt.report.file, '{}')
 				await expect(fixture.capture()).rejects.toThrow('report changed')
 				expect(fixture.read(fixture.options.manifest)).toEqual(original)
+			} finally {
+				fixture.destroy()
+			}
+		})
+
+		it('writes each distinct shared and input map once in the file table its members name', async () => {
+			const fixture = await IntegrityFixture.current({ core, server })
+			try {
+				const document = readCaptureFixtureJSON(fixture, fixture.options.manifest)
+				if (!isCaptureManifestDocument(document)) throw new Error('Missing manifest document')
+				const manifest = readCaptureManifest(document, fixture.options.manifest)
+				const maps = [
+					...Object.values(manifest.entries).map((stamp) => stamp.shared.files),
+					...manifest.lookups.map((lookup) => lookup.inputs),
+					...(manifest.collections ?? []).map((receipt) => receipt.inputs.files),
+				]
+				expect(maps.length).toBeGreaterThan(Object.keys(document.files).length)
+				expect(
+					Object.values(document.files)
+						.map((files) => JSON.stringify(Object.entries(files).toSorted()))
+						.toSorted(),
+				).toEqual(
+					[
+						...new Set(maps.map((files) => JSON.stringify(Object.entries(files).toSorted()))),
+					].toSorted(),
+				)
+				expect(Object.values(document.entries).map((stamp) => typeof stamp.shared.files)).toEqual(
+					Object.keys(document.entries).map(() => 'string'),
+				)
+			} finally {
+				fixture.destroy()
+			}
+		})
+
+		it('refuses the expanded version-1 manifest an earlier release wrote with the refresh commands, publishing nothing', async () => {
+			const fixture = await IntegrityFixture.current({ core, server })
+			try {
+				const manifest = readCaptureManifest(
+					readCaptureFixtureJSON(fixture, fixture.options.manifest),
+					fixture.options.manifest,
+				)
+				const earlier = `${JSON.stringify({ ...manifest, version: 1 })}\n`
+				fixture.write(fixture.options.manifest, earlier)
+				const refresh = `Manifest version 1 at ${fixture.options.manifest} is not version 2, and no other version is converted. Remove ${fixture.options.manifest} and its lookup journal, then refresh explicitly with: capture registry, then capture frames all`
+				await expect(fixture.engine.check(MAIL_LIGHT)).rejects.toThrow(refresh)
+				await expect(fixture.engine.read({ selector: 'pages:mail' })).rejects.toThrow(refresh)
+				await expect(fixture.capture()).rejects.toThrow(refresh)
+				expect(fixture.read(fixture.options.manifest).toString('utf8')).toBe(earlier)
+			} finally {
+				fixture.destroy()
+			}
+		})
+
+		it('refuses a stored map that differs from its key and a reference to an unknown key, publishing nothing', async () => {
+			const fixture = await IntegrityFixture.current({ core, server })
+			try {
+				const original = fixture.read(fixture.options.manifest)
+				const document = readCaptureFixtureJSON(fixture, fixture.options.manifest)
+				if (!isCaptureManifestDocument(document)) throw new Error('Missing manifest document')
+				const key = Object.values(document.entries).find((stamp) => stamp.state === 'mail-screen')
+					?.shared.files
+				const files = key === undefined ? undefined : document.files[key]
+				if (key === undefined || files === undefined) throw new Error('Missing shared map')
+				const altered = `${JSON.stringify({
+					...document,
+					files: { ...document.files, [key]: { ...files, 'src/shared/added.ts': 'a'.repeat(64) } },
+				})}\n`
+				fixture.write(fixture.options.manifest, altered)
+				await expect(fixture.engine.check(MAIL_LIGHT)).rejects.toThrow(
+					`Manifest file digest differs from its map: ${key}`,
+				)
+				await expect(fixture.capture()).rejects.toThrow(
+					`Manifest file digest differs from its map: ${key}`,
+				)
+				expect(fixture.read(fixture.options.manifest).toString('utf8')).toBe(altered)
+				const missing = `${JSON.stringify({
+					...document,
+					files: Object.fromEntries(
+						Object.entries(document.files).filter(([digest]) => digest !== key),
+					),
+				})}\n`
+				fixture.write(fixture.options.manifest, missing)
+				await expect(fixture.engine.check(MAIL_LIGHT)).rejects.toThrow(
+					`Manifest names an unknown files digest: ${key}`,
+				)
+				await expect(fixture.capture()).rejects.toThrow(
+					`Manifest names an unknown files digest: ${key}`,
+				)
+				expect(fixture.read(fixture.options.manifest).toString('utf8')).toBe(missing)
+				fixture.write(fixture.options.manifest, original)
+				expect(await readCaptureFixtureStatuses(fixture, MAIL_LIGHT)).toEqual([
+					'current',
+					'current',
+					'current',
+				])
 			} finally {
 				fixture.destroy()
 			}
