@@ -22,7 +22,7 @@ import {
 import { resolve } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { attempt, isRecord, parseJSON, preview } from '@orkestrel/contract'
-import { createDuplex } from '@orkestrel/process/server'
+import { createDuplex, inspectProcess } from '@orkestrel/process/server'
 import { createTimeout } from '@orkestrel/timeout'
 import {
 	CAPTURE_REQUEST_PREFIX,
@@ -33,6 +33,7 @@ import {
 import {
 	CAPTURE_FLAG,
 	CAPTURE_FLAG_VALUE,
+	CAPTURE_REFUSAL_LIMIT,
 	CAPTURE_REQUESTS_FLAG,
 	CAPTURE_RUNS_DIRECTORY,
 	CAPTURE_SURVIVORS_FILE,
@@ -42,7 +43,6 @@ import {
 } from './constants.js'
 import {
 	readCaptureRequestOwner,
-	readCaptureRunning,
 	settleCaptureShutdown,
 	matchesCaptureTransient,
 } from './helpers.js'
@@ -127,6 +127,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 
 	async release(): Promise<void> {
 		const failures: unknown[] = []
+		const kept: string[] = []
 		try {
 			if (this.#termination !== undefined) await this.#termination
 			failures.push(
@@ -155,7 +156,10 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 					}
 					if (this.#owner(marker.value).id !== this.id) return
 					if (this.#unconfirmed.size > 0) {
-						this.#record()
+						kept.push(`ownership marker retained: ${this.#lock}`)
+						const record = attempt(() => this.#record())
+						if (record.success) kept.push(`child record: ${record.value}`)
+						else failures.push(record.error)
 						return
 					}
 					this.#remove(deadline)
@@ -166,7 +170,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		}
 		if (failures.length > 0 || this.#unconfirmed.size > 0)
 			throw new CaptureError(
-				`Capture shutdown failed${this.#unconfirmed.size === 0 ? '' : `; child termination was not confirmed for process ${[...this.#unconfirmed].join(', ')}; ownership marker retained: ${this.#lock}; child record: ${resolve(this.#directory, CAPTURE_SURVIVORS_FILE)}`}`,
+				`Capture shutdown failed${this.#unconfirmed.size === 0 ? '' : `; child termination was not confirmed for process ${[...this.#unconfirmed].join(', ')}`}${kept.map((entry) => `; ${entry}`).join('')}`,
 				{
 					code: 'STAGE',
 					cause: new AggregateError(failures),
@@ -181,7 +185,9 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		for (const name of readdirSync(requests)) {
 			const pid = readCaptureRequestOwner(name)
 			if (pid === undefined || pid === process.pid) continue
-			if (!readCaptureRunning(pid)) rmSync(resolve(requests, name), { force: true })
+			// A directory under a request file's name survives the nonrecursive removal, as a claim temporary does.
+			if (this.#alive(pid) === false)
+				attempt(() => rmSync(resolve(requests, name), { force: true }))
 		}
 	}
 
@@ -193,7 +199,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 					const pid = readCaptureRequestOwner(name)
 					return pid === undefined ||
 						(pid === process.pid && this.#lease !== undefined) ||
-						!readCaptureRunning(pid)
+						this.#alive(pid) === false
 						? []
 						: [pid]
 				}),
@@ -246,22 +252,14 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		try {
 			mkdirSync(this.#directory, { recursive: true })
 			writeFileSync(log, '')
-			const environment = Object.fromEntries(
-				Object.entries(process.env).filter(
-					([name]) =>
-						name.toLowerCase() !== CAPTURE_FLAG.toLowerCase() &&
-						name.toLowerCase() !== CAPTURE_REQUESTS_FLAG.toLowerCase(),
-				),
-			)
 			const session = createDuplex({
 				command: {
 					file: process.execPath,
 					arguments: args,
-					isolated: true,
+					// The merge drops every inherited name an override claims by case, the unset flag included.
 					environment: {
-						...environment,
 						[CAPTURE_REQUESTS_FLAG]: resolve(this.#options.root, this.#options.requests),
-						...(capture ? { [CAPTURE_FLAG]: CAPTURE_FLAG_VALUE } : {}),
+						[CAPTURE_FLAG]: capture ? CAPTURE_FLAG_VALUE : undefined,
 					},
 				},
 				workspace: this.#options.root,
@@ -392,7 +390,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		this.#remove(deadline)
 	}
 
-	#record(retry = true): void {
+	#record(retry = true): string {
 		const file = resolve(this.#directory, CAPTURE_SURVIVORS_FILE)
 		const text = JSON.stringify({
 			pid: process.pid,
@@ -404,10 +402,11 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		try {
 			if (this.#options.ownership?.write === undefined) writeFileSync(file, text, { flag: 'wx' })
 			else this.#options.ownership.write(file, text)
+			return file
 		} catch (error) {
 			const code =
 				error instanceof Error && 'code' in error ? String(error.code) : describeCaptureError(error)
-			if (code === 'EEXIST') return
+			if (code === 'EEXIST') return file
 			if (code === 'ENOENT' && retry) {
 				mkdirSync(this.#directory, { recursive: true })
 				return this.#record(false)
@@ -435,8 +434,10 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		const left = deadline - performance.now()
 		if (left <= 0)
 			throw new CaptureError(
-				`Capture ownership marker is temporarily unavailable (${error instanceof Error && 'code' in error ? String(error.code) : 'contention'}): ${this.#lock}; rerun after serializing capture commands`,
-				{ code: 'STAGE', cause: error },
+				error === undefined
+					? `Capture ownership marker kept changing until the deadline: ${this.#lock}; rerun after serializing capture commands`
+					: `Capture ownership marker is temporarily unavailable (${error instanceof Error && 'code' in error ? String(error.code) : describeCaptureError(error)}): ${this.#lock}; rerun after serializing capture commands`,
+				{ code: 'STAGE', ...(error === undefined ? {} : { cause: error }) },
 			)
 		Atomics.wait(
 			new Int32Array(new SharedArrayBuffer(4)),
@@ -463,7 +464,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 				/^\d+$/u.test(pid) &&
 				Number.isSafeInteger(Number(pid)) &&
 				Number(pid) > 0 &&
-				!readCaptureRunning(Number(pid))
+				this.#alive(Number(pid)) === false
 			)
 				attempt(() => rmSync(resolve(requests, name), { force: true }))
 		}
@@ -488,7 +489,8 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 				{ code: 'STAGE', cause: error },
 			)
 		} finally {
-			rmSync(temporary, { force: true })
+			// A leftover names this live pid, so a later claim sweeps it after this process ends.
+			attempt(() => rmSync(temporary, { force: true }))
 		}
 	}
 
@@ -532,9 +534,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 			)
 		}
 		const owner = attempt(() => this.#owner(marker.value))
-		const alive = owner.success
-			? (this.#options.ownership?.alive ?? readCaptureRunning)(owner.value.pid)
-			: undefined
+		const alive = owner.success ? this.#alive(owner.value.pid) : undefined
 		// Confirm the content after the liveness probe, or after a yield for malformed content.
 		if (!owner.success) this.#backoff(deadline)
 		const confirmed = attempt(() => this.#read(deadline))
@@ -558,7 +558,11 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 			return this.#acquire(temporary, deadline)
 		}
 		if (!owner.success) throw owner.error
-		this.#refuse(owner.value, alive === true)
+		this.#refuse(owner.value, alive)
+	}
+
+	#alive(pid: number): boolean | undefined {
+		return (this.#options.ownership?.alive ?? inspectProcess)(pid)
 	}
 
 	#owner(marker: string): CaptureOwnership {
@@ -587,10 +591,15 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		}
 	}
 
-	#refuse(holder: CaptureOwnership, alive: boolean): never {
-		if (!alive)
+	#refuse(holder: CaptureOwnership, alive: boolean | undefined): never {
+		if (alive === false)
 			throw new CaptureError(
 				`Capture ownership process ${String(holder.pid)} is not running; invocation ${preview(holder.id)}. ${this.#survivors(holder)} Confirm no capture process or surviving child is running and re-read ${this.#lock} to confirm it still names pid ${String(holder.pid)} before you delete this file and rerun`,
+				{ code: 'STAGE' },
+			)
+		if (alive === undefined)
+			throw new CaptureError(
+				`Capture ownership process ${String(holder.pid)} could not be inspected; invocation ${preview(holder.id)}; serialize capture commands. Confirm no capture process or surviving child is running and re-read ${this.#lock} to confirm it still names pid ${String(holder.pid)} before deleting`,
 				{ code: 'STAGE' },
 			)
 		throw new CaptureError(
@@ -600,6 +609,9 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 	}
 
 	#survivors(holder: CaptureOwnership): string {
+		// Only an id of the shape this class generates names a directory under the runs directory.
+		if (!/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/u.test(holder.id))
+			return `Invocation ${preview(holder.id)} is not an invocation id; no child record is read.`
 		const file = resolve(
 			this.#options.root,
 			this.#options.requests,
@@ -627,7 +639,8 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 				)
 			)
 				return `Child record could not be read (EINVAL): ${file}.`
-			return `Unconfirmed child processes: ${record.children.join(', ')}; stop them before deleting. Child record: ${file}.`
+			const omitted = record.children.length - CAPTURE_REFUSAL_LIMIT
+			return `Unconfirmed child processes: ${[...record.children.slice(0, CAPTURE_REFUSAL_LIMIT), ...(omitted > 0 ? [`… ${String(omitted)} more`] : [])].join(', ')}; stop them before deleting. Child record: ${file}.`
 		} catch (error) {
 			const code =
 				error instanceof SyntaxError

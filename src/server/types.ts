@@ -1062,7 +1062,7 @@ export interface CaptureInvocationOptions {
 /** Supplies the filesystem and liveness boundary for ownership arbitration.
  * @example
  * ```ts
- * const host: Partial<CaptureOwnershipHost> = { alive: (pid) => readCaptureRunning(pid) }
+ * const host: Partial<CaptureOwnershipHost> = { alive: (pid) => inspectProcess(pid) }
  * ```
  */
 export interface CaptureOwnershipHost {
@@ -1072,7 +1072,8 @@ export interface CaptureOwnershipHost {
 	readonly write: (file: string, text: string) => void
 	readonly link: (source: string, target: string) => void
 	readonly remove: (file: string) => void
-	readonly alive: (pid: number) => boolean
+	/** Reports whether a process exists; `undefined` when the host cannot tell keeps every claim it holds. */
+	readonly alive: (pid: number) => boolean | undefined
 }
 
 /** Bounds a PNG's decoded pixels, side length, and encoded bytes.
@@ -1177,6 +1178,7 @@ export interface CaptureInvocationInterface {
 	 * Lists the other live processes that hold a request file in the request directory.
 	 *
 	 * @returns The distinct holder process ids in directory order, excluding this invocation's own lease
+	 * and every process the host reads as ended; a process whose state cannot be read stays listed
 	 *
 	 * @example
 	 * ```ts

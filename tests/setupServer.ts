@@ -64,7 +64,14 @@ import {
 	isString,
 	parseJSON,
 } from '@orkestrel/contract'
-import { createProcess, execute, executeSync, detach, killTree } from '@orkestrel/process/server'
+import {
+	createProcess,
+	execute,
+	executeSync,
+	detach,
+	inspectProcess,
+	killTree,
+} from '@orkestrel/process/server'
 import { retryUntil, waitForCondition, waitForEvent, requireValue } from '@orkestrel/test'
 import { createScratch, isRunning } from '@orkestrel/test/server'
 // The plain Node writer imports this module; consumer readers load source guards only when called.
@@ -237,7 +244,10 @@ export async function leaveCaptureUnconfirmed(
 		throw new Error('Survivor fixture returned no child pid')
 	const owner = message.owner
 	writeFileSync(resolve(root, 'survivor-exit'), '')
-	await waitForCondition('the survivor owner exits', () => !isRunning(owner), { budget: 20_000 })
+	// The leader reads exited while its other threads still run; the runner's reader waits for every thread.
+	await waitForCondition('the survivor owner exits', () => inspectProcess(owner) === false, {
+		budget: 20_000,
+	})
 	return { owner, pid: message.pid, published: message.published === true }
 }
 
@@ -3799,6 +3809,148 @@ export async function startSleeper(): Promise<ChildProcess> {
 }
 
 /**
+ * Starts a holder process that keeps a killed child unreaped, and waits until the child reads as a zombie.
+ *
+ * @remarks Reads the child's state from the Linux `/proc` process table, so call it only where `/proc/self/stat` exists.
+ * The holder exits by itself after 20 s; stop it with `stopFixtureChild` to let the host reap the zombie.
+ * @returns The holder process and the zombie's process id
+ */
+export async function startCaptureZombie(): Promise<{
+	readonly holder: ChildProcess
+	readonly pid: number
+}> {
+	const entry = resolve(import.meta.dirname, 'fixtures/capture/Output.ts')
+	const holder = spawn(process.execPath, [entry, 'zombie', '20000'], {
+		windowsHide: true,
+		stdio: ['ignore', 'pipe', 'ignore'],
+	})
+	const [line] = await waitForEvent<readonly [unknown]>(
+		(receive) => {
+			holder.stdout.once('data', receive)
+			return () => holder.stdout.off('data', receive)
+		},
+		'the zombie holder reports its child',
+		{ budget: 20_000 },
+	)
+	const pid = Number(/zombie=(\d+)/u.exec(String(line))?.[1])
+	if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('The zombie holder reported no pid')
+	await waitForCondition(
+		'the killed child reads as a zombie in its process-table status',
+		() => readFileSync(`/proc/${String(pid)}/status`, 'utf8').includes('State:\tZ'),
+		{ budget: 5_000 },
+	)
+	return { holder, pid }
+}
+
+/**
+ * Creates a picture that carries only its geometry, so a proof can state any width and height.
+ *
+ * @param width - The stated width
+ * @param height - The stated height
+ * @returns A picture with an empty pixel buffer
+ */
+export function createCaptureGeometry(width: number, height: number): CapturePicture {
+	return { width, height, pixels: new Uint8Array(0) }
+}
+
+/**
+ * Builds the compose geometries that a contact sheet refuses, one row per refused shape.
+ *
+ * @param limits - The PNG budget the composite must fit
+ * @returns Rows of the shape's name, the pictures, the axis, the gap, and the fault the refusal names
+ */
+export function buildCaptureComposeRefusals(limits: {
+	readonly side: number
+	readonly pixels: number
+}): ReadonlyArray<readonly [string, readonly CapturePicture[], boolean, number, string]> {
+	// Two pictures of this height and the default gap stack past the pixel budget at full side width.
+	const tall = Math.floor(limits.pixels / limits.side / 2)
+	const rows: ReadonlyArray<
+		readonly [string, ReadonlyArray<readonly [number, number]>, boolean, number, string]
+	> = [
+		[
+			'a fractional width',
+			[
+				[1.5, 1],
+				[2, 1],
+			],
+			false,
+			6,
+			'pictures[0].width is 1.5',
+		],
+		[
+			'a fractional height',
+			[
+				[1, 1],
+				[1, 0.5],
+			],
+			true,
+			6,
+			'pictures[1].height is 0.5',
+		],
+		['a negative width', [[-1, 1]], false, 6, 'pictures[0].width is -1'],
+		['a negative height', [[1, -2]], true, 6, 'pictures[0].height is -2'],
+		['a NaN height', [[1, Number.NaN]], false, 6, 'pictures[0].height is NaN'],
+		['an infinite width', [[Infinity, 1]], true, 6, 'pictures[0].width is Infinity'],
+		[
+			'a fractional gap',
+			[
+				[1, 1],
+				[1, 1],
+			],
+			true,
+			0.5,
+			'gap is 0.5',
+		],
+		[
+			'a negative gap',
+			[
+				[1, 1],
+				[1, 1],
+			],
+			false,
+			-1,
+			'gap is -1',
+		],
+		['an infinite gap', [[1, 1]], false, Infinity, 'gap is Infinity'],
+		[
+			'a width past the side limit',
+			[[limits.side + 1, 1]],
+			false,
+			6,
+			`pictures[0].width is ${String(limits.side + 1)}`,
+		],
+		[
+			'a composite wider than the side limit',
+			[
+				[limits.side / 2, 1],
+				[limits.side / 2, 1],
+			],
+			false,
+			6,
+			`composite is ${String(limits.side + 6)} × 1`,
+		],
+		[
+			'a composite past the pixel budget',
+			[
+				[limits.side, tall],
+				[limits.side, tall],
+			],
+			true,
+			6,
+			`composite is ${String(limits.side)} × ${String(tall * 2 + 6)}`,
+		],
+	]
+	return rows.map(([name, sizes, vertical, gap, fault]) => [
+		name,
+		sizes.map(([width, height]) => createCaptureGeometry(width, height)),
+		vertical,
+		gap,
+		fault,
+	])
+}
+
+/**
  * Ends a process a fixture started and waits for its streams to close.
  *
  * @param child - The process to end
@@ -4443,7 +4595,6 @@ export const CAPTURE_SERVER_VALUES = [
 	'resolveCaptureWrapperProject',
 	'readCaptureInputs',
 	'readCaptureRegistryArguments',
-	'readCaptureRunning',
 	'writeCaptureDocument',
 	'buildCaptureDigest',
 	'buildCaptureIntegrityOptions',

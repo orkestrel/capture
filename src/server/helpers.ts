@@ -1128,7 +1128,10 @@ export function shrinkCapturePicture(
  * @param vertical - If `true`, stacks rows; if `false`, places cells side by side
  * @param gap - The space between source pictures. Default: 6.
  * @returns A separately owned composite
- * @throws Thrown for an empty picture selection.
+ * @throws Thrown for an empty picture selection, with the `USAGE` condition.
+ * @throws Thrown with the `EVIDENCE` condition when a width, a height, or the gap is not a whole
+ * number from 0 to `CAPTURE_PNG_LIMITS.side`, or when the composite exceeds that side or the
+ * `CAPTURE_PNG_LIMITS.pixels` budget.
  *
  * @example
  * ```ts
@@ -1142,12 +1145,37 @@ export function composeCapturePictures(
 ): CapturePicture {
 	if (pictures.length === 0)
 		throw new CaptureError('Empty contact-sheet picture selection', { code: 'USAGE' })
+	const { side, pixels: budget } = CAPTURE_PNG_LIMITS
+	const faults = [
+		...pictures.flatMap((picture, position) =>
+			(['width', 'height'] as const).flatMap((axis) =>
+				Number.isSafeInteger(picture[axis]) && picture[axis] >= 0 && picture[axis] <= side
+					? []
+					: [`pictures[${String(position)}].${axis} is ${preview(picture[axis])}`],
+			),
+		),
+		...(Number.isSafeInteger(gap) && gap >= 0 && gap <= side ? [] : [`gap is ${preview(gap)}`]),
+	]
 	const width = vertical
 		? Math.max(...pictures.map((entry) => entry.width))
 		: pictures.reduce((sum, entry) => sum + entry.width, 0) + gap * (pictures.length - 1)
 	const height = vertical
 		? pictures.reduce((sum, entry) => sum + entry.height, 0) + gap * (pictures.length - 1)
 		: Math.max(...pictures.map((entry) => entry.height))
+	if (faults.length > 0 || width > side || height > side || width * height > budget)
+		throw new CaptureError(
+			`Contact-sheet geometry is out of range: ${
+				faults.length === 0
+					? `composite is ${String(width)} × ${String(height)}`
+					: [
+							...faults.slice(0, CAPTURE_REFUSAL_LIMIT),
+							...(faults.length > CAPTURE_REFUSAL_LIMIT
+								? [`… ${String(faults.length - CAPTURE_REFUSAL_LIMIT)} more`]
+								: []),
+						].join('; ')
+			}; expected whole numbers from 0 to ${String(side)} for every width, height, and gap, and a composite of at most ${String(side)} per side and ${String(budget)} pixels`,
+			{ code: 'EVIDENCE' },
+		)
 	const offsets = pictures.map((_picture, position) =>
 		pictures
 			.slice(0, position)
@@ -2345,30 +2373,6 @@ export function collectCaptureErrors(file: string, text: string): readonly strin
 		.split(/\r\n|\n/u)
 		.filter((line) => /\b(uncaught|unhandled|error:)/iu.test(line))
 		.map((line) => `${file}: ${line}`)
-}
-
-/**
- * Checks whether a process with this id is running, counting one the caller may not signal.
- *
- * @remarks
- * A zero signal tests existence without sending one. A refusal for permission still proves the
- * process exists, so only a missing process reads as not running.
- *
- * @param pid - The process id
- * @returns True if the process exists; false otherwise
- *
- * @example
- * ```ts
- * readCaptureRunning(process.pid) // true
- * ```
- */
-export function readCaptureRunning(pid: number): boolean {
-	try {
-		process.kill(pid, 0)
-		return true
-	} catch (error) {
-		return isError(error) && 'code' in error && error.code === 'EPERM'
-	}
 }
 
 /**

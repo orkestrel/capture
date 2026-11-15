@@ -64,7 +64,6 @@ import {
 	readCaptureRegistryArguments,
 	readCaptureRequest,
 	readCaptureRequestOwner,
-	readCaptureRunning,
 	readCaptureViewport,
 	resolveCaptureWrapperProject,
 	readCaptureOptions,
@@ -90,6 +89,7 @@ import {
 	resolveCaptureExit,
 	describeCaptureFault,
 	CAPTURE_PNG_LIMITS,
+	CAPTURE_REFUSAL_LIMIT,
 	readCaptureImage,
 	requireCaptureImageSize,
 	readCaptureSeparator,
@@ -120,11 +120,10 @@ import {
 import {
 	CAPTURE_PNG_REFUSALS,
 	buildCaptureArgumentFaults,
+	buildCaptureComposeRefusals,
+	createCaptureGeometry,
 	createCaptureImportInput,
 	createPngBytes,
-	readExitedPid,
-	startSleeper,
-	stopFixtureChild,
 	ALPHA_PICTURE,
 	ARGUMENT_REFUSALS,
 	FILTERED_PICTURE,
@@ -1218,6 +1217,48 @@ describe('composeCapturePictures', () => {
 			message: 'Empty contact-sheet picture selection',
 			code: 'USAGE',
 		})
+	})
+
+	it.each(buildCaptureComposeRefusals(CAPTURE_PNG_LIMITS))(
+		'C3 refuses %s with an EVIDENCE CaptureError naming the fault',
+		(_name, pictures, vertical, gap, fault) => {
+			const error = captureError(() => composeCapturePictures(pictures, vertical, gap))
+			expect(error).toMatchObject({ name: 'CaptureError', code: 'EVIDENCE' })
+			expect(String(error)).toContain('Contact-sheet geometry is out of range')
+			expect(String(error)).toContain(fault)
+		},
+	)
+
+	it('C3 names every geometry fault in one refusal, up to the refusal limit', () => {
+		const pictures = Array.from({ length: CAPTURE_REFUSAL_LIMIT + 4 }, () =>
+			createCaptureGeometry(0.5, 1),
+		)
+		const message = String(captureError(() => composeCapturePictures(pictures, false, -1)))
+		const named = Array.from(
+			{ length: CAPTURE_REFUSAL_LIMIT },
+			(_entry, position) => `pictures[${String(position)}].width is 0.5`,
+		)
+		expect(message).toContain(`out of range: ${named.join('; ')}; … 5 more;`)
+		expect(message).not.toContain(`pictures[${String(CAPTURE_REFUSAL_LIMIT)}]`)
+		expect(message).not.toContain('gap is -1')
+	})
+
+	it('C3 composes whole-number geometry at the side limit, at zero, and with no gap', () => {
+		const side = CAPTURE_PNG_LIMITS.side
+		expect(composeCapturePictures([createCaptureGeometry(side, 1)], false)).toMatchObject({
+			width: side,
+			height: 1,
+		})
+		expect(
+			composeCapturePictures([createCaptureGeometry(0, 0), createCaptureGeometry(2, 1)], true, 0),
+		).toMatchObject({ width: 2, height: 1 })
+		expect(
+			composeCapturePictures(
+				[createCaptureGeometry(side / 2, 1), createCaptureGeometry(side / 2, 1)],
+				false,
+				0,
+			),
+		).toMatchObject({ width: side, height: 1 })
 	})
 })
 
@@ -3024,23 +3065,6 @@ describe('collectCaptureErrors', () => {
 	it('reports nothing for a clean artifact, or for a word that merely ends in error', () => {
 		expect(collectCaptureErrors('a.txt', 'ok\nterror: not a log line\nrecord=x')).toEqual([])
 		expect(collectCaptureErrors('a.txt', '')).toEqual([])
-	})
-})
-
-describe('readCaptureRunning', () => {
-	it('reads this process as running and an exited process as not', async () => {
-		expect(readCaptureRunning(process.pid)).toBe(true)
-		expect(readCaptureRunning(await readExitedPid())).toBe(false)
-	})
-
-	it('reads a live child as running until it is stopped', async () => {
-		const child = await startSleeper()
-		try {
-			expect(readCaptureRunning(child.pid ?? 0)).toBe(true)
-		} finally {
-			await stopFixtureChild(child)
-		}
-		expect(readCaptureRunning(child.pid ?? 0)).toBe(false)
 	})
 })
 
