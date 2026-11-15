@@ -1106,6 +1106,84 @@ export function encodeCapturePicture(picture: CapturePicture, compressed = true)
 }
 
 /**
+ * Sums a run of samples three bytes apart, one channel of consecutive RGB pixels.
+ *
+ * @param pixels - The source RGB bytes
+ * @param start - The index of the first sample
+ * @param columns - The number of samples to sum
+ * @returns The sum, reading an index outside the bytes or a fractional index as 0
+ *
+ * @example
+ * ```ts
+ * sumCaptureRow(Uint8Array.from([1, 0, 0, 2, 0, 0, 3]), 0, 3) // 6
+ * ```
+ */
+export function sumCaptureRow(pixels: Uint8Array, start: number, columns: number): number {
+	// Halving keeps the recursion depth logarithmic in the run; a leaf reads up to eight samples.
+	if (columns > 8) {
+		const half = Math.ceil(columns / 2)
+		return (
+			sumCaptureRow(pixels, start, half) + sumCaptureRow(pixels, start + half * 3, columns - half)
+		)
+	}
+	return (
+		(columns > 0 ? (pixels[start] ?? 0) : 0) +
+		(columns > 1 ? (pixels[start + 3] ?? 0) : 0) +
+		(columns > 2 ? (pixels[start + 6] ?? 0) : 0) +
+		(columns > 3 ? (pixels[start + 9] ?? 0) : 0) +
+		(columns > 4 ? (pixels[start + 12] ?? 0) : 0) +
+		(columns > 5 ? (pixels[start + 15] ?? 0) : 0) +
+		(columns > 6 ? (pixels[start + 18] ?? 0) : 0) +
+		(columns > 7 ? (pixels[start + 21] ?? 0) : 0)
+	)
+}
+
+/**
+ * Sums one channel of a picture over a block of source rows.
+ *
+ * @remarks
+ * Source row `top + row` starts its block at `(top + row) * picture.width * 3 + left`, and each row
+ * contributes `columns` samples through `sumCaptureRow`.
+ *
+ * @param picture - The source RGB picture
+ * @param top - The block's first source row
+ * @param left - The byte offset of the block's first sample inside a row, its channel included
+ * @param row - The first row to sum, counted from `top`
+ * @param rows - The number of rows to sum
+ * @param columns - The number of samples to sum in each row
+ * @returns The block's sum
+ *
+ * @example
+ * ```ts
+ * sumCaptureBlock({ width: 2, height: 2, pixels: Uint8Array.from([1, 0, 0, 2, 0, 0, 3, 0, 0, 4, 0, 0]) }, 0, 0, 0, 2, 2) // 10
+ * ```
+ */
+export function sumCaptureBlock(
+	picture: CapturePicture,
+	top: number,
+	left: number,
+	row: number,
+	rows: number,
+	columns: number,
+): number {
+	if (rows > 2) {
+		const half = Math.ceil(rows / 2)
+		return (
+			sumCaptureBlock(picture, top, left, row, half, columns) +
+			sumCaptureBlock(picture, top, left, row + half, rows - half, columns)
+		)
+	}
+	return (
+		(rows > 0
+			? sumCaptureRow(picture.pixels, (top + row) * picture.width * 3 + left, columns)
+			: 0) +
+		(rows > 1
+			? sumCaptureRow(picture.pixels, (top + (row + 1)) * picture.width * 3 + left, columns)
+			: 0)
+	)
+}
+
+/**
  * Scales a picture with an exact area average and clips its displayed height.
  *
  * @param picture - The source RGB picture
@@ -1125,11 +1203,10 @@ export function shrinkCapturePicture(
 ): CapturePicture {
 	const width = Math.max(1, Math.ceil(picture.width / factor))
 	const height = Math.min(Math.max(1, Math.ceil(picture.height / factor)), limit)
-	// One shared offset list; each output channel sums its block with no per-pixel allocation.
-	const span = Array.from(
-		{ length: Math.ceil(Math.min(factor, Math.max(picture.width, picture.height))) },
-		(_, index) => index,
-	)
+	// A block reaches at most this many rows and columns; `Array.from` applies the array-length rule.
+	const reach = Array.from({
+		length: Math.ceil(Math.min(factor, Math.max(picture.width, picture.height))),
+	}).length
 	// A clipped height can be fractional or negative, so the length follows the array-length rule.
 	const pixels = new Uint8Array(
 		Math.min(Math.max(Math.trunc(width * height * 3) || 0, 0), Number.MAX_SAFE_INTEGER),
@@ -1142,19 +1219,19 @@ export function shrinkCapturePicture(
 		for (const offset of offsets) {
 			const index = y * width * 3 + offset
 			if (index >= pixels.length) break
-			const channel = offset % 3
 			const x = Math.floor(offset / 3)
 			const columns = Math.min(factor, picture.width - x * factor)
-			const sum = span.reduce((total, row) => {
-				if (row >= rows) return total
-				const start = (y * factor + row) * picture.width * 3 + x * Math.ceil(factor) * 3 + channel
-				return span.reduce(
-					(block, column) =>
-						column >= columns ? block : block + (picture.pixels[start + column * 3] ?? 0),
-					total,
-				)
-			}, 0)
-			pixels[index] = Math.round(sum / (rows * columns))
+			pixels[index] = Math.round(
+				sumCaptureBlock(
+					picture,
+					y * factor,
+					x * Math.ceil(factor) * 3 + (offset % 3),
+					0,
+					rows > 0 ? Math.min(reach, Math.ceil(rows)) : 0,
+					columns > 0 ? Math.min(reach, Math.ceil(columns)) : 0,
+				) /
+					(rows * columns),
+			)
 		}
 	}
 	return { width, height, pixels }

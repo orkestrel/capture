@@ -15,15 +15,17 @@ import { expect, it } from 'vitest'
 import { createThumbnailPicture } from '../../setupServer.js'
 
 // The pixel-loop cost the preflight and the sheets pay, read as the p50 latency of decode, shrink,
-// and compose. A viewport frame carries veneer's widest viewport, the largest frame sits at the
-// decoded pixel budget, and a sheet page holds the rows, pairs, and variant cells `CaptureSheets`
-// composes. Each frame is filtered as the browser provider filters its screenshots: Sub on the
+// and compose. A viewport frame carries veneer's widest viewport, a narrow frame its 390 × 844
+// phone viewport, the largest frame sits at the decoded pixel budget, and a sheet page holds the
+// rows, pairs, and variant cells `CaptureSheets` composes. The viewport frame shrinks by 4 and the
+// narrow frame by 2, the factors the preflight derives toward the 320-pixel cell. Each frame is filtered as the browser provider filters its screenshots: Sub on the
 // first row, Up on a row equal to the row above, and Paeth on every other row. Each reading line
 // carries the output digest, so two trees compare bytes as well as time. No gate collects this
 // file; run it with `npm run test:bench -- tests/src/server/helpers.bench.ts`.
 
 it.for([
 	{ label: 'viewport', feature: 'rule', width: 1280, height: 800, iterations: 20 },
+	{ label: 'narrow', feature: 'rule', width: 390, height: 844, iterations: 100 },
 	{ label: 'largest', feature: 'speckle', width: 5120, height: 4096, iterations: 3 },
 ])(
 	'reads the decode cost of the $label frame',
@@ -89,6 +91,7 @@ it.for([
 
 it.for([
 	{ label: 'viewport', feature: 'rule', width: 1280, height: 800, iterations: 40 },
+	{ label: 'narrow', feature: 'rule', width: 390, height: 844, iterations: 100 },
 	{ label: 'largest', feature: 'speckle', width: 5120, height: 4096, iterations: 10 },
 ])(
 	'reads the shrink cost of the $label frame',

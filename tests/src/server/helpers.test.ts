@@ -78,6 +78,8 @@ import {
 	resolveCaptureVariants,
 	renderCaptureCommand,
 	shrinkCapturePicture,
+	sumCaptureBlock,
+	sumCaptureRow,
 	unfilterCaptureRow,
 	writeCaptureDocument,
 	resolveCaptureSheetIdentity,
@@ -1156,6 +1158,91 @@ describe('H1v ownership and path boundaries', () => {
 		expect(text).toContain('case-0')
 		expect(text).not.toContain('case-199')
 		expect(text).toMatch(/\d+ more/u)
+	})
+})
+
+describe('sumCaptureRow', () => {
+	// Sample `n` holds `n + 1`, and the bytes between samples hold 200, so a stray read shows.
+	const pixels = Uint8Array.from({ length: 3 * 40 }, (_, index) =>
+		index % 3 === 0 ? index / 3 + 1 : 200,
+	)
+
+	it.each(Array.from({ length: 40 }, (_, columns) => columns))(
+		'sums %i samples three bytes apart, through every leaf width and split',
+		(columns) => {
+			expect(sumCaptureRow(pixels, 0, columns)).toBe((columns * (columns + 1)) / 2)
+			expect(sumCaptureRow(pixels, 3, Math.max(0, columns - 1))).toBe(
+				(columns * (columns + 1)) / 2 - (columns > 0 ? 1 : 0),
+			)
+		},
+	)
+
+	it('reads an index outside the bytes or a fractional index as 0', () => {
+		expect(sumCaptureRow(Uint8Array.of(5, 0, 0, 7), 0, 3)).toBe(12)
+		expect(sumCaptureRow(Uint8Array.of(5, 0, 0, 7), -3, 2)).toBe(5)
+		expect(sumCaptureRow(pixels, 0.5, 12)).toBe(0)
+		expect(sumCaptureRow(pixels, Number.NaN, 12)).toBe(0)
+	})
+
+	it('sums nothing for a count of zero, a negative count, or NaN', () => {
+		expect([0, -1, Number.NaN].map((columns) => sumCaptureRow(pixels, 0, columns))).toEqual([
+			0, 0, 0,
+		])
+	})
+})
+
+describe('sumCaptureBlock', () => {
+	// A 13 × 11 picture of varied bytes, read against a direct sum over every row and column.
+	const picture = {
+		width: 13,
+		height: 11,
+		pixels: Uint8Array.from({ length: 13 * 11 * 3 }, (_, index) => (index * 7 + 3) % 251),
+	}
+
+	it.each(
+		[0, 1, 2, 3, 5, 11].flatMap((rows) =>
+			[0, 1, 4, 8, 9, 12].flatMap((columns) =>
+				[
+					{ top: 0, row: 0, left: 1 },
+					{ top: 0, row: 0, left: 2 },
+					{ top: 0, row: 1, left: 0 },
+				].map(({ top, row, left }) => ({
+					top,
+					row,
+					left,
+					rows,
+					columns,
+					expected: Array.from({ length: rows }, (_, offset) => offset).reduce(
+						(total, offset) =>
+							Array.from({ length: columns }, (_, column) => column).reduce(
+								(sum, column) =>
+									sum +
+									(picture.pixels[(top + row + offset) * picture.width * 3 + left + column * 3] ??
+										0),
+								total,
+							),
+						0,
+					),
+				})),
+			),
+		),
+	)(
+		'sums $rows rows of $columns samples from row $row at byte $left against a direct sum',
+		({ top, row, left, rows, columns, expected }) => {
+			expect(sumCaptureBlock(picture, top, left, row, rows, columns)).toBe(expected)
+		},
+	)
+
+	it('counts the first row from top', () => {
+		expect(sumCaptureBlock(picture, 2, 6, 2, 3, 2)).toBe(sumCaptureBlock(picture, 4, 6, 0, 3, 2))
+		expect(sumCaptureBlock(picture, 2, 6, 2, 3, 2)).not.toBe(
+			sumCaptureBlock(picture, 2, 6, 0, 3, 2),
+		)
+	})
+
+	it('reads rows past the picture as 0 and a fractional row start as 0', () => {
+		expect(sumCaptureBlock(picture, 10, 0, 0, 4, 1)).toBe(picture.pixels[10 * 13 * 3] ?? -1)
+		expect(sumCaptureBlock(picture, 0.5, 0, 0, 2, 4)).toBe(0)
 	})
 })
 
