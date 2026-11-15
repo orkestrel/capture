@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
 	existsSync,
+	mkdirSync,
 	readFileSync,
 	readdirSync,
 	symlinkSync,
@@ -110,7 +111,7 @@ import {
 	readCaptureProgress,
 	renderCaptureProgress,
 } from '@src/server'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import {
 	createCaptureSolidPicture,
 	createCaptureImageFixture,
@@ -4333,6 +4334,9 @@ describe('buildCaptureWrapper', { timeout: FIXTURE_TIMEOUT }, () => {
 		{ name: 'wide', width: 480, height: 320 },
 		{ name: 'narrow', width: 320, height: 320 },
 	]
+
+	// The wrapper resolves every path against the working directory, so each scratch sits in its `tmp`.
+	beforeAll(() => mkdirSync(resolve('tmp'), { recursive: true }))
 
 	it('describes each variant through the host project during discovery and answers with the empty configuration', async () => {
 		const scratch = createScratch({ parent: resolve('tmp'), prefix: 'wrapper-' })
