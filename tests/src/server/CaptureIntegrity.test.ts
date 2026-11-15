@@ -1491,6 +1491,57 @@ describe('CaptureIntegrity refusal conditions', { timeout: FIXTURE_TIMEOUT }, ()
 			fixture.destroy()
 		}
 	})
+
+	it('refuses a lookup whose destination two producing variants attest', async () => {
+		const fixture = await IntegrityFixture.current({ core, server })
+		try {
+			const lookup = { selector: 'pages:mail', state: 'mail-screen', variants: ['light-390'] }
+			const text = fixture.read(fixture.options.registry).toString('utf8')
+			const registry: unknown = parseJSON(text)
+			if (!isCaptureRegistry(registry)) throw new Error('Invalid fixture registry')
+			expect((await fixture.engine.read({ selector: 'all' })).entries).toHaveLength(
+				registry.entries.length,
+			)
+			expect((await fixture.engine.lookup(lookup)).case).toBe(MAIL)
+			const phone = registry.receipts.find((receipt) => receipt.variant === 'light-390')
+			if (phone === undefined) throw new Error('Missing light-390 receipt')
+			// A second complete receipt claims the phone destinations of every case it declares eligible.
+			const receipts = registry.receipts.map((receipt) =>
+				receipt.variant === 'dark-390'
+					? {
+							...receipt,
+							registry: phone.registry.filter((entry) =>
+								receipt.declarations.some(
+									(declaration) => declaration.eligible && declaration.case === entry.case,
+								),
+							),
+						}
+					: receipt,
+			)
+			const raw = {
+				version: registry.version,
+				receipts,
+				entries: receipts.flatMap((receipt) => receipt.registry),
+			}
+			fixture.write(
+				fixture.options.registry,
+				JSON.stringify({ ...raw, digest: computeRegistryDigest(raw) }),
+			)
+			const failure: unknown = await fixture.engine.lookup(lookup).catch((error: unknown) => error)
+			expect(isCaptureError(failure) && failure.code).toBe('EVIDENCE')
+			expect(isCaptureError(failure) && failure.message).toBe(
+				'Destination has no unique producing variant. Refresh explicitly with: capture journey pages:mail --variant light-390. Registry declaration changes require the complete-registry refresh: capture registry.',
+			)
+			// A read refuses the repeated destination before it attributes any producer.
+			await expect(fixture.engine.read({ selector: 'all' })).rejects.toThrow(
+				'Duplicate registry identities',
+			)
+			fixture.write(fixture.options.registry, text)
+			expect((await fixture.engine.lookup(lookup)).case).toBe(MAIL)
+		} finally {
+			fixture.destroy()
+		}
+	})
 })
 
 describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () => {

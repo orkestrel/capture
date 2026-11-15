@@ -483,9 +483,10 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			const destinations = this.#destinations(populated)
 			this.#uniqueRegistry(destinations)
 			const variants = this.#variants(destinations, options)
-			const entries = this.#select(populated, destinations, { ...options, variants }, false)
+			const entries = this.#select(destinations, { ...options, variants })
 			const inputs = this.#digest(this.#options.inputs, snapshots, digests)
-			for (const variant of new Set(entries.map((entry) => this.#producer(entry, populated)))) {
+			const producers = this.#producers(populated)
+			for (const variant of new Set(entries.map((entry) => this.#producer(entry, producers)))) {
 				const anchor = evidence.registry.receipts.find((receipt) => receipt.variant === variant)
 				if (anchor !== undefined && collectCaptureChanges(anchor.inputs, inputs.files).length === 0)
 					continue
@@ -552,7 +553,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			...selection,
 			variants: this.#variants(registry, selection),
 		}
-		const required = this.#select(evidence, registry, options, false)
+		const required = this.#select(registry, options)
 		const disk = this.#images()
 		const identities = new Map<string, string>()
 		const physical = Map.groupBy(disk, (file) => this.#physicalIdentity(file, identities))
@@ -677,7 +678,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			const snapshots = new Map<string, CaptureFileSnapshot | undefined>()
 			const digests = new Map<string, CaptureDigest>()
 			const evidence = this.#evidence(snapshots)
-			const entries = this.#select(evidence, this.#destinations(evidence), options, true)
+			const entries = this.#select(this.#destinations(evidence), options, this.#producers(evidence))
 			this.#uniqueRegistry(entries)
 			const cases = [...new Set(entries.map((entry) => entry.case))]
 			const [name] = cases
@@ -1336,10 +1337,9 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	}
 
 	#select(
-		evidence: CaptureEvidence,
 		entries: readonly CaptureDestination[],
 		options: CaptureCheckOptions | CaptureLookupOptions,
-		attributed: boolean,
+		producers?: ReadonlyMap<string, readonly string[]>,
 	): readonly CaptureDestination[] {
 		const selectors = [
 			...new Set(
@@ -1401,9 +1401,9 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			)
 		const variants = [
 			...new Set(
-				attributed
-					? entries.map((entry) => this.#producer(entry, evidence))
-					: entries.map((entry) => entry.variant),
+				producers === undefined
+					? entries.map((entry) => entry.variant)
+					: entries.map((entry) => this.#producer(entry, producers)),
 			),
 		]
 		const unknown = options.variants.find((variant) => !variants.includes(variant))
@@ -1414,7 +1414,9 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			)
 		const selected = scoped.filter(
 			(entry) =>
-				options.variants.includes(attributed ? this.#producer(entry, evidence) : entry.variant) &&
+				options.variants.includes(
+					producers === undefined ? entry.variant : this.#producer(entry, producers),
+				) &&
 				(options.state === undefined || entry.state === options.state) &&
 				(options.case === undefined || entry.case === options.case),
 		)
@@ -1428,20 +1430,30 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		return selected
 	}
 
-	#producer(destination: CaptureDestination, evidence: CaptureEvidence): string {
+	#producers(evidence: CaptureEvidence): ReadonlyMap<string, readonly string[]> {
 		const sources = [...evidence.registry.receipts, ...evidence.runs.map((entry) => entry.run)]
-		const variants = [
-			...new Set(
-				sources
-					.filter((source) =>
-						source.registry.some(
-							(entry) =>
-								describeCaptureDestination(entry) === describeCaptureDestination(destination),
-						),
-					)
-					.map((source) => source.variant),
+		const attributions = Map.groupBy(
+			sources.flatMap((source) =>
+				source.registry.map((entry) => ({
+					description: describeCaptureDestination(entry),
+					variant: source.variant,
+				})),
 			),
-		]
+			(entry) => entry.description,
+		)
+		return new Map(
+			[...attributions].map(([description, entries]) => [
+				description,
+				[...new Set(entries.map((entry) => entry.variant))],
+			]),
+		)
+	}
+
+	#producer(
+		destination: CaptureDestination,
+		producers: ReadonlyMap<string, readonly string[]>,
+	): string {
+		const variants = producers.get(describeCaptureDestination(destination)) ?? []
 		if (variants.length !== 1 || variants[0] === undefined)
 			throw new CaptureError('Destination has no unique producing variant', { code: 'EVIDENCE' })
 		return variants[0]
