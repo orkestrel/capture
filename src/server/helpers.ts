@@ -1,4 +1,5 @@
 import type { ParseArgsOptionsConfig } from 'node:util'
+import type { ProgressRun } from '@orkestrel/test/server'
 import type {
 	CaptureCollectionReceipt,
 	CaptureDestination,
@@ -77,7 +78,8 @@ import {
 	parseJSON,
 	preview,
 } from '@orkestrel/contract'
-import { createProgressPlugin, readProgress } from '@orkestrel/test/server'
+import { inspectProcess } from '@orkestrel/process/server'
+import { createProgressPlugin, readProgress, renderProgress } from '@orkestrel/test/server'
 import {
 	CAPTURE_LOOKUPS_FILE,
 	CAPTURE_MANIFEST_FILE,
@@ -2733,12 +2735,15 @@ export function readCaptureFrames(directory: string, scopes: readonly string[]):
  * The file is the most recently modified `<stage>.progress.jsonl` beneath the request directory's
  * run directories. The progress file is an observation of the run and never evidence. A partial
  * last line, which the reporter can still be appending, is not read, so a file with no complete
- * line holds no run.
+ * line holds no run. For each run with no `end` line, `alive` reads the process id its `init` line
+ * records: a writer that has ended turns the run `interrupted`, and a writer the host cannot
+ * inspect, or an id that is not a positive safe integer, lists the run's id in `uninspected`.
  *
  * @param root - The absolute workspace path
  * @param requests - The workspace-relative request directory
  * @param now - The wall-clock time of the reading, in milliseconds since the Unix epoch. Default: `Date.now()`
- * @returns The workspace-relative file and one reading per process that wrote it
+ * @param alive - Reads whether a writer process exists, or `undefined` when the host cannot tell. Default: `inspectProcess` from `@orkestrel/process/server`
+ * @returns The workspace-relative file, one reading per process that wrote it, and the writers the host could not inspect
  * @throws Thrown as a `STAGE` capture error when no stage has written a progress file, or when the
  * file cannot be read or holds a complete line that is not a progress event.
  *
@@ -2751,6 +2756,7 @@ export function readCaptureProgress(
 	root: string,
 	requests: string,
 	now: number = Date.now(),
+	alive: (pid: number) => boolean | undefined = inspectProcess,
 ): CaptureProgress {
 	const runs = resolve(root, requests, CAPTURE_RUNS_DIRECTORY)
 	const [newest] = globSync(`*/*${CAPTURE_PROGRESS_SUFFIX}`, { cwd: runs })
@@ -2772,7 +2778,52 @@ export function readCaptureProgress(
 			`Cannot read the progress file ${newest.file}: ${describeCaptureOutput(describeCaptureError(read.error))}`,
 			{ code: 'STAGE', cause: read.error, context: { file: newest.file } },
 		)
-	return { file: newest.file, runs: read.value }
+	const writers = new Map(
+		read.value
+			.filter((run) => run.state === 'live')
+			.map((run) => [
+				run.pid,
+				Number.isSafeInteger(run.pid) && run.pid > 0 ? alive(run.pid) : undefined,
+			]),
+	)
+	return {
+		file: newest.file,
+		runs: read.value.map((run): ProgressRun =>
+			writers.get(run.pid) === false
+				? { ...run, state: 'interrupted', running: [], remaining: undefined }
+				: run,
+		),
+		uninspected: [...writers].flatMap(([pid, answer]) => (answer === undefined ? [pid] : [])),
+	}
+}
+
+/**
+ * Renders a progress reading as the text `capture progress` prints.
+ *
+ * @param progress - The reading `readCaptureProgress` returns
+ * @returns The file line, then each run as `renderProgress` from `@orkestrel/test/server` renders it,
+ * followed by an unknown-state line for each run whose writer the host could not inspect
+ *
+ * @example
+ * ```ts
+ * renderCaptureProgress({ file: 'tmp/capture/runs/a/selected.progress.jsonl', runs: [], uninspected: [] })
+ * // 'progress tmp/capture/runs/a/selected.progress.jsonl\nNo run has written a complete progress line yet'
+ * ```
+ */
+export function renderCaptureProgress(progress: CaptureProgress): string {
+	return [
+		`progress ${progress.file}`,
+		...(progress.runs.length === 0
+			? ['No run has written a complete progress line yet']
+			: progress.runs.flatMap((run) => [
+					renderProgress([run]),
+					...(progress.uninspected.includes(run.pid)
+						? [
+								`  state unknown: the host could not inspect writer ${String(run.pid)}, so the run might have ended without its end line`,
+							]
+						: []),
+				])),
+	].join('\n')
 }
 
 /**

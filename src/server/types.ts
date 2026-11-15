@@ -1070,16 +1070,24 @@ export interface CaptureWrapperConfig<TProject> {
  * Carries the progress file of the stage that ran last in a workspace, and every run it holds.
  *
  * @remarks `file` is workspace-relative and slash-separated. `runs` holds one reading per writing
- * process, and is empty while the stage has not written a complete line.
+ * process, and is empty while the stage has not written a complete line. A run with no `end` line
+ * whose writer has ended reads as `interrupted`, with no running case and no estimate.
+ * `uninspected` lists the process id of each run with no `end` line whose writer the host could not
+ * inspect: that run keeps the `live` state its file records, and whether it still runs is unknown.
  *
  * @example
  * ```ts
- * const progress: CaptureProgress = { file: 'tmp/capture/runs/a/selected.progress.jsonl', runs: [] }
+ * const progress: CaptureProgress = {
+ * 	file: 'tmp/capture/runs/a/selected.progress.jsonl',
+ * 	runs: [],
+ * 	uninspected: [],
+ * }
  * ```
  */
 export interface CaptureProgress {
 	readonly file: string
 	readonly runs: readonly ProgressRun[]
+	readonly uninspected: readonly number[]
 }
 
 /**

@@ -55,6 +55,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { crc32, deflateSync } from 'node:zlib'
 import {
 	arrayOf,
+	attempt,
 	holds,
 	isArray,
 	isError,
@@ -73,7 +74,7 @@ import {
 	killTree,
 } from '@orkestrel/process/server'
 import { retryUntil, waitForCondition, waitForEvent, requireValue } from '@orkestrel/test'
-import { createScratch, isRunning } from '@orkestrel/test/server'
+import { createScratch, isRunning, readProgress } from '@orkestrel/test/server'
 // The plain Node writer imports this module; consumer readers load source guards only when called.
 
 /** Anchors consumer fixture and tool paths to this checkout rather than a child workspace. */
@@ -3940,11 +3941,72 @@ export function buildCaptureComposeRefusals(limits: {
 }
 
 /**
+ * Starts a real Vitest run whose progress plugin writes a progress file, and waits until the file
+ * records the run's held case as running.
+ *
+ * @remarks The run uses the threads pool, so its reporter and every worker live in the one process
+ * a kill ends. The held case never settles, so the file gains no `end` line while the process runs.
+ * @param scratch - The workspace the run's configuration and test file are written to
+ * @param file - The progress file, relative to the workspace
+ * @returns The Vitest process and its process id
+ */
+export async function startCaptureProgressWriter(
+	scratch: ScratchInterface,
+	file: string,
+): Promise<{ readonly writer: ChildProcess; readonly pid: number }> {
+	scratch.write('package.json', JSON.stringify({ type: 'module' }))
+	for (const name of ['vitest', '@orkestrel/test'])
+		scratch.link(`node_modules/${name}`, resolve(CAPTURE_WORKSPACE_ROOT, 'node_modules', name))
+	scratch.write(
+		'held.test.ts',
+		"import { it } from 'vitest'\nit('opens board', () => undefined)\nit('holds the run', () => new Promise(() => undefined))\n",
+	)
+	scratch.write(
+		'vite.config.ts',
+		"import { createProgressPlugin } from '@orkestrel/test/server'\nexport default { plugins: [createProgressPlugin()], test: { include: ['held.test.ts'], pool: 'threads', testTimeout: 600_000 } }\n",
+	)
+	const writer = spawn(
+		process.execPath,
+		[
+			CAPTURE_REAL_VITEST,
+			'run',
+			'--config',
+			resolve(scratch.path, 'vite.config.ts'),
+			'--reporter=dot',
+			`--outputFile.progress=${resolve(scratch.path, file)}`,
+		],
+		{ cwd: scratch.path, windowsHide: true, stdio: 'ignore' },
+	)
+	const controller = new AbortController()
+	writer.once('exit', (code, signal) =>
+		controller.abort(new Error(`The progress writer exited early (${String(code ?? signal)})`)),
+	)
+	await waitForCondition(
+		'the progress file records the held case as running',
+		() => {
+			const read = attempt(() => readProgress(resolve(scratch.path, file)))
+			return (
+				read.success &&
+				read.value.some((run) => run.running.some((entry) => entry.name === 'holds the run'))
+			)
+		},
+		{ budget: 60_000, interval: 50, signal: controller.signal },
+	)
+	const pid = writer.pid
+	if (pid === undefined) throw new Error('The progress writer reported no pid')
+	return { writer, pid }
+}
+
+/**
  * Ends a process a fixture started and waits for its streams to close.
  *
  * @param child - The process to end
+ * @param signal - The signal that ends it. Default: `SIGTERM`
  */
-export async function stopFixtureChild(child: ChildProcess): Promise<void> {
+export async function stopFixtureChild(
+	child: ChildProcess,
+	signal: NodeJS.Signals = 'SIGTERM',
+): Promise<void> {
 	const closed = waitForEvent<readonly [number | null, NodeJS.Signals | null]>(
 		(receive) => {
 			child.once('close', receive)
@@ -3953,7 +4015,7 @@ export async function stopFixtureChild(child: ChildProcess): Promise<void> {
 		'the fixture process closes',
 		{ budget: 20_000 },
 	)
-	child.kill()
+	child.kill(signal)
 	await closed
 }
 
@@ -4644,17 +4706,20 @@ export function readCaptureChildModes(fixture: IntegrityFixture): readonly Captu
 }
 
 /**
- * Holds the progress lines of one live stage that one process writes: three planned cases, one
+ * Builds the progress lines of one live stage that one process writes: three planned cases, one
  * passed, one failed, and one running, with the init line written at wall time 1000.
+ *
+ * @param pid - The writer's process id, which every line carries
+ * @returns The lines, without line terminators
  */
-export const CAPTURE_PROGRESS_LINES: readonly string[] = Object.freeze(
-	[
-		{ event: 'init', version: 1, wall: 1000, bail: 1, time: 0, pid: 7 },
+export function buildCaptureProgressLines(pid: number): readonly string[] {
+	return [
+		{ event: 'init', version: 1, wall: 1000, bail: 1, time: 0, pid },
 		{
 			event: 'start',
 			specifications: [{ project: 'journey:wide', module: 'specs/journey.ts' }],
 			time: 1,
-			pid: 7,
+			pid,
 		},
 		{
 			event: 'collected',
@@ -4663,9 +4728,9 @@ export const CAPTURE_PROGRESS_LINES: readonly string[] = Object.freeze(
 			planned: 3,
 			errors: [],
 			time: 2,
-			pid: 7,
+			pid,
 		},
-		{ event: 'ready', project: 'journey:wide', id: 'a', name: 'opens board', time: 3, pid: 7 },
+		{ event: 'ready', project: 'journey:wide', id: 'a', name: 'opens board', time: 3, pid },
 		{
 			event: 'case',
 			project: 'journey:wide',
@@ -4676,9 +4741,9 @@ export const CAPTURE_PROGRESS_LINES: readonly string[] = Object.freeze(
 			duration: 4,
 			start: 1003,
 			time: 7,
-			pid: 7,
+			pid,
 		},
-		{ event: 'ready', project: 'journey:wide', id: 'b', name: 'opens mail', time: 8, pid: 7 },
+		{ event: 'ready', project: 'journey:wide', id: 'b', name: 'opens mail', time: 8, pid },
 		{
 			event: 'case',
 			project: 'journey:wide',
@@ -4690,8 +4755,8 @@ export const CAPTURE_PROGRESS_LINES: readonly string[] = Object.freeze(
 			start: 1008,
 			errors: [{ message: 'Error: the inbox is empty', location: 'specs/journey.ts:4:9' }],
 			time: 13,
-			pid: 7,
+			pid,
 		},
-		{ event: 'ready', project: 'journey:wide', id: 'c', name: 'closes the run', time: 14, pid: 7 },
-	].map((line) => JSON.stringify(line)),
-)
+		{ event: 'ready', project: 'journey:wide', id: 'c', name: 'closes the run', time: 14, pid },
+	].map((line) => JSON.stringify(line))
+}

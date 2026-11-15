@@ -1,5 +1,4 @@
 import type { CaptureCLIInterface, CaptureCLIOptions, CaptureWriteHandler } from './types.js'
-import { renderProgress } from '@orkestrel/test/server'
 import { CaptureError, describeCaptureError, isCaptureError } from '@src/core'
 import { CapturePreflight } from './CapturePreflight.js'
 import { CaptureRegistrar } from './CaptureRegistrar.js'
@@ -16,6 +15,7 @@ import {
 	readCaptureOptions,
 	readCaptureProgress,
 	readCaptureReaderArguments,
+	renderCaptureProgress,
 	resolveCaptureExit,
 } from './helpers.js'
 
@@ -98,9 +98,8 @@ export class CaptureCLI implements CaptureCLIInterface {
 							`Unexpected argument ${JSON.stringify(positionals[0]?.slice(0, 80))}: the progress command takes no argument. ${usage}`,
 							{ code: 'USAGE' },
 						)
-					const progress = readCaptureProgress(root, CAPTURE_DEFAULTS.requests)
 					this.#stdout(
-						`progress ${progress.file}\n${progress.runs.length === 0 ? 'No run has written a complete progress line yet' : renderProgress(progress.runs)}\n`,
+						`${renderCaptureProgress(readCaptureProgress(root, CAPTURE_DEFAULTS.requests))}\n`,
 					)
 					return CAPTURE_EXIT.passed
 				}

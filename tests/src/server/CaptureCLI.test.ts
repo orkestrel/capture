@@ -20,7 +20,9 @@ import {
 	MAIL,
 	readCaptureRuns,
 	CAPTURE_USAGE_CASES,
-	CAPTURE_PROGRESS_LINES,
+	buildCaptureProgressLines,
+	startCaptureProgressWriter,
+	stopFixtureChild,
 } from '../../setupServer.js'
 describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 	it.each(['registry', 'journey'])(
@@ -422,11 +424,11 @@ describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(stdout.join('')).toBe(
 				`progress ${file}\nNo run has written a complete progress line yet\n`,
 			)
-			scratch.write(file, `${CAPTURE_PROGRESS_LINES.join('\n')}\n`)
+			scratch.write(file, `${buildCaptureProgressLines(process.pid).join('\n')}\n`)
 			expect(await cli.execute(['progress'])).toBe(0)
 			const text = stdout.slice(1).join('')
 			expect(text).toMatch(
-				new RegExp(`^progress ${file}\\nrun 7 live bail=1: 2/3 cases, elapsed `, 'u'),
+				new RegExp(`^progress ${file}\\nrun ${process.pid} live bail=1: 2/3 cases, elapsed `, 'u'),
 			)
 			expect(text).toContain('running')
 			expect(text).toContain('[journey:wide] closes the run')
@@ -439,6 +441,39 @@ describe('CaptureCLI', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(await cli.execute(['progress', 'pages:mail'])).toBe(64)
 			expect(await cli.execute(['progress', '--config', 'x.ts'])).toBe(64)
 			expect(stderr.join('')).toContain('Usage: capture progress')
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('prints a stage whose writer was killed before its end line as interrupted, never live', async () => {
+		const scratch = createScratch({ prefix: 'cli-progress-killed-' })
+		const stdout: string[] = []
+		const cli = new CaptureCLI({
+			root: scratch.path,
+			stdout: (text) => stdout.push(text),
+			stderr: () => undefined,
+		})
+		const file = `${CAPTURE_DEFAULTS.requests}/runs/run-1/selected.progress.jsonl`
+		try {
+			const { writer, pid } = await startCaptureProgressWriter(scratch, file)
+			try {
+				expect(await cli.execute(['progress'])).toBe(0)
+				expect(stdout.join('')).toMatch(
+					new RegExp(`^progress ${file}\\nrun ${pid} live full: 1/2 cases, `, 'u'),
+				)
+				expect(stdout.join('')).toContain('] holds the run')
+			} finally {
+				await stopFixtureChild(writer, 'SIGKILL')
+			}
+			expect(scratch.read(file)).not.toContain('"event":"end"')
+			expect(await cli.execute(['progress'])).toBe(0)
+			const text = stdout.slice(1).join('')
+			expect(text).toMatch(
+				new RegExp(`^progress ${file}\\nrun ${pid} interrupted full: 1/2 cases, `, 'u'),
+			)
+			expect(text).not.toContain(' live ')
+			expect(text).not.toContain('running')
 		} finally {
 			scratch.destroy()
 		}

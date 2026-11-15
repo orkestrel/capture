@@ -16,13 +16,13 @@ npm install -D @orkestrel/capture
 
 The manifest declares these peer ranges; install the browser peers when you run browser journeys:
 
-| Peer                         | Range                 | Required by the manifest |
-| ---------------------------- | --------------------- | ------------------------ |
-| `vitest`                     | `^4.1.12 \|\| ^5.0.5` | Yes                      |
-| `vite`                       | `^8.3.5`              | Yes                      |
-| `@vitest/browser-playwright` | `^4.1.12 \|\| ^5.0.5` | Optional                 |
-| `playwright`                 | `^1.61.0`             | Optional                 |
-| `@orkestrel/test`            | `~0.0.41`             | Yes                      |
+| Peer                         | Range     | Required by the manifest |
+| ---------------------------- | --------- | ------------------------ |
+| `vitest`                     | `^5.1.0`  | Yes                      |
+| `vite`                       | `^8.3.5`  | Yes                      |
+| `@vitest/browser-playwright` | `^5.0.5`  | Optional                 |
+| `playwright`                 | `^1.61.0` | Optional                 |
+| `@orkestrel/test`            | `~0.0.41` | Yes                      |
 
 ## Requirements
 

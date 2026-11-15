@@ -106,6 +106,7 @@ import {
 	buildCaptureWrapper,
 	readCaptureFrames,
 	readCaptureProgress,
+	renderCaptureProgress,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import {
@@ -154,7 +155,7 @@ import {
 	CaptureThumbnailSequence,
 	createThumbnailPicture,
 	averageThumbnailPicture,
-	CAPTURE_PROGRESS_LINES,
+	buildCaptureProgressLines,
 	FIXTURE_TIMEOUT,
 } from '../../setupServer.js'
 describe('H1 extracted pure leaves', () => {
@@ -3872,13 +3873,14 @@ describe('readCaptureProgress', () => {
 		try {
 			scratch.write(
 				`${REQUESTS}/runs/run-1/selected.progress.jsonl`,
-				`${CAPTURE_PROGRESS_LINES.join('\n')}\n{"event":"ca`,
+				`${buildCaptureProgressLines(process.pid).join('\n')}\n{"event":"ca`,
 			)
 			const progress = readCaptureProgress(scratch.path, REQUESTS, 61_000)
 			expect(progress.file).toBe(`${REQUESTS}/runs/run-1/selected.progress.jsonl`)
+			expect(progress.uninspected).toEqual([])
 			expect(progress.runs).toHaveLength(1)
 			expect(progress.runs[0]).toMatchObject({
-				pid: 7,
+				pid: process.pid,
 				state: 'live',
 				done: 2,
 				planned: 3,
@@ -3901,9 +3903,12 @@ describe('readCaptureProgress', () => {
 		try {
 			scratch.write(
 				`${REQUESTS}/runs/run-2/narrow.progress.jsonl`,
-				`${CAPTURE_PROGRESS_LINES[0]}\n`,
+				`${buildCaptureProgressLines(process.pid)[0]}\n`,
 			)
-			scratch.write(`${REQUESTS}/runs/run-1/rest.progress.jsonl`, `${CAPTURE_PROGRESS_LINES[0]}\n`)
+			scratch.write(
+				`${REQUESTS}/runs/run-1/rest.progress.jsonl`,
+				`${buildCaptureProgressLines(process.pid)[0]}\n`,
+			)
 			scratch.write(`${REQUESTS}/runs/run-1/rest.json`, '{}')
 			utimesSync(resolve(scratch.path, `${REQUESTS}/runs/run-2/narrow.progress.jsonl`), 1, 1)
 			expect(readCaptureProgress(scratch.path, REQUESTS).file).toBe(
@@ -3925,10 +3930,98 @@ describe('readCaptureProgress', () => {
 			expect(readCaptureProgress(scratch.path, REQUESTS)).toEqual({
 				file: `${REQUESTS}/runs/run-1/selected.progress.jsonl`,
 				runs: [],
+				uninspected: [],
 			})
 		} finally {
 			scratch.destroy()
 		}
+	})
+
+	it('reads a run whose writer has ended as interrupted, and one whose writer the host cannot inspect as uninspected', () => {
+		const scratch = createScratch({ prefix: 'progress-' })
+		try {
+			scratch.write(
+				`${REQUESTS}/runs/run-1/selected.progress.jsonl`,
+				`${[...buildCaptureProgressLines(4242), ...buildCaptureProgressLines(4343)].join('\n')}\n`,
+			)
+			const progress = readCaptureProgress(scratch.path, REQUESTS, 61_000, (pid) =>
+				pid === 4242 ? false : undefined,
+			)
+			expect(progress.runs).toMatchObject([
+				{ pid: 4242, state: 'interrupted', done: 2, running: [], remaining: undefined },
+				{ pid: 4343, state: 'live', done: 2, running: [{ name: 'closes the run' }] },
+			])
+			expect(progress.uninspected).toEqual([4343])
+			const text = renderCaptureProgress(progress)
+			expect(text).toMatch(/^progress tmp\/capture\/runs\/run-1\/selected\.progress\.jsonl\n/u)
+			expect(text).toContain('run 4242 interrupted bail=1: 2/3 cases')
+			expect(text).toContain('run 4343 live bail=1: 2/3 cases')
+			expect(text).toContain(
+				'  state unknown: the host could not inspect writer 4343, so the run might have ended without its end line',
+			)
+			expect(text).not.toContain('inspect writer 4242')
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it.each([0, -1, 1.5, 2 ** 53])(
+		'reads writer id %s, which names no single process, as uninspected and never probes it',
+		(pid) => {
+			const scratch = createScratch({ prefix: 'progress-' })
+			try {
+				scratch.write(
+					`${REQUESTS}/runs/run-1/selected.progress.jsonl`,
+					`${buildCaptureProgressLines(pid).join('\n')}\n`,
+				)
+				const progress = readCaptureProgress(scratch.path, REQUESTS, 61_000, () => {
+					throw new Error('probed a writer id that names no single process')
+				})
+				expect(progress.runs).toMatchObject([{ pid, state: 'live' }])
+				expect(progress.uninspected).toEqual([pid])
+			} finally {
+				scratch.destroy()
+			}
+		},
+	)
+
+	it('never inspects the writer of a run that wrote its end line', () => {
+		const scratch = createScratch({ prefix: 'progress-' })
+		try {
+			scratch.write(
+				`${REQUESTS}/runs/run-1/selected.progress.jsonl`,
+				`${[
+					...buildCaptureProgressLines(4242),
+					JSON.stringify({
+						event: 'end',
+						reason: 'failed',
+						overhead: 1,
+						unhandled: [],
+						time: 20,
+						pid: 4242,
+					}),
+				].join('\n')}\n`,
+			)
+			const progress = readCaptureProgress(scratch.path, REQUESTS, 61_000, () => {
+				throw new Error('inspected the writer of an ended run')
+			})
+			expect(progress.runs).toMatchObject([{ pid: 4242, state: 'failed' }])
+			expect(progress.uninspected).toEqual([])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('renders a stage that wrote no complete line', () => {
+		expect(
+			renderCaptureProgress({
+				file: `${REQUESTS}/runs/run-1/selected.progress.jsonl`,
+				runs: [],
+				uninspected: [],
+			}),
+		).toBe(
+			`progress ${REQUESTS}/runs/run-1/selected.progress.jsonl\nNo run has written a complete progress line yet`,
+		)
 	})
 
 	it.each([
