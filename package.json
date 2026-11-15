@@ -94,7 +94,7 @@
 	},
 	"dependencies": {
 		"@orkestrel/contract": "^0.0.24",
-		"@orkestrel/process": "^0.0.20",
+		"@orkestrel/process": "^0.0.21",
 		"@orkestrel/timeout": "^0.0.18"
 	},
 	"devDependencies": {
