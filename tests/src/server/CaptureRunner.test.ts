@@ -199,7 +199,7 @@ describe.each(RUNNER_COMMANDS)(
 			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
 			const request = readCaptureStageRequest(base, run.stdout, stage, COMPOSED_FIRST)
 			expect(request).toMatchObject({
-				version: 1,
+				version: core.CAPTURE_VERSION,
 				stage,
 				command,
 				selector: 'pages:mail',

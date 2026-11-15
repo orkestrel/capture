@@ -439,7 +439,7 @@ describe('isFixtureRequest', () => {
 		expect(isFixtureRequest(createRequestFixture())).toBe(true)
 		expect(isFixtureRequest(createRequestFixture({ case: 'inbox', state: 'inbox' }))).toBe(true)
 		for (const bad of [
-			{ version: 2 },
+			{ version: 1 },
 			{ id: 1 },
 			{ pid: '1' },
 			{ command: 'stale' },
@@ -1070,7 +1070,7 @@ describe('the discovery answer of a composed workspace', { timeout: FIXTURE_TIME
 			const child = launchCaptureDiscovery(scratch, prepareCaptureDiscovery(scratch))
 			expect(child.status === 0 ? 0 : child.stderr).toBe(0)
 			const description = readCaptureDiscoveryAnswer(scratch)
-			expect(description).toMatchObject({ version: 1, ...REQUEST, parent: process.pid })
+			expect(description).toMatchObject({ version: 2, ...REQUEST, parent: process.pid })
 			expect(isRecord(description) ? description.pid : undefined).toEqual(expect.any(Number))
 			const projects = isRecord(description) ? description.projects : undefined
 			expect(isArray(projects) ? projects.length : 0).toBe(VARIANTS.length)
@@ -1465,10 +1465,10 @@ describe('PopulationFixture', { timeout: FIXTURE_TIMEOUT }, () => {
 				const stage = await fixture.engine.stamp(fixture.stage())
 				expect(stage.entries).toHaveLength(total)
 				expect(stage.lookups).toHaveLength(total)
-				const manifest: unknown = parseJSON(
-					readFileSync(resolve(fixture.root, fixture.options.manifest), 'utf8'),
+				const manifest = server.readCaptureManifest(
+					parseJSON(readFileSync(resolve(fixture.root, fixture.options.manifest), 'utf8')),
+					fixture.options.manifest,
 				)
-				if (!core.isCaptureStoredManifest(manifest)) throw new Error('Invalid population manifest')
 				const stamps = Object.values(manifest.entries)
 				expect(stamps).toHaveLength(total)
 				expect(new Set(stamps.map((stamp) => stamp.variant))).toEqual(new Set(variants))
@@ -1479,10 +1479,10 @@ describe('PopulationFixture', { timeout: FIXTURE_TIMEOUT }, () => {
 					expect(Object.keys(lookup.inputs)).toHaveLength(population.inputs)
 				// A second stage replaces every stamp and lookup rather than adding to them.
 				await fixture.engine.stamp(fixture.stage())
-				const next: unknown = parseJSON(
-					readFileSync(resolve(fixture.root, fixture.options.manifest), 'utf8'),
+				const next = server.readCaptureManifest(
+					parseJSON(readFileSync(resolve(fixture.root, fixture.options.manifest), 'utf8')),
+					fixture.options.manifest,
 				)
-				if (!core.isCaptureStoredManifest(next)) throw new Error('Invalid population manifest')
 				expect(Object.keys(next.entries)).toHaveLength(total)
 				expect(next.lookups).toHaveLength(total)
 				const read = await fixture.engine.read({ selector: 'all' })

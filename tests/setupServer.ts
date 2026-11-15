@@ -662,7 +662,7 @@ export function isFixtureRequest(value: unknown): value is CaptureRequest {
 	return holds(
 		() =>
 			isRecord(value) &&
-			value.version === 1 &&
+			value.version === 2 &&
 			isString(value.id) &&
 			isString(value.stage) &&
 			typeof value.pid === 'number' &&
@@ -911,7 +911,7 @@ export function writeFixtureOutputs(input: FixtureWrite): void {
 			writeFileSync(file, journal)
 		}
 		const run: CaptureRun = {
-			version: 1,
+			version: 2,
 			...(request === undefined
 				? {}
 				: {
@@ -1155,7 +1155,7 @@ export function createWireRequest(
 ): Record<string, unknown> {
 	return Object.fromEntries(
 		Object.entries({
-			version: 1,
+			version: 2,
 			id: 'wire-1',
 			stage: 'narrow',
 			config: WIRE_CONFIG,
@@ -1201,7 +1201,7 @@ export interface WireRefusal {
 
 /** Lists the field patches a wrapper refuses, each with the refusal it names. */
 export const WIRE_REFUSALS: readonly WireRefusal[] = Object.freeze([
-	{ title: 'a different version', patch: { version: 2 }, message: 'invalid version' },
+	{ title: 'a different version', patch: { version: 1 }, message: 'invalid version' },
 	{ title: 'a missing version', patch: { version: undefined }, message: 'invalid version' },
 	{
 		title: 'an identity with a separator',
@@ -2252,7 +2252,7 @@ export async function writeFixtureDescription(input: FixtureDescription): Promis
 		fault === 'malformed'
 			? '{'
 			: JSON.stringify({
-					version: 1,
+					version: 2,
 					id: fault === 'other-invocation' ? 'foreign' : request.id,
 					nonce: fault === 'replay' ? 'replayed' : request.nonce,
 					config: fault === 'other-config' ? 'other.config.ts' : request.config,
@@ -2440,10 +2440,9 @@ export class CaptureConsumer {
 	}
 
 	async manifest(): Promise<CaptureStoredManifest> {
-		const { isCaptureStoredManifest } = await import('@src/core')
-		const manifest = this.read('tmp/captures/states/manifest.json')
-		if (!isCaptureStoredManifest(manifest)) throw new Error('Consumer emitted an invalid manifest')
-		return manifest
+		const { readCaptureManifest } = await import('@src/server')
+		const file = 'tmp/captures/states/manifest.json'
+		return readCaptureManifest(this.read(file), file)
 	}
 
 	async run(file: string): Promise<CaptureRun> {
@@ -2933,7 +2932,7 @@ export class PopulationFixture {
 					this.#write(
 						project.record,
 						JSON.stringify({
-							version: 1,
+							version: this.#modules.core.CAPTURE_VERSION,
 							request,
 							identity: { id, stage: request.stage, pid: request.pid, config: request.config },
 							variant: project.variant,
@@ -4730,7 +4729,7 @@ export function prepareCaptureDiscovery(scratch: ScratchInterface): string {
 	scratch.write(
 		`${COMPOSED_REQUESTS}/journey-selection-${String(process.pid)}.json`,
 		JSON.stringify({
-			version: 1,
+			version: 2,
 			phase: 'discover',
 			pid: process.pid,
 			args: [],

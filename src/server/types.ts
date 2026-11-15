@@ -2,6 +2,7 @@ import type { ParseArgsOptionsConfig, parseArgs } from 'node:util'
 import type { DuplexInterface } from '@orkestrel/process'
 import type { ProgressPluginInterface, ProgressRun } from '@orkestrel/test/server'
 import type {
+	CAPTURE_VERSION,
 	CaptureCollectionReceipt,
 	CaptureDeclaration,
 	CaptureDestination,
@@ -821,7 +822,7 @@ export interface CaptureRequestOptions {
  * @example
  * ```ts
  * const request: CaptureDiscoveryRequest = {
- * 	version: 1,
+ * 	version: 2,
  * 	phase: 'discover',
  * 	id: 'run-1',
  * 	nonce: 'a1b2',
@@ -832,7 +833,7 @@ export interface CaptureRequestOptions {
  * ```
  */
 export interface CaptureDiscoveryRequest {
-	readonly version: 1
+	readonly version: typeof CAPTURE_VERSION
 	readonly phase: 'discover'
 	readonly id: string
 	readonly nonce: string
@@ -870,7 +871,7 @@ export interface CaptureHostEntry {
  * @example
  * ```ts
  * const description: CaptureHostDescription = {
- * 	version: 1,
+ * 	version: 2,
  * 	id: 'run-1',
  * 	nonce: 'a1b2',
  * 	config: 'configs/vite.journey.config.ts',
@@ -881,7 +882,7 @@ export interface CaptureHostEntry {
  * ```
  */
 export interface CaptureHostDescription {
-	readonly version: 1
+	readonly version: typeof CAPTURE_VERSION
 	readonly id: string
 	readonly nonce: string
 	readonly config: string

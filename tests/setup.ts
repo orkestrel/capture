@@ -22,6 +22,7 @@ import { captureError } from '@orkestrel/test'
 import {
 	buildCaptureDestinations,
 	buildCaptureRun,
+	CAPTURE_VERSION,
 	CaptureError,
 	isCaptureError,
 	readCaptureReport,
@@ -157,7 +158,7 @@ export function createIdentityFixture(overrides: Partial<CaptureIdentity> = {}):
 export function createRequestFixture(overrides: Partial<CaptureRequest> = {}): CaptureRequest {
 	return {
 		...createIdentityFixture(),
-		version: 1,
+		version: CAPTURE_VERSION,
 		command: 'capture',
 		selector: 'pages:mail',
 		variants: ['light-390'],
@@ -174,7 +175,7 @@ export function createRequestFixture(overrides: Partial<CaptureRequest> = {}): C
  */
 export function createRunFixture(overrides: Partial<CaptureRun> = {}): CaptureRun {
 	return {
-		version: 1,
+		version: CAPTURE_VERSION,
 		variant: 'light-390',
 		time: '2026-10-28T09:00:00.000Z',
 		complete: true,
@@ -196,7 +197,7 @@ export function createRunFixture(overrides: Partial<CaptureRun> = {}): CaptureRu
  */
 export function createReceiptFixture(overrides: Partial<CaptureReceipt> = {}): CaptureReceipt {
 	return {
-		version: 1,
+		version: CAPTURE_VERSION,
 		variant: 'light-390',
 		time: '2026-10-28T09:00:00.000Z',
 		report: { file: 'tmp/captures/states/runs/run-1/journey-selected.json', digest: FIXTURE_HASH },
@@ -216,7 +217,7 @@ export function createReceiptFixture(overrides: Partial<CaptureReceipt> = {}): C
  */
 export function createRegistryFixture(overrides: Partial<CaptureRegistry> = {}): CaptureRegistry {
 	return {
-		version: 1,
+		version: CAPTURE_VERSION,
 		receipts: [createReceiptFixture()],
 		entries: [createDestinationFixture()],
 		digest: FIXTURE_HASH,
@@ -278,7 +279,7 @@ export function createStampFixture(overrides: Partial<CaptureStamp> = {}): Captu
  */
 export function createManifestFixture(overrides: Partial<CaptureManifest> = {}): CaptureManifest {
 	return {
-		version: 1,
+		version: CAPTURE_VERSION,
 		registry: createRegistryFixture(),
 		entries: { 'pages/inbox--light-390.png': createStampFixture() },
 		lookups: [createLookupFixture()],
@@ -405,7 +406,7 @@ export function createCaptureDescriptionFixture(
 	patch: Readonly<Record<string, unknown>> = {},
 ): unknown {
 	return Object.fromEntries(
-		Object.entries({ version: 1, ...expected, projects: [project], ...patch }).filter(
+		Object.entries({ version: CAPTURE_VERSION, ...expected, projects: [project], ...patch }).filter(
 			([, value]) => value !== undefined,
 		),
 	)
@@ -419,7 +420,7 @@ export function createCaptureDiscoveryRequest(
 ): unknown {
 	return Object.fromEntries(
 		Object.entries({
-			version: 1,
+			version: CAPTURE_VERSION,
 			phase: 'discover',
 			id: 'run-1',
 			nonce: 'nonce-1',
@@ -480,7 +481,7 @@ export const CAPTURE_GUARD_CASES: ReadonlyArray<
 		isCaptureRequest,
 		createRequestFixture(),
 		[
-			['another version', { ...createRequestFixture(), version: 2 }],
+			['another version', { ...createRequestFixture(), version: 1 }],
 			['an unknown command', { ...createRequestFixture(), command: 'stale' }],
 			['no variants', createRequestFixture({ variants: [] })],
 			['a repeated-separator selector', createRequestFixture({ selector: 'pages::mail' })],
@@ -536,7 +537,7 @@ export const CAPTURE_GUARD_CASES: ReadonlyArray<
 		isCaptureRun,
 		createRunFixture(),
 		[
-			['another version', createRunFixture({ version: 2 })],
+			['another version', createRunFixture({ version: 1 })],
 			['an unparsable time', createRunFixture({ time: 'yesterday' })],
 			['a request without an identity', createRunFixture({ request: createRequestFixture() })],
 			['an identity without a request', createRunFixture({ identity: createIdentityFixture() })],
@@ -576,7 +577,7 @@ export const CAPTURE_GUARD_CASES: ReadonlyArray<
 		isCaptureRegistry,
 		createRegistryFixture(),
 		[
-			['another version', createRegistryFixture({ version: 2 })],
+			['another version', createRegistryFixture({ version: 1 })],
 			['a malformed receipt', { ...createRegistryFixture(), receipts: [{}] }],
 			['a short digest', createRegistryFixture({ digest: 'abc' })],
 		],
@@ -598,29 +599,43 @@ export const CAPTURE_GUARD_CASES: ReadonlyArray<
 		'isCaptureLookupJournal',
 		isCaptureLookupJournal,
 		{
-			version: 1,
+			version: CAPTURE_VERSION,
 			manifest: FIXTURE_HASH,
 			inputs: { [FIXTURE_HASH]: createLookupFixture().inputs },
 			lookups: [{ ...createLookupFixture(), inputs: FIXTURE_HASH }],
 		},
 		[
-			['another version', { version: 2, inputs: {}, lookups: [] }],
-			['a short manifest digest', { version: 1, manifest: 'abc', inputs: {}, lookups: [] }],
-			['a malformed collection', { version: 1, collections: [{}], inputs: {}, lookups: [] }],
-			['a malformed lookup', { version: 1, inputs: {}, lookups: [{}] }],
-			['a missing input table', { version: 1, lookups: [] }],
-			['a short table digest', { version: 1, inputs: { abc: {} }, lookups: [] }],
+			['another version', { version: 1, inputs: {}, lookups: [] }],
+			[
+				'a short manifest digest',
+				{ version: CAPTURE_VERSION, manifest: 'abc', inputs: {}, lookups: [] },
+			],
+			[
+				'a malformed collection',
+				{ version: CAPTURE_VERSION, collections: [{}], inputs: {}, lookups: [] },
+			],
+			['a malformed lookup', { version: CAPTURE_VERSION, inputs: {}, lookups: [{}] }],
+			['a missing input table', { version: CAPTURE_VERSION, lookups: [] }],
+			['a short table digest', { version: CAPTURE_VERSION, inputs: { abc: {} }, lookups: [] }],
 			[
 				'a malformed input map',
-				{ version: 1, inputs: { [FIXTURE_HASH]: { '../escape': FIXTURE_HASH } }, lookups: [] },
+				{
+					version: CAPTURE_VERSION,
+					inputs: { [FIXTURE_HASH]: { '../escape': FIXTURE_HASH } },
+					lookups: [],
+				},
 			],
 			[
 				'an embedded lookup input map',
-				{ version: 1, inputs: {}, lookups: [createLookupFixture()] },
+				{ version: CAPTURE_VERSION, inputs: {}, lookups: [createLookupFixture()] },
 			],
 			[
 				'a short input reference',
-				{ version: 1, inputs: {}, lookups: [{ ...createLookupFixture(), inputs: 'abc' }] },
+				{
+					version: CAPTURE_VERSION,
+					inputs: {},
+					lookups: [{ ...createLookupFixture(), inputs: 'abc' }],
+				},
 			],
 		],
 	],
@@ -647,7 +662,7 @@ export const CAPTURE_GUARD_CASES: ReadonlyArray<
 		isCaptureManifest,
 		createManifestFixture(),
 		[
-			['another version', createManifestFixture({ version: 2 })],
+			['another version', createManifestFixture({ version: 1 })],
 			['a malformed stamp', { ...createManifestFixture(), entries: { 'pages/a.png': {} } }],
 			[
 				'an escaping stamp key',
@@ -1120,6 +1135,7 @@ export const CAPTURE_CORE_VALUES = [
 	'isCaptureDeclaration',
 	'isCaptureDestination',
 	'isCaptureDigest',
+	'isCaptureDigestReference',
 	'isCaptureEntry',
 	'isCaptureError',
 	'isCaptureGeometry',
@@ -1129,6 +1145,7 @@ export const CAPTURE_CORE_VALUES = [
 	'isCaptureLookup',
 	'isCaptureLookupJournal',
 	'isCaptureManifest',
+	'isCaptureManifestDocument',
 	'isCapturePath',
 	'isCapturePattern',
 	'isCaptureReceipt',

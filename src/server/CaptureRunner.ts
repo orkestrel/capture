@@ -22,6 +22,7 @@ import {
 	CAPTURE_MANIFEST_FILE,
 	CAPTURE_OWNER_PREFIX,
 	CAPTURE_REGISTRY_FILE,
+	CAPTURE_VERSION,
 	CaptureError,
 	describeCaptureError,
 	isCaptureError,
@@ -434,7 +435,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			final: plan.final,
 		})
 		const request: CaptureRequest = {
-			version: 1,
+			version: CAPTURE_VERSION,
 			id: invocation.id,
 			stage: stage.name,
 			config: plan.config,
