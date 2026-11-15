@@ -1,4 +1,15 @@
+import type { TestOptions } from 'vitest'
 import {
+	buildCaptureCase,
+	buildCaptureDestinations,
+	buildCaptureRun,
+	buildCaptureTags,
+	collectCaptureAncestors,
+	collectCaptureCases,
+	readCaptureArtifact,
+	renderCaptureArtifact,
+	requireCaptureCases,
+	validateCaptureRun,
 	collectCaptureChanges,
 	collectCaptureDuplicates,
 	describeCaptureDeclaration,
@@ -7,6 +18,7 @@ import {
 	describeCaptureIdentity,
 	describeCaptureRequest,
 	isCaptureError,
+	isCaptureRun,
 	matchesCaptureMembers,
 	matchesCaptureSelector,
 	readCaptureDirty,
@@ -18,7 +30,8 @@ import {
 	resolveLookupKey,
 	validateCaptureReceipt,
 } from '@src/core'
-import { captureError } from '@orkestrel/test'
+import { parseJSON } from '@orkestrel/contract'
+import { captureError, requireValue } from '@orkestrel/test'
 import { describe, expect, it } from 'vitest'
 import {
 	FIXTURE_CASE,
@@ -32,6 +45,17 @@ import {
 	readCaptureReportFixture,
 	validateCaptureRunFixture,
 	readCaptureEvidenceFailure,
+	CAPTURE_PARKING_CASES,
+	CAPTURE_RECORD_MAPPINGS,
+	CAPTURE_RECORD_MUTATIONS,
+	CAPTURE_RECORD_NAMES,
+	CAPTURE_RECORD_PROJECT,
+	CAPTURE_RECORD_RULES,
+	CAPTURE_RECORD_SCENARIOS,
+	CAPTURE_RECORD_TIME,
+	createRecordCases,
+	createRecordRun,
+	createSourcesFixture,
 } from '../../setup.js'
 describe('describeCaptureError', () => {
 	it('returns an error message and the string form of any other value', () => {
@@ -803,5 +827,570 @@ describe('readCaptureDirty', () => {
 			code: 'EVIDENCE',
 			message: 'Incomplete Git rename provenance',
 		})
+	})
+})
+
+describe('collectCaptureAncestors', () => {
+	it('returns each colon-bounded prefix from the scope through the owner', () => {
+		expect(collectCaptureAncestors('pages:mail:inbox')).toEqual([
+			'pages',
+			'pages:mail',
+			'pages:mail:inbox',
+		])
+		expect(collectCaptureAncestors('pages')).toEqual(['pages'])
+	})
+})
+
+describe('buildCaptureTags', () => {
+	it('declares each owner and ancestor tag and each scope and part tag once', () => {
+		expect(buildCaptureTags(['pages:mail'])).toEqual([
+			'owner:pages',
+			'owner:pages:mail',
+			'pages',
+			'pages:mail',
+		])
+		expect(buildCaptureTags(['pages:mail', 'pages:board', 'reference:components:details'])).toEqual(
+			[
+				'owner:pages',
+				'owner:pages:mail',
+				'pages',
+				'pages:mail',
+				'owner:pages:board',
+				'pages:board',
+				'owner:reference',
+				'owner:reference:components',
+				'owner:reference:components:details',
+				'reference',
+				'reference:components',
+			],
+		)
+		expect(buildCaptureTags([])).toEqual([])
+	})
+
+	it('refuses an owner that is not a canonical selector', () => {
+		expect(
+			readCaptureEvidenceFailure(() => buildCaptureTags(['pages:mail', 'pages::board', ''])),
+		).toMatchObject({ code: 'HOST', message: expect.stringContaining('"pages::board", ""') })
+	})
+})
+
+describe('buildCaptureCase', () => {
+	it('derives an owner-bearing case tags from its owner and its states parts', () => {
+		const options: TestOptions = buildCaptureCase(
+			{
+				owner: 'pages:mail',
+				states: ['mail-screen', 'mail-reader'],
+				variant: 'light-390',
+				timeout: 5000,
+			},
+			CAPTURE_RECORD_RULES,
+		)
+		expect(options).toEqual({
+			tags: ['owner:pages', 'owner:pages:mail', 'pages', 'pages:mail'],
+			meta: { owner: 'pages:mail', states: ['mail-screen', 'mail-reader'], variant: 'light-390' },
+			timeout: 5000,
+		})
+	})
+
+	it('derives a section owner and a scope owner whose states belong to one of its parts', () => {
+		expect(
+			buildCaptureCase(
+				{ owner: 'reference:components:details', states: ['details'], variant: 'light-390' },
+				CAPTURE_RECORD_RULES,
+			).tags,
+		).toEqual([
+			'owner:reference',
+			'owner:reference:components',
+			'owner:reference:components:details',
+			'reference',
+			'reference:components',
+		])
+		expect(
+			buildCaptureCase(
+				{ owner: 'pages', states: ['mail-screen'], variant: 'light-390', eligible: false },
+				CAPTURE_RECORD_RULES,
+			),
+		).toEqual({
+			tags: ['owner:pages', 'pages', 'pages:mail'],
+			meta: { owner: 'pages', states: ['mail-screen'], variant: 'light-390', eligible: false },
+		})
+	})
+
+	it('keeps an ownerless final case on the declared tags it names', () => {
+		const tags = buildCaptureTags(CAPTURE_RECORD_RULES.owners)
+		expect(
+			buildCaptureCase({ states: [], variant: 'light-390', tags }, CAPTURE_RECORD_RULES),
+		).toEqual({ tags: [...tags], meta: { states: [], variant: 'light-390' } })
+	})
+
+	it('refuses an undeclared owner, named tags beside an owner, and an undeclared tag', () => {
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureCase({ owner: 'pages:calendar', variant: 'light-390' }, CAPTURE_RECORD_RULES),
+			),
+		).toMatchObject({ code: 'HOST', message: expect.stringContaining('"pages:calendar"') })
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureCase(
+					{ owner: 'pages:mail', variant: 'light-390', tags: ['owner:pages:mail'] },
+					CAPTURE_RECORD_RULES,
+				),
+			),
+		).toMatchObject({ code: 'HOST', message: expect.stringContaining('derives its tags') })
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureCase(
+					{ states: [], variant: 'light-390', tags: ['pages:mail', 'pages:calendar'] },
+					CAPTURE_RECORD_RULES,
+				),
+			),
+		).toMatchObject({ code: 'HOST', message: expect.stringContaining('"pages:calendar"') })
+	})
+
+	it('refuses capture tags on a case that declares no states', () => {
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureCase({ variant: 'light-390', tags: ['pages'] }, CAPTURE_RECORD_RULES),
+			),
+		).toMatchObject({ code: 'HOST', message: expect.stringContaining('declares no states') })
+	})
+
+	it('refuses a state outside the owner and a state whose part is not a declared owner', () => {
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureCase(
+					{ owner: 'pages:mail', states: ['buttons-rest'], variant: 'light-390' },
+					CAPTURE_RECORD_RULES,
+				),
+			),
+		).toMatchObject({
+			code: 'HOST',
+			message: expect.stringContaining('buttons-rest belongs to reference:components:buttons'),
+		})
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureCase(
+					{ owner: 'shell:overview', states: ['overview-deep'], variant: 'light-390' },
+					CAPTURE_RECORD_RULES,
+				),
+			),
+		).toMatchObject({
+			code: 'HOST',
+			message: expect.stringContaining('shell:overview:hero:banner'),
+		})
+	})
+
+	it('lets the host part rule refuse a state it does not declare', () => {
+		expect(
+			captureError(() =>
+				buildCaptureCase(
+					{ owner: 'pages:mail', states: ['mail-unknown'], variant: 'light-390' },
+					CAPTURE_RECORD_RULES,
+				),
+			),
+		).toMatchObject({ message: 'Unknown fixture state: mail-unknown' })
+	})
+})
+
+describe('collectCaptureCases', () => {
+	it(
+		'names a real Vitest case by its suite and own titles and keeps its capture metadata',
+		{ meta: { owner: 'pages:mail', states: ['mail-screen'], variant: 'light-390' } },
+		({ task }) => {
+			const cases = collectCaptureCases(task.file)
+			const own = cases.find(
+				(entry) =>
+					entry.name ===
+					'collectCaptureCases names a real Vitest case by its suite and own titles and keeps its capture metadata',
+			)
+			expect(own).toMatchObject({
+				mode: 'run',
+				tags: [],
+				meta: { owner: 'pages:mail', states: ['mail-screen'], variant: 'light-390' },
+			})
+			expect(own?.result?.state).toBe('run')
+			expect(cases.some((entry) => entry.name.startsWith('describeCaptureError '))).toBe(true)
+		},
+	)
+
+	it('skips the file name, keeps filtered cases, and copies each result', () => {
+		expect(
+			collectCaptureCases({
+				name: 'tests/app/browser/integration.test.ts',
+				filepath: '/workspace/tests/app/browser/integration.test.ts',
+				mode: 'run',
+				meta: {},
+				tasks: [
+					{
+						name: 'mail',
+						mode: 'run',
+						meta: {},
+						tasks: [
+							{
+								name: 'opens the inbox',
+								mode: 'skip',
+								tags: ['owner:pages:mail'],
+								meta: { owner: 'pages:mail', states: ['mail-screen'], eligible: false },
+							},
+						],
+					},
+					{
+						name: 'closes the run',
+						mode: 'run',
+						meta: {},
+						result: { state: 'pass', duration: 3 },
+					},
+				],
+			}),
+		).toEqual([
+			{
+				name: 'mail opens the inbox',
+				mode: 'skip',
+				tags: ['owner:pages:mail'],
+				meta: { owner: 'pages:mail', states: ['mail-screen'], eligible: false },
+			},
+			{
+				name: 'closes the run',
+				mode: 'run',
+				tags: [],
+				meta: {},
+				result: { state: 'pass', duration: 3 },
+			},
+		])
+		expect(collectCaptureCases({ name: 'mail', mode: 'run', meta: {}, tasks: [] })).toEqual([])
+	})
+})
+
+describe('requireCaptureCases', () => {
+	it('accepts no selection, the all selector, an owner with no parked case, and an exact case', () => {
+		expect(
+			captureError(() => requireCaptureCases(CAPTURE_PARKING_CASES, CAPTURE_RECORD_RULES)),
+		).toBeUndefined()
+		for (const selection of [
+			{ selector: 'all' },
+			{ selector: 'shell' },
+			{ selector: 'pages:mail', case: 'Fixture mail opens the reader' },
+		])
+			expect(
+				captureError(() =>
+					requireCaptureCases(CAPTURE_PARKING_CASES, CAPTURE_RECORD_RULES, selection),
+				),
+			).toBeUndefined()
+	})
+
+	it('refuses a case owned outside the selection that places a selected state', () => {
+		for (const selector of ['pages:mail', 'pages'])
+			expect(
+				readCaptureEvidenceFailure(() =>
+					requireCaptureCases(CAPTURE_PARKING_CASES, CAPTURE_RECORD_RULES, { selector }),
+				),
+			).toMatchObject({
+				code: 'HOST',
+				message: expect.stringContaining(
+					'Fixture overview parks a mail state: owner shell:overview; foreign states mail-screen',
+				),
+			})
+	})
+
+	it('refuses a selector the host does not declare', () => {
+		expect(
+			readCaptureEvidenceFailure(() =>
+				requireCaptureCases(CAPTURE_PARKING_CASES, CAPTURE_RECORD_RULES, {
+					selector: 'pages:calendar',
+				}),
+			),
+		).toMatchObject({ code: 'SELECTION', message: expect.stringContaining('"pages:calendar"') })
+	})
+})
+
+describe('buildCaptureDestinations', () => {
+	it('maps each eligible owner-bearing state to its portfolio, variant, file, and sources', () => {
+		const destinations = buildCaptureDestinations(createRecordCases(), CAPTURE_RECORD_RULES, {
+			project: CAPTURE_RECORD_PROJECT,
+			portfolios: CAPTURE_RECORD_MAPPINGS,
+		})
+		expect(destinations.map((entry) => entry.state)).toEqual([
+			'mail-screen',
+			'mail-reader',
+			'buttons-rest',
+			'details',
+		])
+		expect(destinations[1]).toEqual({
+			portfolio: 'focused',
+			state: 'mail-reader',
+			scope: 'pages',
+			part: 'mail',
+			variant: 'light-320',
+			project: 'journey:light-390',
+			file: 'tmp/captures/focused/mail-reader--light-320.png',
+			case: CAPTURE_RECORD_NAMES.mail,
+			sources: createSourcesFixture({ own: ['src/pages/mail/**'] }),
+		})
+		expect(destinations[3]).toEqual({
+			portfolio: 'states',
+			state: 'details',
+			scope: 'reference',
+			part: 'components',
+			section: 'details',
+			variant: 'light-390',
+			project: 'journey:light-390',
+			file: 'tmp/captures/states/reference/details--light-390.png',
+			case: CAPTURE_RECORD_NAMES.details,
+			sources: createSourcesFixture({ own: ['src/reference/components/details/**'] }),
+		})
+	})
+
+	it('refuses a state with no mapping and a state with two', () => {
+		const options = { project: CAPTURE_RECORD_PROJECT, portfolios: CAPTURE_RECORD_MAPPINGS }
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureDestinations(createRecordCases(), CAPTURE_RECORD_RULES, {
+					...options,
+					portfolios: CAPTURE_RECORD_MAPPINGS.slice(0, 1),
+				}),
+			),
+		).toMatchObject({ code: 'HOST', message: expect.stringContaining('mail-reader') })
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureDestinations(createRecordCases(), CAPTURE_RECORD_RULES, {
+					...options,
+					portfolios: [...CAPTURE_RECORD_MAPPINGS, ...CAPTURE_RECORD_MAPPINGS.slice(1)],
+				}),
+			),
+		).toMatchObject({ code: 'HOST', message: expect.stringContaining('"focused", "focused"') })
+	})
+
+	it('refuses a state outside its case owner and an owner outside the scope, part, and section form', () => {
+		const options = { project: CAPTURE_RECORD_PROJECT, portfolios: CAPTURE_RECORD_MAPPINGS }
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureDestinations(
+					[
+						{
+							name: 'mail',
+							mode: 'run',
+							tags: [],
+							meta: { owner: 'pages:mail', states: ['arrival'] },
+						},
+					],
+					CAPTURE_RECORD_RULES,
+					options,
+				),
+			),
+		).toMatchObject({
+			code: 'HOST',
+			message: expect.stringContaining('arrival belongs to shell:overview'),
+		})
+		for (const [owner, state] of [
+			['shell', 'overview-flat'],
+			['shell:overview', 'overview-deep'],
+		] as const)
+			expect(
+				readCaptureEvidenceFailure(() =>
+					buildCaptureDestinations(
+						[{ name: 'shell', mode: 'run', tags: [], meta: { owner, states: [state] } }],
+						CAPTURE_RECORD_RULES,
+						{
+							...options,
+							portfolios: [{ ...requireValue(CAPTURE_RECORD_MAPPINGS[0]), states: [state] }],
+						},
+					),
+				),
+			).toMatchObject({ code: 'HOST', message: expect.stringContaining(state) })
+	})
+})
+
+describe('buildCaptureRun', () => {
+	it.each(CAPTURE_RECORD_SCENARIOS)('round-trips %s through the validator', (_label, scenario) => {
+		const { run, report } = createRecordRun(scenario)
+		expect(
+			captureError(() => validateCaptureRun(run, report, CAPTURE_RECORD_PROJECT)),
+		).toBeUndefined()
+		expect(isCaptureRun(parseJSON(JSON.stringify(run)))).toBe(true)
+	})
+
+	it('derives passed cases, completeness, reference completeness, and durations from the cases', () => {
+		const written = createRecordRun(
+			requireValue(new Map(CAPTURE_RECORD_SCENARIOS).get('a run that wrote each passed frame')),
+		)
+		expect(written.run).toMatchObject({
+			version: 1,
+			variant: 'light-390',
+			time: CAPTURE_RECORD_TIME,
+			complete: false,
+			reference: true,
+			passed: [CAPTURE_RECORD_NAMES.mail, CAPTURE_RECORD_NAMES.details],
+			observed: ['mail-screen', 'mail-reader', 'details'],
+		})
+		expect(written.run.identity).toBeUndefined()
+		expect(written.run.declarations.map((entry) => [entry.case, entry.eligible])).toEqual([
+			[CAPTURE_RECORD_NAMES.mail, true],
+			[CAPTURE_RECORD_NAMES.buttons, true],
+			[CAPTURE_RECORD_NAMES.files, false],
+			[CAPTURE_RECORD_NAMES.details, true],
+		])
+		expect(written.run.entries.map((entry) => [entry.state, entry.duration])).toEqual([
+			['mail-screen', 12],
+			['mail-reader', 12],
+			['details', 7],
+		])
+		expect(
+			createRecordRun(requireValue(new Map(CAPTURE_RECORD_SCENARIOS).get('a complete run'))).run
+				.complete,
+		).toBe(true)
+	})
+
+	it('binds a requested run to its request identity and keeps the destination file', () => {
+		const { run } = createRecordRun(
+			requireValue(
+				new Map(CAPTURE_RECORD_SCENARIOS).get(
+					'a capture of one requested state written at an absolute provider path',
+				),
+			),
+		)
+		expect(run.identity).toEqual(createIdentityFixture())
+		expect(run.request).toEqual(createRequestFixture({ state: 'mail-reader' }))
+		expect(run.entries.map((entry) => entry.file)).toEqual([
+			'tmp/captures/focused/mail-reader--light-320.png',
+		])
+	})
+
+	it.each(CAPTURE_RECORD_MUTATIONS)('lets the validator refuse %s', (_label, scenario, mutate) => {
+		const { run, report } = createRecordRun(
+			requireValue(new Map(CAPTURE_RECORD_SCENARIOS).get(scenario)),
+		)
+		expect(
+			captureError(() => validateCaptureRun(run, report, CAPTURE_RECORD_PROJECT)),
+		).toBeUndefined()
+		expect(
+			readCaptureEvidenceFailure(() =>
+				validateCaptureRun(mutate(run), report, CAPTURE_RECORD_PROJECT),
+			),
+		).toMatchObject({ code: 'EVIDENCE' })
+	})
+
+	it('refuses an emitted state with no destination and a producing case with no duration', () => {
+		const { cases, registry } = createRecordRun(
+			requireValue(new Map(CAPTURE_RECORD_SCENARIOS).get('a run that wrote each passed frame')),
+		)
+		const base = { cases, registry, observed: [], variant: 'light-390', time: CAPTURE_RECORD_TIME }
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureRun({
+					...base,
+					emitted: [['board-lanes', 'tmp/captures/states/pages/board-lanes--light-390.png']],
+				}),
+			),
+		).toMatchObject({ code: 'EVIDENCE', message: expect.stringContaining('board-lanes') })
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureRun({
+					...base,
+					cases: cases.map((entry) =>
+						entry.name === CAPTURE_RECORD_NAMES.details
+							? { ...entry, result: { state: 'pass' } }
+							: entry,
+					),
+					emitted: [['details', 'tmp/captures/states/reference/details--light-390.png']],
+				}),
+			),
+		).toMatchObject({
+			code: 'EVIDENCE',
+			message: expect.stringContaining(CAPTURE_RECORD_NAMES.details),
+		})
+	})
+
+	it('refuses an emitted path other than its destination file', () => {
+		const { cases, registry } = createRecordRun(
+			requireValue(new Map(CAPTURE_RECORD_SCENARIOS).get('a run that wrote each passed frame')),
+		)
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureRun({
+					cases,
+					registry,
+					observed: ['mail-screen', 'mail-reader', 'details'],
+					emitted: [['mail-reader', 'tmp/captures/states/pages/mail-reader--light-390.png']],
+					variant: 'light-390',
+					time: CAPTURE_RECORD_TIME,
+				}),
+			),
+		).toMatchObject({
+			code: 'EVIDENCE',
+			message: expect.stringContaining('tmp/captures/focused/mail-reader--light-320.png'),
+		})
+	})
+
+	it('refuses an owner-bearing case that declares no variant', () => {
+		expect(
+			readCaptureEvidenceFailure(() =>
+				buildCaptureRun({
+					cases: [{ name: 'mail', mode: 'run', tags: [], meta: { owner: 'pages:mail' } }],
+					registry: [],
+					observed: [],
+					emitted: [],
+					variant: 'light-390',
+					time: CAPTURE_RECORD_TIME,
+				}),
+			),
+		).toMatchObject({ code: 'HOST', message: expect.stringContaining('mail') })
+	})
+})
+
+describe('renderCaptureArtifact', () => {
+	it('renders the record binding and one line per passed case', () => {
+		expect(
+			renderCaptureArtifact('tmp/captures/states/runs/run-1/selected/light-390.json', {
+				passed: [CAPTURE_RECORD_NAMES.mail, CAPTURE_RECORD_NAMES.details],
+			}),
+		).toEqual([
+			'record=tmp/captures/states/runs/run-1/selected/light-390.json',
+			`case-ran=${CAPTURE_RECORD_NAMES.mail}`,
+			`case-ran=${CAPTURE_RECORD_NAMES.details}`,
+		])
+		expect(renderCaptureArtifact('tmp/run.json', { passed: [] })).toEqual(['record=tmp/run.json'])
+	})
+
+	it('renders lines the artifact reader reads back under either line ending', () => {
+		const record = 'tmp/captures/states/runs/run-1/selected/light-390.json'
+		const passed = [CAPTURE_RECORD_NAMES.mail, CAPTURE_RECORD_NAMES.details]
+		for (const ending of ['\n', '\r\n'])
+			expect(
+				readCaptureArtifact(
+					[
+						'# light-390',
+						'coverage=complete',
+						...renderCaptureArtifact(record, { passed }),
+						'recorded=elsewhere',
+						'## Journal',
+						'',
+					].join(ending),
+				),
+			).toEqual({ records: [record], cases: passed })
+	})
+
+	it('refuses a record path or a case name that a line cannot carry', () => {
+		expect(
+			readCaptureEvidenceFailure(() => renderCaptureArtifact('../escape.json', { passed: [] })),
+		).toMatchObject({ code: 'EVIDENCE', message: expect.stringContaining('"../escape.json"') })
+		expect(
+			readCaptureEvidenceFailure(() =>
+				renderCaptureArtifact('tmp/run.json', { passed: ['mail\ncase-ran=board', 'mail\rreader'] }),
+			),
+		).toMatchObject({
+			code: 'EVIDENCE',
+			message: expect.stringContaining('"mail\\ncase-ran=board", "mail\\rreader"'),
+		})
+	})
+})
+
+describe('readCaptureArtifact', () => {
+	it('reads each record binding and ran case in text order and ignores every other line', () => {
+		expect(
+			readCaptureArtifact(
+				'# light-390\nrecord=tmp/a.json\r\ncase-ran=mail\ncase-ran=\nrecord=tmp/b.json.foreign\nrecorded=tmp/c.json\n',
+			),
+		).toEqual({ records: ['tmp/a.json', 'tmp/b.json.foreign'], cases: ['mail', ''] })
+		expect(readCaptureArtifact('')).toEqual({ records: [], cases: [] })
 	})
 })

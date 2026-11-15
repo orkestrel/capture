@@ -190,6 +190,22 @@ export interface CaptureArtifact {
 }
 
 /**
+ * Carries the run records a journey artifact binds and the cases it shows ran.
+ *
+ * @example
+ * ```ts
+ * const lines: CaptureArtifactLines = {
+ * 	records: ['tmp/captures/states/runs/run-1/selected/light-390.json'],
+ * 	cases: ['mail opens the inbox'],
+ * }
+ * ```
+ */
+export interface CaptureArtifactLines {
+	readonly records: readonly string[]
+	readonly cases: readonly string[]
+}
+
+/**
  * Records collected declarations, successful observations, and emitted output separately.
  *
  * @example
@@ -475,4 +491,276 @@ export interface CaptureReport {
 	readonly start: number
 	readonly end: number
 	readonly assertions: readonly CaptureAssertion[]
+}
+
+/**
+ * Supplies a host-authorized physical portfolio root without repeating its states or variants.
+ *
+ * @example
+ * ```ts
+ * const root: CapturePortfolioRoot = { portfolio: 'states', directory: 'tmp/captures/states', scoped: true }
+ * ```
+ */
+export interface CapturePortfolioRoot {
+	readonly portfolio: string
+	readonly directory: string
+	readonly scoped: boolean
+}
+
+/**
+ * Maps the states one portfolio writes to its output variant and physical root.
+ *
+ * @example
+ * ```ts
+ * const mapping: CaptureMapping = {
+ * 	portfolio: 'states',
+ * 	directory: 'tmp/captures/states',
+ * 	scoped: true,
+ * 	variant: 'light-390',
+ * 	states: ['inbox'],
+ * }
+ * ```
+ */
+export interface CaptureMapping extends CapturePortfolioRoot {
+	readonly variant: string
+	readonly states: readonly string[]
+}
+
+/**
+ * Declares the capture metadata a journey case carries in Vitest's task metadata.
+ *
+ * @remarks
+ * Extend Vitest's `TaskMeta` with it in the workspace's own module declaration, so a case's
+ * `meta` option and every collected task carry these fields.
+ *
+ * @example
+ * ```ts
+ * const meta: CaptureMeta = { owner: 'pages:mail', states: ['inbox'], variant: 'light-390' }
+ * ```
+ */
+export interface CaptureMeta {
+	readonly owner?: string
+	readonly states?: readonly string[]
+	readonly variant?: string
+	readonly eligible?: boolean
+}
+
+/**
+ * Declares the values a journey wrapper provides to each project, which the runner and the suite read.
+ *
+ * @remarks
+ * Extend Vitest's `ProvidedContext` with it in the workspace's own module declaration. `request` is
+ * present only when a runner is the parent, and `capture` reports whether frames are written.
+ *
+ * @example
+ * ```ts
+ * const provided: CaptureProvided = {
+ * 	variant: 'light-390',
+ * 	variants: [{ name: 'light-390', width: 390, height: 844 }],
+ * 	directory: 'tmp/captures/states',
+ * 	record: 'tmp/captures/states/runs/run-1/selected/light-390.json',
+ * 	inputs: ['src/**'],
+ * 	final: 'closes the run',
+ * 	first: 'light-390',
+ * 	portfolios: [{ portfolio: 'states', directory: 'tmp/captures/states', scoped: true }],
+ * 	capture: false,
+ * }
+ * ```
+ */
+export interface CaptureProvided {
+	readonly variant: string
+	readonly variants: readonly CaptureViewport[]
+	readonly directory: string
+	readonly record: string
+	readonly inputs: readonly string[]
+	readonly final: string
+	readonly first: string
+	readonly uniform?: readonly string[]
+	readonly portfolios: readonly CapturePortfolioRoot[]
+	readonly standalone?: readonly CapturePortfolioRoot[]
+	readonly capture: boolean
+	readonly request?: CaptureRequest
+}
+
+/**
+ * Mirrors the members of Vitest's `TaskResult` that a run record reads.
+ *
+ * @example
+ * ```ts
+ * const result: CaptureTaskResult = { state: 'pass', duration: 812 }
+ * ```
+ */
+export interface CaptureTaskResult {
+	readonly state: string
+	readonly duration?: number
+}
+
+/**
+ * Mirrors the members of a Vitest file, suite, or test task that case collection reads.
+ *
+ * @remarks
+ * A Vitest `RunnerTask` satisfies it when the workspace's `TaskMeta` extends `CaptureMeta`. A task with
+ * `filepath` is a file, and a task with `tasks` is a file or a suite.
+ *
+ * @example
+ * ```ts
+ * const task: CaptureTask = { name: 'opens the inbox', mode: 'run', meta: { owner: 'pages:mail' } }
+ * ```
+ */
+export interface CaptureTask {
+	readonly name: string
+	readonly mode: string
+	readonly tags?: readonly string[]
+	readonly meta: CaptureMeta
+	readonly result?: CaptureTaskResult
+	readonly filepath?: string
+	readonly tasks?: readonly CaptureTask[]
+}
+
+/**
+ * Carries one collected case, including a case a runner filter excluded.
+ *
+ * @example
+ * ```ts
+ * const entry: CaptureCase = {
+ * 	name: 'mail opens the inbox',
+ * 	mode: 'run',
+ * 	tags: ['owner:pages', 'owner:pages:mail', 'pages', 'pages:mail'],
+ * 	meta: { owner: 'pages:mail', states: ['inbox'], variant: 'light-390' },
+ * 	result: { state: 'pass', duration: 812 },
+ * }
+ * ```
+ */
+export interface CaptureCase {
+	readonly name: string
+	readonly mode: string
+	readonly tags: readonly string[]
+	readonly meta: CaptureMeta
+	readonly result?: CaptureTaskResult
+}
+
+/**
+ * Supplies one case's owner, states, producing variant, and harness registration values.
+ *
+ * @remarks
+ * An owner-bearing case derives its tags from its owner and states; a case without an owner, such
+ * as the final case, names its tags.
+ *
+ * @example
+ * ```ts
+ * const input: CaptureCaseInput = { owner: 'pages:mail', states: ['inbox'], variant: 'light-390' }
+ * ```
+ */
+export interface CaptureCaseInput {
+	readonly owner?: string
+	readonly states?: readonly string[]
+	readonly variant: string
+	readonly eligible?: boolean
+	readonly timeout?: number
+	readonly tags?: readonly string[]
+}
+
+/**
+ * Carries the Vitest test options a capture case registers with.
+ *
+ * @remarks
+ * `tags` is a mutable array because Vitest's `TestOptions` declares its `tags` member that way.
+ *
+ * @example
+ * ```ts
+ * const options: CaptureTestOptions = {
+ * 	tags: ['owner:pages', 'owner:pages:mail', 'pages', 'pages:mail'],
+ * 	meta: { owner: 'pages:mail', states: ['inbox'], variant: 'light-390' },
+ * }
+ * ```
+ */
+export interface CaptureTestOptions {
+	readonly tags: string[]
+	readonly meta: CaptureMeta
+	readonly timeout?: number
+}
+
+/**
+ * Resolves a declared state to the canonical owner path of the part that renders it.
+ *
+ * @remarks Throw for a state the host does not declare.
+ *
+ * @example
+ * ```ts
+ * const part: CapturePartHandler = (state) => (state.startsWith('inbox') ? 'pages:mail' : 'pages:board')
+ * ```
+ */
+export type CapturePartHandler = (state: string) => string
+
+/**
+ * Resolves a canonical owner path to its own, shared, and behavioral source attribution.
+ *
+ * @remarks Throw for an owner the host does not attribute.
+ *
+ * @example
+ * ```ts
+ * const sources: CaptureSourcesHandler = (owner) => ({ own: [`src/${owner.split(':')[1]}/**`], shared: [], tests: [] })
+ * ```
+ */
+export type CaptureSourcesHandler = (owner: string) => CaptureSources
+
+/**
+ * Supplies the host's owner population and its part and source resolvers.
+ *
+ * @remarks
+ * `owners` lists every canonical owner path the host declares. `part` and `sources` carry the
+ * product rules the package never infers.
+ *
+ * @example
+ * ```ts
+ * const rules: CaptureRules = { owners: ['pages:mail'], part: () => 'pages:mail', sources }
+ * ```
+ */
+export interface CaptureRules {
+	readonly owners: readonly string[]
+	readonly part: CapturePartHandler
+	readonly sources: CaptureSourcesHandler
+}
+
+/**
+ * Configures the producing project and the portfolio mappings of a destination build.
+ *
+ * @example
+ * ```ts
+ * const options: CaptureDestinationOptions = { project: 'journey:light-390', portfolios: [mapping] }
+ * ```
+ */
+export interface CaptureDestinationOptions {
+	readonly project: string
+	readonly portfolios: readonly CaptureMapping[]
+}
+
+/**
+ * Supplies the collected cases, the destinations, and the observed and emitted states of one run record.
+ *
+ * @remarks
+ * `observed` lists every state the run placed, whether or not it wrote a frame. `emitted` pairs
+ * each written state with the path its portfolio wrote. `time` is an ISO 8601 timestamp, and
+ * `request` is the runner request the wrapper provided.
+ *
+ * @example
+ * ```ts
+ * const options: CaptureRunOptions = {
+ * 	cases,
+ * 	registry,
+ * 	observed: ['inbox'],
+ * 	emitted: [['inbox', 'tmp/captures/states/pages/inbox--light-390.png']],
+ * 	variant: 'light-390',
+ * 	time: '2026-11-15T09:00:00.000Z',
+ * }
+ * ```
+ */
+export interface CaptureRunOptions {
+	readonly cases: readonly CaptureCase[]
+	readonly registry: readonly CaptureDestination[]
+	readonly observed: readonly string[]
+	readonly emitted: ReadonlyArray<readonly [state: string, path: string]>
+	readonly variant: string
+	readonly time: string
+	readonly request?: CaptureRequest
 }

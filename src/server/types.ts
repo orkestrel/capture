@@ -7,6 +7,7 @@ import type {
 	CaptureDigest,
 	CaptureFreshness,
 	CaptureLookup,
+	CapturePortfolioRoot,
 	CaptureReceipt,
 	CaptureRegistry,
 	CaptureRequest,
@@ -27,20 +28,6 @@ import type {
  * ```
  */
 export type CaptureCommand = CaptureRequest['command'] | 'stale'
-
-/**
- * Supplies a host-authorized physical portfolio root without repeating its states or variants.
- *
- * @example
- * ```ts
- * const root: CapturePortfolioRoot = { portfolio: 'states', directory: 'tmp/captures/states', scoped: true }
- * ```
- */
-export interface CapturePortfolioRoot {
-	readonly portfolio: string
-	readonly directory: string
-	readonly scoped: boolean
-}
 
 /**
  * Digests the exact bytes of one file reading and returns the lowercase hexadecimal digest.

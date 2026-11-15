@@ -1,20 +1,27 @@
 import type { CaptureImageResult, CapturePicture } from '@src/server'
 import type {
+	CaptureCase,
 	CaptureDeclaration,
 	CaptureDestination,
 	CaptureIdentity,
 	CaptureLookup,
 	CaptureManifest,
+	CaptureMapping,
+	CaptureMeta,
+	CaptureProvided,
 	CaptureReceipt,
 	CaptureReport,
 	CaptureRegistry,
 	CaptureRequest,
+	CaptureRules,
 	CaptureRun,
 	CaptureSources,
 	CaptureStamp,
 } from '@src/core'
 import { captureError } from '@orkestrel/test'
 import {
+	buildCaptureDestinations,
+	buildCaptureRun,
 	CaptureError,
 	isCaptureError,
 	readCaptureReport,
@@ -38,6 +45,10 @@ import {
 	isCaptureGeometry,
 	isCaptureBox,
 } from '@src/core'
+
+declare module 'vitest' {
+	interface TaskMeta extends CaptureMeta {}
+}
 
 /** Holds a valid SHA-256 digest every fixture reuses. */
 export const FIXTURE_HASH = 'a'.repeat(64)
@@ -683,17 +694,418 @@ export const CAPTURE_GUARD_CASES: ReadonlyArray<
 	],
 ]
 
+/** Lists the owner paths the record fixtures declare, a section owner and a shell owner included. */
+export const CAPTURE_RECORD_OWNERS: readonly string[] = Object.freeze([
+	'pages:mail',
+	'pages:board',
+	'reference:components:buttons',
+	'reference:components:details',
+	'examples:files',
+	'shell:overview',
+])
+
+/** Maps each fixture state to the owner path of the part that renders it. */
+export const CAPTURE_RECORD_PARTS: Readonly<Record<string, string>> = Object.freeze({
+	'mail-screen': 'pages:mail',
+	'mail-reader': 'pages:mail',
+	'board-lanes': 'pages:board',
+	'buttons-rest': 'reference:components:buttons',
+	details: 'reference:components:details',
+	'files-empty': 'examples:files',
+	arrival: 'shell:overview',
+	'overview-deep': 'shell:overview:hero:banner',
+	'overview-flat': 'shell',
+})
+
+/**
+ * Resolves a fixture state to its part's owner path, as a host's injected part rule does.
+ *
+ * @param state - The declared state
+ * @returns The owner path `CAPTURE_RECORD_PARTS` maps the state to
+ * @throws Thrown when the fixture table declares no such state.
+ */
+export function resolveRecordPart(state: string): string {
+	const owner = CAPTURE_RECORD_PARTS[state]
+	if (owner === undefined) throw new Error(`Unknown fixture state: ${state}`)
+	return owner
+}
+
+/**
+ * Attributes a fixture owner's own, shared, and behavioral sources, as a host's injected source rule does.
+ *
+ * @param owner - The canonical owner path
+ * @returns Sources whose own pattern spells the owner path as directories
+ */
+export function resolveRecordSources(owner: string): CaptureSources {
+	return createSourcesFixture({ own: [`src/${owner.replaceAll(':', '/')}/**`] })
+}
+
+/** Supplies the host rules every record helper proof injects. */
+export const CAPTURE_RECORD_RULES: CaptureRules = Object.freeze({
+	owners: CAPTURE_RECORD_OWNERS,
+	part: resolveRecordPart,
+	sources: resolveRecordSources,
+})
+
+/** Names the producing project of the record fixtures. */
+export const CAPTURE_RECORD_PROJECT = 'journey:light-390'
+
+/** Maps each fixture state to a scoped primary portfolio or an unscoped narrow-variant portfolio. */
+export const CAPTURE_RECORD_MAPPINGS: readonly CaptureMapping[] = Object.freeze([
+	{
+		portfolio: 'states',
+		directory: 'tmp/captures/states',
+		scoped: true,
+		variant: 'light-390',
+		states: ['mail-screen', 'buttons-rest', 'details', 'files-empty', 'arrival', 'board-lanes'],
+	},
+	{
+		portfolio: 'focused',
+		directory: 'tmp/captures/focused',
+		scoped: false,
+		variant: 'light-320',
+		states: ['mail-reader'],
+	},
+])
+
+/** Names the full case names the record fixtures declare. */
+export const CAPTURE_RECORD_NAMES = Object.freeze({
+	mail: 'Fixture mail opens the reader',
+	buttons: 'Fixture buttons rest',
+	files: 'Fixture files stay empty',
+	details: 'Fixture details open',
+	final: 'Fixture closes the run',
+})
+
+/**
+ * Creates the collected cases of one fixture run: a passed page, a filtered reference part, an
+ * ineligible example, a passed reference section, and an ownerless final case.
+ *
+ * @param passed - The owner-bearing case names that ran and passed; every other one was filtered out. Default: the page and the section
+ * @returns The collected cases in declaration order
+ */
+export function createRecordCases(
+	passed: readonly string[] = [CAPTURE_RECORD_NAMES.mail, CAPTURE_RECORD_NAMES.details],
+): readonly CaptureCase[] {
+	const declared: ReadonlyArray<readonly [string, CaptureMeta, number]> = [
+		[
+			CAPTURE_RECORD_NAMES.mail,
+			{ owner: 'pages:mail', states: ['mail-screen', 'mail-reader'], variant: 'light-390' },
+			12,
+		],
+		[
+			CAPTURE_RECORD_NAMES.buttons,
+			{ owner: 'reference:components:buttons', states: ['buttons-rest'], variant: 'light-390' },
+			9,
+		],
+		[
+			CAPTURE_RECORD_NAMES.files,
+			{ owner: 'examples:files', states: ['files-empty'], variant: 'light-390', eligible: false },
+			4,
+		],
+		[
+			CAPTURE_RECORD_NAMES.details,
+			{ owner: 'reference:components:details', states: ['details'], variant: 'light-390' },
+			7,
+		],
+	]
+	return [
+		...declared.map(([name, meta, duration]): CaptureCase => {
+			const ran = passed.includes(name)
+			return {
+				name,
+				mode: ran ? 'run' : 'skip',
+				tags: [],
+				meta,
+				...(ran ? { result: { state: 'pass', duration } } : {}),
+			}
+		}),
+		{
+			name: CAPTURE_RECORD_NAMES.final,
+			mode: 'run',
+			tags: [],
+			meta: { variant: 'light-390' },
+			result: { state: 'pass', duration: 30 },
+		},
+	]
+}
+
+/** Maps a Vitest task state or mode to its JSON reporter status, as Vitest's own status map does. */
+export const CAPTURE_RECORD_STATUSES: Readonly<Record<string, string>> = Object.freeze({
+	pass: 'passed',
+	fail: 'failed',
+	skip: 'skipped',
+	todo: 'todo',
+	run: 'pending',
+	only: 'pending',
+	queued: 'pending',
+})
+
+/**
+ * Projects collected cases into the Vitest JSON reporter document their run writes.
+ *
+ * @param cases - The collected cases
+ * @returns The reporter document, with Vitest's status for each case's state or mode
+ */
+export function createRecordReport(cases: readonly CaptureCase[]): Record<string, unknown> {
+	return createVitestFixture(
+		cases.map((entry) => ({
+			fullName: entry.name,
+			status: CAPTURE_RECORD_STATUSES[entry.result?.state ?? entry.mode] ?? 'pending',
+			...(entry.result?.duration === undefined ? {} : { duration: entry.result.duration }),
+			meta: entry.meta,
+		})),
+	)
+}
+
+/** Describes one record round trip: the cases, observed states, emitted pairs, and request of a run. */
+export interface CaptureRecordScenario {
+	readonly passed: readonly string[]
+	readonly observed: readonly string[]
+	readonly emitted: ReadonlyArray<readonly [state: string, path: string]>
+	readonly request?: CaptureRequest
+}
+
+/** Lists the record round trips: a capture-on run, a capture-off run, a journey, a one-state capture, and a complete run. */
+export const CAPTURE_RECORD_SCENARIOS: ReadonlyArray<readonly [string, CaptureRecordScenario]> =
+	Object.freeze([
+		[
+			'a run that wrote each passed frame',
+			{
+				passed: [CAPTURE_RECORD_NAMES.mail, CAPTURE_RECORD_NAMES.details],
+				observed: ['mail-screen', 'mail-reader', 'details'],
+				emitted: [
+					['mail-screen', 'tmp/captures/states/pages/mail-screen--light-390.png'],
+					['mail-reader', 'tmp/captures/focused/mail-reader--light-320.png'],
+					['details', 'tmp/captures/states/reference/details--light-390.png'],
+				],
+			},
+		],
+		[
+			'a run with capture off',
+			{
+				passed: [CAPTURE_RECORD_NAMES.mail, CAPTURE_RECORD_NAMES.details],
+				observed: ['mail-screen', 'mail-reader', 'details'],
+				emitted: [],
+			},
+		],
+		[
+			'a journey selection of one owner',
+			{
+				passed: [CAPTURE_RECORD_NAMES.mail],
+				observed: ['mail-screen', 'mail-reader'],
+				emitted: [],
+				request: createRequestFixture({ command: 'journey', stage: 'selected' }),
+			},
+		],
+		[
+			'a capture of one requested state written at an absolute provider path',
+			{
+				passed: [CAPTURE_RECORD_NAMES.mail],
+				observed: ['mail-screen', 'mail-reader'],
+				emitted: [['mail-reader', 'C:\\work\\tmp\\captures\\focused\\mail-reader--light-320.png']],
+				request: createRequestFixture({ state: 'mail-reader' }),
+			},
+		],
+		[
+			'a complete run',
+			{
+				passed: [
+					CAPTURE_RECORD_NAMES.mail,
+					CAPTURE_RECORD_NAMES.buttons,
+					CAPTURE_RECORD_NAMES.details,
+				],
+				observed: ['mail-screen', 'mail-reader', 'buttons-rest', 'details'],
+				emitted: [
+					['mail-screen', 'tmp/captures/states/pages/mail-screen--light-390.png'],
+					['mail-reader', 'tmp/captures/focused/mail-reader--light-320.png'],
+					['buttons-rest', 'tmp/captures/states/reference/buttons-rest--light-390.png'],
+					['details', 'tmp/captures/states/reference/details--light-390.png'],
+				],
+			},
+		],
+	])
+
+/** Holds the timestamp every fixture record carries. */
+export const CAPTURE_RECORD_TIME = '2026-11-15T09:00:00.000Z'
+
+/** Carries the cases, destinations, built record, and reporter projection of one record scenario. */
+export interface CaptureRecordFixture {
+	readonly cases: readonly CaptureCase[]
+	readonly registry: readonly CaptureDestination[]
+	readonly run: CaptureRun
+	readonly report: CaptureReport
+}
+
+/**
+ * Builds a scenario's record through the real destination and run builders, beside its reporter.
+ *
+ * @param scenario - The passed cases, observed states, emitted pairs, and request of the run
+ * @returns The collected cases, the destinations, the record, and the read reporter document
+ */
+export function createRecordRun(scenario: CaptureRecordScenario): CaptureRecordFixture {
+	const cases = createRecordCases(scenario.passed)
+	const registry = buildCaptureDestinations(cases, CAPTURE_RECORD_RULES, {
+		project: CAPTURE_RECORD_PROJECT,
+		portfolios: CAPTURE_RECORD_MAPPINGS,
+	})
+	return {
+		cases,
+		registry,
+		run: buildCaptureRun({
+			cases,
+			registry,
+			observed: scenario.observed,
+			emitted: scenario.emitted,
+			variant: 'light-390',
+			time: CAPTURE_RECORD_TIME,
+			...(scenario.request === undefined ? {} : { request: scenario.request }),
+		}),
+		report: readCaptureReport(createRecordReport(cases)),
+	}
+}
+
+/** Lists record mutations the validator must refuse, each with the scenario it mutates. */
+export const CAPTURE_RECORD_MUTATIONS: ReadonlyArray<
+	readonly [string, string, (run: CaptureRun) => CaptureRun]
+> = Object.freeze([
+	[
+		'an observed state removed',
+		'a run that wrote each passed frame',
+		(run) => ({ ...run, observed: run.observed.slice(1) }),
+	],
+	[
+		'a passed case removed',
+		'a run that wrote each passed frame',
+		(run) => ({ ...run, passed: run.passed.slice(1) }),
+	],
+	[
+		'completeness claimed',
+		'a run that wrote each passed frame',
+		(run) => ({ ...run, complete: true }),
+	],
+	[
+		'reference completeness denied',
+		'a run that wrote each passed frame',
+		(run) => ({ ...run, reference: false }),
+	],
+	[
+		'an emitted duration changed',
+		'a run that wrote each passed frame',
+		(run) => ({
+			...run,
+			entries: run.entries.map((entry) => ({ ...entry, duration: entry.duration + 1 })),
+		}),
+	],
+	[
+		'an emitted entry removed',
+		'a run that wrote each passed frame',
+		(run) => ({ ...run, entries: run.entries.slice(1) }),
+	],
+	[
+		'a declaration state added',
+		'a run that wrote each passed frame',
+		(run) => ({
+			...run,
+			declarations: run.declarations.map((entry, index) =>
+				index === 0 ? { ...entry, states: [...entry.states, 'board-lanes'] } : entry,
+			),
+		}),
+	],
+	[
+		'a declaration variant changed',
+		'a run that wrote each passed frame',
+		(run) => ({
+			...run,
+			declarations: run.declarations.map((entry) => ({ ...entry, variant: 'dark-390' })),
+		}),
+	],
+	[
+		'a destination moved to another project',
+		'a run that wrote each passed frame',
+		(run) => ({
+			...run,
+			registry: run.registry.map((entry) => ({ ...entry, project: 'journey:dark-390' })),
+		}),
+	],
+	[
+		'an entry emitted by a journey',
+		'a journey selection of one owner',
+		(run) => ({
+			...run,
+			entries: run.registry.slice(0, 1).map((entry) => ({ ...entry, duration: 12 })),
+		}),
+	],
+	[
+		'an identity from another invocation',
+		'a capture of one requested state written at an absolute provider path',
+		(run) => ({ ...run, identity: createIdentityFixture({ id: 'run-2' }) }),
+	],
+])
+
+/** Supplies the values a wrapper provides to the record fixtures' project, typed as the core protocol declares them. */
+export const CAPTURE_PROVIDED_FIXTURE: CaptureProvided = Object.freeze({
+	variant: 'light-390',
+	variants: [
+		{ name: 'light-390', width: 390, height: 844 },
+		{ name: 'light-320', width: 320, height: 640 },
+	],
+	directory: 'tmp/captures/states',
+	record: 'tmp/captures/states/runs/run-1/selected/light-390.json',
+	inputs: ['src/**', 'tests/setup.ts'],
+	final: CAPTURE_RECORD_NAMES.final,
+	first: 'light-390',
+	uniform: ['pages'],
+	portfolios: CAPTURE_RECORD_MAPPINGS.map(({ portfolio, directory, scoped }) => ({
+		portfolio,
+		directory,
+		scoped,
+	})),
+	capture: true,
+	request: createRequestFixture(),
+})
+
+/** Supplies a case owned outside the selection that places a selected state, beside a case that does not. */
+export const CAPTURE_PARKING_CASES: readonly CaptureCase[] = Object.freeze([
+	{
+		name: 'Fixture overview parks a mail state',
+		mode: 'skip',
+		tags: [],
+		meta: { owner: 'shell:overview', states: ['arrival', 'mail-screen'], variant: 'light-390' },
+	},
+	{
+		name: 'Fixture mail opens the reader',
+		mode: 'run',
+		tags: [],
+		meta: { owner: 'pages:mail', states: ['mail-reader'], variant: 'light-390' },
+	},
+	{
+		name: 'Fixture closes the run',
+		mode: 'run',
+		tags: [],
+		meta: { variant: 'light-390' },
+	},
+])
+
 export const CAPTURE_CORE_VALUES = [
+	'CAPTURE_ARTIFACT_PREFIXES',
 	'CAPTURE_ERROR_BRAND',
 	'CAPTURE_ERROR_CODES',
 	'CAPTURE_LOOKUPS_FILE',
 	'CAPTURE_MANIFEST_FILE',
+	'CAPTURE_OWNER_PREFIX',
 	'CAPTURE_PNG_SIGNATURE',
 	'CAPTURE_REGISTRY_FILE',
 	'CAPTURE_REQUEST_PREFIX',
 	'CAPTURE_STATUS_PRECEDENCE',
 	'CAPTURE_VERSION',
 	'CaptureError',
+	'buildCaptureCase',
+	'buildCaptureDestinations',
+	'buildCaptureRun',
+	'buildCaptureTags',
+	'collectCaptureAncestors',
+	'collectCaptureCases',
 	'collectCaptureChanges',
 	'collectCaptureDuplicates',
 	'describeCaptureDeclaration',
@@ -729,8 +1141,11 @@ export const CAPTURE_CORE_VALUES = [
 	'isCaptureStoredManifest',
 	'matchesCaptureMembers',
 	'matchesCaptureSelector',
+	'readCaptureArtifact',
 	'readCaptureDirty',
 	'readCaptureReport',
+	'renderCaptureArtifact',
+	'requireCaptureCases',
 	'requireCaptureUnique',
 	'resolveCaptureKey',
 	'resolveCaptureOwner',

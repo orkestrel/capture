@@ -116,3 +116,30 @@ export const CAPTURE_MANIFEST_FILE = 'manifest.json'
  * ```
  */
 export const CAPTURE_LOOKUPS_FILE = 'lookups.json'
+
+/**
+ * Names the tag prefix that marks a case's owner path and each ancestor of it.
+ *
+ * @example
+ * ```ts
+ * `${CAPTURE_OWNER_PREFIX}pages:mail` // 'owner:pages:mail'
+ * ```
+ */
+export const CAPTURE_OWNER_PREFIX = 'owner:'
+
+/**
+ * Names the journey artifact line prefixes that bind a run record and each case that ran.
+ *
+ * @remarks
+ * The preflight reader requires the line `record=<record path>` and one `case-ran=<full name>`
+ * line for each stamping case.
+ *
+ * @example
+ * ```ts
+ * `${CAPTURE_ARTIFACT_PREFIXES.case}mail opens the inbox` // 'case-ran=mail opens the inbox'
+ * ```
+ */
+export const CAPTURE_ARTIFACT_PREFIXES = Object.freeze({
+	record: 'record=',
+	case: 'case-ran=',
+} as const)

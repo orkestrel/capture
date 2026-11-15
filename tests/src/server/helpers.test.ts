@@ -115,6 +115,7 @@ import {
 	createReceiptFixture,
 	createRegistryFixture,
 	createVitestFixture,
+	CAPTURE_PROVIDED_FIXTURE,
 } from '../../setup.js'
 import {
 	CAPTURE_PNG_REFUSALS,
@@ -2186,6 +2187,32 @@ describe('readCaptureProject', () => {
 			final: RUNNER_FINAL,
 			first: 'compact',
 			portfolios: [{ portfolio: 'frames', directory: 'out/frames', scoped: true }],
+			standalone: [],
+		})
+	})
+
+	it('reads the values a wrapper provides as the core provided-context type declares them', () => {
+		expect(
+			readCaptureProject({
+				name: 'journey:light-390',
+				tags: [{ name: 'owner:pages' }, { name: 'pages' }],
+				provide: CAPTURE_PROVIDED_FIXTURE,
+			}),
+		).toEqual({
+			name: 'journey:light-390',
+			variant: 'light-390',
+			tags: ['owner:pages', 'pages'],
+			variants: ['light-390', 'light-320'],
+			directory: 'tmp/captures/states',
+			record: 'tmp/captures/states/runs/run-1/selected/light-390.json',
+			inputs: ['src/**', 'tests/setup.ts'],
+			final: 'Fixture closes the run',
+			first: 'light-390',
+			uniform: ['pages'],
+			portfolios: [
+				{ portfolio: 'states', directory: 'tmp/captures/states', scoped: true },
+				{ portfolio: 'focused', directory: 'tmp/captures/focused', scoped: false },
+			],
 			standalone: [],
 		})
 	})
