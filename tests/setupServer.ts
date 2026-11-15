@@ -9,8 +9,9 @@ import type {
 	CaptureRequest,
 	CaptureRun,
 	CaptureStoredManifest,
+	CaptureViewport,
 } from '@src/core'
-import type { ExecuteResult } from '@orkestrel/process'
+import type { ExecuteResult, ProcessCommand } from '@orkestrel/process'
 import type { ScratchInterface } from '@orkestrel/test/server'
 import type {
 	CaptureReadOptions,
@@ -48,6 +49,7 @@ import {
 	writeFileSync,
 } from 'node:fs'
 import { createRequire } from 'node:module'
+import { freemem, loadavg } from 'node:os'
 import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { crc32, deflateSync } from 'node:zlib'
@@ -62,7 +64,7 @@ import {
 	isString,
 	parseJSON,
 } from '@orkestrel/contract'
-import { execute, executeSync, detach, killTree } from '@orkestrel/process/server'
+import { createProcess, execute, executeSync, detach, killTree } from '@orkestrel/process/server'
 import { retryUntil, waitForCondition, waitForEvent, requireValue } from '@orkestrel/test'
 import { createScratch, isRunning } from '@orkestrel/test/server'
 // The plain Node writer imports this module; consumer readers load source guards only when called.
@@ -2184,13 +2186,19 @@ export async function writeFixtureDescription(input: FixtureDescription): Promis
 	if (fault === 'failed') process.exitCode = 7
 }
 
-/** Owns an isolated consumer workspace using the checkout's built capture and installed test tools. */
+/**
+ * Owns an isolated consumer workspace using the checkout's built capture and installed test tools.
+ *
+ * @remarks
+ * Without a population the workspace is the consumer fixture as written. With one, the population
+ * writer generates the cases, owners, inputs, and variants it declares.
+ */
 export class CaptureConsumer {
 	readonly #scratch: ScratchInterface
 	readonly #controller = new AbortController()
 	readonly #signal: AbortSignal
 
-	constructor(signal?: AbortSignal) {
+	constructor(signal?: AbortSignal, population?: CapturePopulation) {
 		requireCaptureBuild()
 		this.#signal =
 			signal === undefined
@@ -2243,16 +2251,12 @@ export class CaptureConsumer {
 					this.#scratch.path,
 				],
 			})
-			cpSync(
-				resolve(CAPTURE_WORKSPACE_ROOT, 'tests/fixtures/capture/consumer'),
-				this.#scratch.path,
-				{
-					recursive: true,
-				},
-			)
-			this.#scratch.ensure('specs')
-			for (const file of ['journey.ts', 'ConsumerJourney.ts', 'constants.ts', 'types.ts'])
-				cpSync(resolve(this.#scratch.path, file), resolve(this.#scratch.path, 'specs', file))
+			if (population === undefined) {
+				cpSync(CAPTURE_CONSUMER_FIXTURE, this.#scratch.path, { recursive: true })
+				this.#scratch.ensure('specs')
+				for (const file of ['journey.ts', 'ConsumerJourney.ts', 'constants.ts', 'types.ts'])
+					cpSync(resolve(this.#scratch.path, file), resolve(this.#scratch.path, 'specs', file))
+			} else writeCapturePopulation(this.#scratch.path, population)
 			this.#scratch.write('package.json', JSON.stringify({ type: 'module' }))
 			this.#scratch.write('.gitignore', 'node_modules/\ntmp/\n')
 			this.#scratch.link(
@@ -2283,25 +2287,13 @@ export class CaptureConsumer {
 
 	async execute(argv: readonly string[]): Promise<ExecuteResult> {
 		const started = performance.now()
-		const result = await execute(
-			{
-				file: process.execPath,
-				arguments: [
-					resolve(CAPTURE_WORKSPACE_ROOT, 'dist/bin/main.js'),
-					...argv,
-					'--config',
-					'journey.config.ts',
-				],
-				environment: { FORCE_COLOR: '0', NO_COLOR: '1', CI: '1' },
-			},
-			{
-				workspace: this.root,
-				timeout: CONSUMER_TIMEOUT,
-				signal: this.#signal,
-				limit: 4_194_304,
-				strict: false,
-			},
-		)
+		const result = await execute(this.#command(argv), {
+			workspace: this.root,
+			timeout: CONSUMER_TIMEOUT,
+			signal: this.#signal,
+			limit: 4_194_304,
+			strict: false,
+		})
 		console.log(
 			`${argv.join(' ')}: exit=${result.code} durationMs=${Math.round(performance.now() - started)}`,
 		)
@@ -2311,6 +2303,33 @@ export class CaptureConsumer {
 			JSON.stringify(result),
 		)
 		return result
+	}
+
+	// Times each stdout line on arrival, with no deadline but the consumer's signal, for a bench.
+	async measure(argv: readonly string[]): Promise<CaptureTiming> {
+		const before = { load: loadavg(), free: freemem() }
+		const started = performance.now()
+		const child = createProcess({
+			command: this.#command(argv),
+			workspace: this.root,
+			signal: this.#signal,
+		})
+		try {
+			const lines: CaptureTimedLine[] = []
+			for await (const text of child.lines) lines.push({ at: performance.now() - started, text })
+			const exit = await child.exit
+			return {
+				argv,
+				code: exit.code,
+				duration: performance.now() - started,
+				lines,
+				before,
+				after: { load: loadavg(), free: freemem() },
+				evidence: child.evidence,
+			}
+		} finally {
+			await child.destroy()
+		}
 	}
 
 	read(file: string): unknown {
@@ -2342,6 +2361,19 @@ export class CaptureConsumer {
 		this.#controller.abort()
 		this.#scratch.destroy()
 	}
+
+	#command(argv: readonly string[]): ProcessCommand {
+		return {
+			file: process.execPath,
+			arguments: [
+				resolve(CAPTURE_WORKSPACE_ROOT, 'dist/bin/main.js'),
+				...argv,
+				'--config',
+				'journey.config.ts',
+			],
+			environment: { FORCE_COLOR: '0', NO_COLOR: '1', CI: '1' },
+		}
+	}
 }
 
 /** Reads an emitted JSON report line, refusing absent or malformed reports. */
@@ -2353,6 +2385,789 @@ export function readConsumerReport(
 	const report = line === undefined ? undefined : parseJSON(line.slice(prefix.length + 1))
 	if (!isRecord(report)) throw new Error(`Missing ${prefix} report in ${stdout}`)
 	return report
+}
+
+/** Locates the consumer fixture a consumer workspace is built from. */
+export const CAPTURE_CONSUMER_FIXTURE = resolve(
+	CAPTURE_WORKSPACE_ROOT,
+	'tests/fixtures/capture/consumer',
+)
+
+/** Declares how many states, owners, and input files a consumer workspace holds. */
+export interface CaptureScale {
+	readonly states: number
+	readonly owners: number
+	readonly inputs: number
+}
+
+/** Declares the browser variants a consumer workspace runs and the variant its frames take first. */
+export interface CaptureArm {
+	readonly first: string
+	readonly variants: readonly CaptureViewport[]
+}
+
+/** Declares one consumer workspace population: its scale and its variant arm. */
+export interface CapturePopulation extends CaptureScale, CaptureArm {}
+
+/** Describes one generated consumer case: its title, owner, state, source part, and Vitest tags. */
+export interface CapturePopulationCase {
+	readonly case: string
+	readonly owner: string
+	readonly state: string
+	readonly part: string
+	readonly tags: readonly string[]
+}
+
+/**
+ * Declares the workspace scales the bench reads: a rehearsal that reads one pass's own cost cheaply,
+ * and the population veneer declares, which the cost map's run x1 measured.
+ */
+export const CAPTURE_SCALES: Readonly<Record<'rehearsal' | 'full', CaptureScale>> = Object.freeze({
+	rehearsal: Object.freeze({ states: 10, owners: 7, inputs: 24 }),
+	full: Object.freeze({ states: 185, owners: 131, inputs: 310 }),
+})
+
+/**
+ * Declares the variant arms the bench reads: the one square variant run x1 measured, and veneer's
+ * four variants at its two viewports with its narrow variant first.
+ */
+export const CAPTURE_ARMS: Readonly<Record<'base' | 'veneer', CaptureArm>> = Object.freeze({
+	base: Object.freeze({
+		first: 'narrow',
+		variants: Object.freeze([{ name: 'narrow', width: 320, height: 320 }]),
+	}),
+	veneer: Object.freeze({
+		first: 'light-390',
+		variants: Object.freeze([
+			{ name: 'light-1280', width: 1280, height: 800 },
+			{ name: 'dark-1280', width: 1280, height: 800 },
+			{ name: 'light-390', width: 390, height: 844 },
+			{ name: 'dark-390', width: 390, height: 844 },
+		]),
+	}),
+})
+
+/** Names the input patterns of a population workspace, as the consumer fixture's wrapper declares them. */
+export const CAPTURE_POPULATION_INPUTS = Object.freeze(['*.ts', 'src/**', 'specs/**'])
+
+/**
+ * Names each consumer fixture file a population workspace copies unchanged, with the workspace
+ * paths it lands at. The fixture's own constants land as `fixture.ts`, which the generated
+ * constants re-export from.
+ */
+export const CAPTURE_POPULATION_COPIES: ReadonlyArray<readonly [string, readonly string[]]> =
+	Object.freeze([
+		['ConsumerJourney.ts', ['ConsumerJourney.ts', 'specs/ConsumerJourney.ts']],
+		['checks.ts', ['checks.ts']],
+		['commands.ts', ['commands.ts']],
+		['types.ts', ['types.ts', 'specs/types.ts']],
+		['constants.ts', ['fixture.ts', 'specs/fixture.ts']],
+	])
+
+/** Holds the population journey: one case per generated state, then the final case that persists the run. */
+export const CAPTURE_POPULATION_JOURNEY = `import { expect, inject, test } from 'vitest'
+import { ConsumerJourney } from './ConsumerJourney.js'
+import { CONSUMER_CASES, CONSUMER_FINAL, CONSUMER_TAGS } from './constants.js'
+
+const journey = new ConsumerJourney()
+const variant = inject('consumer').variant
+
+for (const entry of CONSUMER_CASES)
+	test(
+		entry.case,
+		{
+			tags: [...entry.tags],
+			meta: { owner: entry.owner, variant, states: [entry.state], consumer: entry.case },
+		},
+		async (context) => {
+			expect((await journey.observe(context, entry.case)).isConnected).toBe(true)
+		},
+	)
+test(CONSUMER_FINAL, { tags: [...CONSUMER_TAGS] }, async () => {
+	expect((await journey.finish()).length).toBeGreaterThan(0)
+})
+`
+
+/**
+ * Holds the population wrapper: the consumer fixture's wrapper with its tags, owners, variants, and
+ * viewports read from the generated constants.
+ */
+export const CAPTURE_POPULATION_CONFIG = `import type { UserConfig } from 'vite'
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { resolve } from 'node:path'
+import {
+	answerCaptureDiscovery,
+	buildCaptureDiscoveryConfig,
+	readCaptureRequest,
+} from '@orkestrel/capture/server'
+import { playwright } from '@vitest/browser-playwright'
+import { defineConfig } from 'vitest/config'
+import { persistConsumer } from './commands.js'
+import {
+	CONSUMER_CONFIG,
+	CONSUMER_DIRECTORY,
+	CONSUMER_FINAL,
+	CONSUMER_FIRST,
+	CONSUMER_INPUTS,
+	CONSUMER_OWNERS,
+	CONSUMER_TAGS,
+	CONSUMER_VARIANTS,
+} from './constants.js'
+
+const projects = CONSUMER_VARIANTS.map((variant) => ({
+	test: {
+		name: 'journey:' + variant.name,
+		tags: CONSUMER_TAGS.map((name) => ({ name })),
+		provide: {
+			directory: resolve(CONSUMER_DIRECTORY),
+			record: CONSUMER_DIRECTORY + '/runs/unselected/' + variant.name + '.json',
+			inputs: [...CONSUMER_INPUTS],
+			variant: variant.name,
+			variants: CONSUMER_VARIANTS,
+			final: CONSUMER_FINAL,
+			first: CONSUMER_FIRST,
+			uniform: ['pages'],
+			portfolios: [{ portfolio: 'states', directory: CONSUMER_DIRECTORY, scoped: true }],
+		},
+	},
+}))
+
+const answered = await answerCaptureDiscovery({
+	ppid: process.ppid,
+	argv: process.argv.slice(1),
+	config: CONSUMER_CONFIG,
+	projects,
+})
+
+export default answered
+	? buildCaptureDiscoveryConfig()
+	: defineConfig((): UserConfig => {
+			const request = readCaptureRequest({
+				ppid: process.ppid,
+				argv: process.argv.slice(1),
+				config: CONSUMER_CONFIG,
+				owners: [...CONSUMER_OWNERS],
+				variants: CONSUMER_VARIANTS.map((variant) => variant.name),
+			})
+			if (request === undefined) throw new Error('Run the consumer through capture')
+			mkdirSync('tmp', { recursive: true })
+			appendFileSync('tmp/selections.jsonl', JSON.stringify(request) + '\\n')
+			return {
+				server: { host: '127.0.0.1' },
+				test: {
+					fileParallelism: false,
+					projects: projects.map((project) => {
+						const viewport = CONSUMER_VARIANTS.find(
+							(variant) => variant.name === project.test.provide.variant,
+						)
+						if (viewport === undefined) throw new Error('Missing consumer viewport')
+						return {
+							...project,
+							test: {
+								...project.test,
+								name: project.test.name + ' suite',
+								include: ['specs/journey.ts'],
+								provide: {
+									...project.test.provide,
+									consumer: {
+										request,
+										variant: project.test.provide.variant,
+										capture: process.env.CAPTURE === '1',
+									},
+								},
+								browser: {
+									enabled: true,
+									headless: true,
+									api: { host: '127.0.0.1', port: 0 },
+									provider: playwright(),
+									viewport: { width: viewport.width, height: viewport.height },
+									instances: [{ browser: 'chromium', name: project.test.name }],
+									commands: { persistConsumer },
+								},
+							},
+						}
+					}),
+				},
+			}
+		})
+`
+
+/** Builds one case per declared state, spreading the states over the declared owners in turn. */
+export function buildPopulationCases(scale: CaptureScale): readonly CapturePopulationCase[] {
+	return Array.from({ length: scale.states }, (_, index): CapturePopulationCase => {
+		const part = `part${String(index % scale.owners)}`
+		return {
+			case: `case ${String(index)} reaches s${String(index)}`,
+			owner: `pages:${part}`,
+			state: `s${String(index)}`,
+			part,
+			tags: ['owner:pages', `owner:pages:${part}`, 'pages', `pages:${part}`],
+		}
+	})
+}
+
+/**
+ * Writes a consumer workspace's own files at a population: the unchanged consumer fixture files,
+ * generated constants, journey, and wrapper, one source file per owner beside a shared one, and
+ * filler sources until the input patterns match the declared input count.
+ *
+ * @remarks
+ * Every refusal is thrown before the first write.
+ */
+export function writeCapturePopulation(root: string, population: CapturePopulation): void {
+	const { states, owners, inputs, first, variants } = population
+	if (![states, owners, inputs].every((count) => Number.isSafeInteger(count) && count > 0))
+		throw new Error(
+			`A population declares whole positive counts; it declares states=${String(states)}, owners=${String(owners)}, inputs=${String(inputs)}`,
+		)
+	if (owners > states)
+		throw new Error(
+			`A population declares at least one state per owner; it declares ${String(owners)} owners over ${String(states)} states`,
+		)
+	const names = variants.map((variant) => variant.name)
+	if (names.length === 0 || new Set(names).size !== names.length || !names.includes(first))
+		throw new Error(
+			`A population declares each variant once and takes its first from them; it declares ${JSON.stringify(names)} with first ${JSON.stringify(first)}`,
+		)
+	if (
+		variants.some(
+			(variant) =>
+				!Number.isSafeInteger(variant.width) ||
+				!Number.isSafeInteger(variant.height) ||
+				variant.width <= 0 ||
+				variant.height <= 0,
+		)
+	)
+		throw new Error(
+			`A population declares whole positive viewports; it declares ${JSON.stringify(variants)}`,
+		)
+	const cases = buildPopulationCases(population)
+	const constants = [
+		"import type { CaptureViewport } from '@orkestrel/capture'",
+		'',
+		"export { CONSUMER_CONFIG, CONSUMER_DIRECTORY, CONSUMER_FINAL } from './fixture.js'",
+		`export const CONSUMER_FIRST = ${JSON.stringify(first)}`,
+		`export const CONSUMER_INPUTS = Object.freeze(${JSON.stringify(CAPTURE_POPULATION_INPUTS)})`,
+		`export const CONSUMER_VARIANTS: readonly CaptureViewport[] = Object.freeze(${JSON.stringify(variants)})`,
+		`export const CONSUMER_CASES = Object.freeze(${JSON.stringify(cases)})`,
+		`export const CONSUMER_OWNERS = Object.freeze(${JSON.stringify([...new Set(cases.map((entry) => entry.owner))])})`,
+		`export const CONSUMER_TAGS = Object.freeze(${JSON.stringify([...new Set(cases.flatMap((entry) => entry.tags))])})`,
+		'',
+	].join('\n')
+	const fixed: ReadonlyArray<readonly [string, string]> = [
+		...CAPTURE_POPULATION_COPIES.flatMap(([source, targets]) =>
+			targets.map(
+				(target) =>
+					[target, readFileSync(resolve(CAPTURE_CONSUMER_FIXTURE, source), 'utf8')] as const,
+			),
+		),
+		['constants.ts', constants],
+		['specs/constants.ts', constants],
+		['journey.ts', CAPTURE_POPULATION_JOURNEY],
+		['specs/journey.ts', CAPTURE_POPULATION_JOURNEY],
+		['journey.config.ts', CAPTURE_POPULATION_CONFIG],
+		['src/shared.ts', "export const SHARED_LABEL = 'shared'\n"],
+		...[...new Set(cases.map((entry) => entry.part))].map(
+			(part) => [`src/${part}.ts`, `export const PART_LABEL = '${part}'\n`] as const,
+		),
+	]
+	if (inputs < fixed.length)
+		throw new Error(
+			`A population of ${String(owners)} owners needs at least ${String(fixed.length)} input files; it declares ${String(inputs)}`,
+		)
+	const filler = Array.from(
+		{ length: inputs - fixed.length },
+		(_, index) =>
+			[`src/filler/${String(index)}.ts`, `export const FILLER = ${String(index)}\n`] as const,
+	)
+	for (const [path, text] of [...fixed, ...filler]) {
+		const file = resolve(root, path)
+		mkdirSync(dirname(file), { recursive: true })
+		writeFileSync(file, text)
+	}
+}
+
+/** Lists populations the population writer refuses, each with the reason its refusal names. */
+export const CAPTURE_POPULATION_REFUSALS: ReadonlyArray<{
+	readonly title: string
+	readonly population: CapturePopulation
+	readonly reason: string
+}> = Object.freeze([
+	{
+		title: 'no states',
+		population: { ...CAPTURE_SCALES.rehearsal, ...CAPTURE_ARMS.base, states: 0 },
+		reason: 'whole positive counts',
+	},
+	{
+		title: 'a fractional owner count',
+		population: { ...CAPTURE_SCALES.rehearsal, ...CAPTURE_ARMS.base, owners: 2.5 },
+		reason: 'whole positive counts',
+	},
+	{
+		title: 'a non-finite input count',
+		population: { ...CAPTURE_SCALES.rehearsal, ...CAPTURE_ARMS.base, inputs: Number.NaN },
+		reason: 'whole positive counts',
+	},
+	{
+		title: 'more owners than states',
+		population: { ...CAPTURE_SCALES.rehearsal, ...CAPTURE_ARMS.base, states: 3, owners: 4 },
+		reason: 'at least one state per owner',
+	},
+	{
+		title: 'no variants',
+		population: { ...CAPTURE_SCALES.rehearsal, first: 'narrow', variants: [] },
+		reason: 'each variant once',
+	},
+	{
+		title: 'a repeated variant',
+		population: {
+			...CAPTURE_SCALES.rehearsal,
+			first: 'narrow',
+			variants: [...CAPTURE_ARMS.base.variants, ...CAPTURE_ARMS.base.variants],
+		},
+		reason: 'each variant once',
+	},
+	{
+		title: 'a first variant it does not declare',
+		population: { ...CAPTURE_SCALES.rehearsal, ...CAPTURE_ARMS.base, first: 'light-390' },
+		reason: 'takes its first from them',
+	},
+	{
+		title: 'an empty viewport',
+		population: {
+			...CAPTURE_SCALES.rehearsal,
+			first: 'narrow',
+			variants: [{ name: 'narrow', width: 0, height: 320 }],
+		},
+		reason: 'whole positive viewports',
+	},
+	{
+		title: 'fewer inputs than its fixed files and owner sources',
+		population: { ...CAPTURE_SCALES.rehearsal, ...CAPTURE_ARMS.base, inputs: 20 },
+		reason: 'needs at least 21 input files; it declares 20',
+	},
+])
+
+/** Creates an inert timed command from its arguments, duration, lines as arrival and text pairs, and exit code. */
+export function createCaptureTiming(
+	argv: readonly string[],
+	duration: number,
+	lines: ReadonlyArray<readonly [number, string]>,
+	code: number | null = 0,
+): CaptureTiming {
+	return {
+		argv,
+		code,
+		duration,
+		lines: lines.map(([at, text]) => ({ at, text })),
+		before: { load: [0.5, 0.82, 0.56], free: 16_143_634_432 },
+		after: { load: [0.54, 0.83, 0.56], free: 15_918_194_688 },
+		evidence: code === 0 ? '' : 'Capture refused the selection',
+	}
+}
+
+/**
+ * Holds an inert six-command pass shaped on run x1's recorded lines, with frames read over two
+ * stages, so each phase's sum can be derived by hand.
+ */
+export const CAPTURE_PASS_FIXTURE: readonly CaptureTiming[] = Object.freeze([
+	createCaptureTiming(['registry'], 5283, [
+		[97, 'pid=101'],
+		[
+			712,
+			'registry registry: narrow; all; report=/w/tmp/capture/runs/a/registry.json; records=tmp/captures/states/runs/a/registry/<variant>.json',
+		],
+		[715, 'pid=102'],
+		[1639, ' RUN  v5.1.0 /w'],
+		[4950, 'JSON report written to /w/tmp/capture/runs/a/registry.json'],
+		[5275, 'REGISTRY {"entries":185}'],
+	]),
+	createCaptureTiming(['journey', 'all'], 6755, [
+		[95, 'pid=103'],
+		[
+			578,
+			'journey selected: narrow; all; report=/w/tmp/capture/runs/b/journey-selected.json; records=tmp/captures/states/runs/b/selected/<variant>.json',
+		],
+		[4585, 'JSON report written to /w/tmp/capture/runs/b/journey-selected.json'],
+		[6738, 'INTEGRITY {"command":"journey","stage":"selected"}'],
+		[6739, 'STAGES {"run":["selected"]}'],
+	]),
+	createCaptureTiming(['frames', 'all'], 9000, [
+		[
+			600,
+			'capture narrow: light-390; all; report=/w/tmp/capture/runs/c/capture-narrow.json; records=tmp/captures/states/runs/c/narrow/<variant>.json',
+		],
+		[3000, 'JSON report written to /w/tmp/capture/runs/c/capture-narrow.json'],
+		[4000, 'INTEGRITY {"command":"capture","stage":"narrow"}'],
+		[
+			4100,
+			'capture rest: light-1280, dark-1280; all; report=/w/tmp/capture/runs/c/capture-rest.json; records=tmp/captures/states/runs/c/rest/<variant>.json',
+		],
+		[8000, 'JSON report written to /w/tmp/capture/runs/c/capture-rest.json'],
+		[8900, 'INTEGRITY {"command":"capture","stage":"rest"}'],
+	]),
+	createCaptureTiming(['stale', 'all'], 1081, [
+		[74, 'pid=104'],
+		[1073, 'INTEGRITY {"command":"stale"}'],
+	]),
+	createCaptureTiming(['preflight', 'all', '--checks', 'checks.ts'], 9050, [
+		[9030, 'READER {"issues":[]}'],
+	]),
+	createCaptureTiming(['sheets', 'all', '--checks', 'checks.ts', '--output', 'tmp/sheets'], 23810, [
+		[23790, 'SHEETS {"issues":[]}'],
+	]),
+])
+
+/** Lists timed commands the span reader refuses, each with the reason its refusal names. */
+export const CAPTURE_SPAN_REFUSALS: ReadonlyArray<{
+	readonly title: string
+	readonly timing: CaptureTiming
+	readonly reason: string
+}> = Object.freeze([
+	{
+		title: 'a failed command',
+		timing: createCaptureTiming(['stale', 'all'], 600, [[500, 'INTEGRITY {}']], 1),
+		reason: 'exited 1, so it is no reading: Capture refused the selection',
+	},
+	{
+		title: 'a command a signal ended',
+		timing: createCaptureTiming(['stale', 'all'], 600, [[500, 'INTEGRITY {}']], null),
+		reason: 'exited null',
+	},
+	{
+		title: 'a command a pass does not read',
+		timing: createCaptureTiming(['progress'], 600, [[500, 'INTEGRITY {}']]),
+		reason: 'names no command a pass reads',
+	},
+	{
+		title: 'a command with no arguments',
+		timing: createCaptureTiming([], 600, []),
+		reason: 'names no command a pass reads',
+	},
+	{
+		title: 'a non-finite duration',
+		timing: createCaptureTiming(['stale', 'all'], Number.NaN, [[500, 'INTEGRITY {}']]),
+		reason: 'no finite positive duration',
+	},
+	{
+		title: 'a zero duration',
+		timing: createCaptureTiming(['stale', 'all'], 0, []),
+		reason: 'no finite positive duration',
+	},
+	{
+		title: 'a line after the exit',
+		timing: createCaptureTiming(['stale', 'all'], 600, [[700, 'INTEGRITY {}']]),
+		reason: 'a line timed outside its run or out of order',
+	},
+	{
+		title: 'a line before the spawn',
+		timing: createCaptureTiming(['stale', 'all'], 600, [[-1, 'INTEGRITY {}']]),
+		reason: 'a line timed outside its run or out of order',
+	},
+	{
+		title: 'lines out of arrival order',
+		timing: createCaptureTiming(['stale', 'all'], 600, [
+			[500, 'pid=1'],
+			[400, 'INTEGRITY {}'],
+		]),
+		reason: 'a line timed outside its run or out of order',
+	},
+	{
+		title: 'no closing line',
+		timing: createCaptureTiming(['preflight', 'all'], 600, [[500, 'pid=1']]),
+		reason: 'printed no READER line',
+	},
+	{
+		title: 'a staged command with no stage line',
+		timing: createCaptureTiming(['journey', 'all'], 600, [[500, 'INTEGRITY {}']]),
+		reason: 'printed its stage lines out of order: close',
+	},
+	{
+		title: 'a report line before its stage line',
+		timing: createCaptureTiming(['journey', 'all'], 600, [
+			[100, 'JSON report written to /w/report.json'],
+			[200, 'journey selected: narrow; all; report=/w/report.json; records=/w/runs'],
+			[500, 'INTEGRITY {}'],
+		]),
+		reason: 'out of order: report stage close',
+	},
+	{
+		title: 'a stage with no report line',
+		timing: createCaptureTiming(['journey', 'all'], 600, [
+			[200, 'journey selected: narrow; all; report=/w/report.json; records=/w/runs'],
+			[500, 'INTEGRITY {}'],
+		]),
+		reason: 'out of order: stage close',
+	},
+	{
+		title: 'a later stage with no closing line',
+		timing: createCaptureTiming(['frames', 'all'], 900, [
+			[100, 'capture narrow: narrow; all; report=/w/narrow.json; records=/w/runs'],
+			[300, 'JSON report written to /w/narrow.json'],
+			[400, 'INTEGRITY {}'],
+			[500, 'capture rest: wide; all; report=/w/rest.json; records=/w/runs'],
+			[800, 'JSON report written to /w/rest.json'],
+		]),
+		reason: 'out of order: stage report close stage report',
+	},
+])
+
+/** Lists passes the phase reader refuses, each with the reason its refusal names. */
+export const CAPTURE_PHASE_REFUSALS: ReadonlyArray<{
+	readonly title: string
+	readonly timings: readonly CaptureTiming[]
+	readonly reason: string
+}> = Object.freeze([
+	{ title: 'an empty pass', timings: [], reason: 'A pass with no command is no reading' },
+	{
+		title: 'a sheets command with no preflight command',
+		timings: CAPTURE_PASS_FIXTURE.filter((timing) => timing.argv[0] !== 'preflight'),
+		reason: 'this pass holds 0',
+	},
+	{
+		title: 'a sheets command with two preflight commands',
+		timings: [
+			...CAPTURE_PASS_FIXTURE,
+			createCaptureTiming(['preflight', 'all'], 9000, [[8990, 'READER {}']]),
+		],
+		reason: 'this pass holds 2',
+	},
+	{
+		title: 'a sheets run shorter than its preflight run',
+		timings: [
+			createCaptureTiming(['preflight', 'all'], 9000, [[8990, 'READER {}']]),
+			createCaptureTiming(['sheets', 'all'], 8000, [[7990, 'SHEETS {}']]),
+		],
+		reason: 'leaves no compose reading: -1000 ms',
+	},
+	{
+		title: 'a pass holding a failed command',
+		timings: [
+			...CAPTURE_PASS_FIXTURE,
+			createCaptureTiming(['stale', 'all'], 600, [[500, 'INTEGRITY {}']], 1),
+		],
+		reason: 'exited 1',
+	},
+])
+
+/** Lists the six commands of one capture pass, in the order the cost map's run x1 read them. */
+export const CAPTURE_PASS: ReadonlyArray<readonly string[]> = Object.freeze([
+	['registry'],
+	['journey', 'all'],
+	['frames', 'all'],
+	['stale', 'all'],
+	['preflight', 'all', '--checks', 'checks.ts'],
+	['sheets', 'all', '--checks', 'checks.ts', '--output', 'tmp/sheets'],
+])
+
+/**
+ * Bounds one bench arm, in milliseconds. Run x1 read 67.9 s for the base arm at full scale. The
+ * veneer arm is unmeasured; the cost map derives about 93 s for one preflight decode at its
+ * viewports, which a pass pays twice, beside about 42 s of screenshots, so the bound takes 15
+ * minutes. The lane's cap stops a run sooner.
+ */
+export const CAPTURE_BENCH_TIMEOUT = 900_000
+
+/** Names the phases a capture pass divides into. */
+export const CAPTURE_PHASES = Object.freeze([
+	'discovery',
+	'execution',
+	'integrity',
+	'image',
+	'compose',
+] as const)
+
+/** Names one phase of a capture pass. */
+export type CapturePhase = (typeof CAPTURE_PHASES)[number]
+
+/** Records one capture stdout line with its arrival, in milliseconds after the spawn. */
+export interface CaptureTimedLine {
+	readonly at: number
+	readonly text: string
+}
+
+/** Records the host's load averages and free memory in bytes at one moment. */
+export interface CaptureHostLoad {
+	readonly load: readonly number[]
+	readonly free: number
+}
+
+/** Records one timed capture command: its arguments, exit, duration, lines, host load, and stderr tail. */
+export interface CaptureTiming {
+	readonly argv: readonly string[]
+	readonly code: number | null
+	readonly duration: number
+	readonly lines: readonly CaptureTimedLine[]
+	readonly before: CaptureHostLoad
+	readonly after: CaptureHostLoad
+	readonly evidence: string
+}
+
+/** Records one span of a command's run, in milliseconds after its spawn, and the phase it belongs to. */
+export interface CaptureSpan {
+	readonly phase: CapturePhase
+	readonly start: number
+	readonly end: number
+}
+
+/** Names the report line that closes a capture command, and the phase its whole run reads as when its lines mark no stage. */
+export interface CaptureCommandLines {
+	readonly close: string
+	readonly whole?: CapturePhase
+}
+
+/**
+ * Names, per capture command, the report line that closes it and the phase a command without stage
+ * lines reads as. Stale prints its discovery and integrity check as one span, preflight its
+ * discovery, check, decode, and thumbnails, and sheets that whole preflight check before it
+ * composes.
+ */
+export const CAPTURE_COMMAND_LINES: Readonly<Record<string, CaptureCommandLines>> = Object.freeze({
+	registry: { close: 'REGISTRY' },
+	journey: { close: 'INTEGRITY' },
+	frames: { close: 'INTEGRITY' },
+	stale: { close: 'INTEGRITY', whole: 'integrity' },
+	preflight: { close: 'READER', whole: 'image' },
+	sheets: { close: 'SHEETS', whole: 'compose' },
+})
+
+/** Matches the line capture prints when it opens a stage, before it spawns the stage's Vitest. */
+export const CAPTURE_STAGE_LINE = /^\S+ \S+: .+; report=.+; records=/u
+
+/** Opens the line Vitest prints after it writes a stage's JSON report. */
+export const CAPTURE_REPORT_LINE = 'JSON report written to '
+
+/**
+ * Divides one timed command into phase spans from its lines.
+ *
+ * @remarks
+ * Discovery runs from the spawn to the first stage line, execution from a stage line to its
+ * Vitest report line, and integrity from that report line to the command's closing report line;
+ * the gap before a later stage is execution, and the last span closes at the exit. A command whose
+ * lines mark no stage reads as one span of its `whole` phase.
+ *
+ * Thrown when the command is not one the pass reads, exited other than 0, carries no finite positive
+ * duration, carries a line timed outside its run or out of order, or printed no closing line or its
+ * stage lines out of order.
+ */
+export function extractCaptureSpans(timing: CaptureTiming): readonly CaptureSpan[] {
+	const { argv, code, duration, lines } = timing
+	const [command = ''] = argv
+	const label = `capture ${argv.join(' ')}`
+	const known = Object.hasOwn(CAPTURE_COMMAND_LINES, command)
+		? CAPTURE_COMMAND_LINES[command]
+		: undefined
+	if (known === undefined) throw new Error(`${label} names no command a pass reads`)
+	if (code !== 0)
+		throw new Error(`${label} exited ${String(code)}, so it is no reading: ${timing.evidence}`)
+	if (!Number.isFinite(duration) || duration <= 0)
+		throw new Error(`${label} carries no finite positive duration: ${String(duration)}`)
+	if (
+		lines.some(
+			(line, index) =>
+				!Number.isFinite(line.at) || line.at < (lines[index - 1]?.at ?? 0) || line.at > duration,
+		)
+	)
+		throw new Error(`${label} carries a line timed outside its run or out of order`)
+	if (!lines.some((line) => line.text.startsWith(`${known.close} `)))
+		throw new Error(`${label} printed no ${known.close} line`)
+	if (known.whole !== undefined) return [{ phase: known.whole, start: 0, end: duration }]
+	const marks = lines.flatMap((line) =>
+		CAPTURE_STAGE_LINE.test(line.text)
+			? [{ mark: 'stage', at: line.at }]
+			: line.text.startsWith(CAPTURE_REPORT_LINE)
+				? [{ mark: 'report', at: line.at }]
+				: line.text.startsWith(`${known.close} `)
+					? [{ mark: 'close', at: line.at }]
+					: [],
+	)
+	const order = marks.map((entry) => entry.mark).join(' ')
+	if (
+		order !==
+		Array.from({ length: Math.max(1, marks.length / 3) }, () => 'stage report close').join(' ')
+	)
+		throw new Error(`${label} printed its stage lines out of order: ${order}`)
+	return marks.map((entry, index): CaptureSpan => ({
+		phase: entry.mark === 'close' ? 'integrity' : index === 0 ? 'discovery' : 'execution',
+		start: marks[index - 1]?.at ?? 0,
+		end: index === marks.length - 1 ? duration : entry.at,
+	}))
+}
+
+/** Sums the milliseconds of every span of one phase. */
+export function sumCaptureSpans(spans: readonly CaptureSpan[], phase: CapturePhase): number {
+	return spans
+		.filter((span) => span.phase === phase)
+		.reduce((total, span) => total + span.end - span.start, 0)
+}
+
+/**
+ * Computes the milliseconds a pass spends in each phase.
+ *
+ * @remarks
+ * A sheets command repeats the preflight check before it composes, so the pass reads that part of
+ * each sheets run as the pass's one preflight run, and moves it from compose to image work.
+ *
+ * Thrown when the pass holds no command, when a command is refused by `extractCaptureSpans`, when
+ * a sheets command has no single preflight command beside it, or when a sheets run is shorter than
+ * that preflight run.
+ */
+export function computeCapturePhases(
+	timings: readonly CaptureTiming[],
+): Readonly<Record<CapturePhase, number>> {
+	if (timings.length === 0) throw new Error('A pass with no command is no reading')
+	const spans = timings.flatMap((timing) => extractCaptureSpans(timing))
+	const checks = timings.filter((timing) => timing.argv[0] === 'preflight')
+	const sheets = timings.filter((timing) => timing.argv[0] === 'sheets').length
+	const [check] = checks
+	if (sheets > 0 && (checks.length !== 1 || check === undefined))
+		throw new Error(
+			`A sheets command repeats the preflight check, so its pass reads one preflight command; this pass holds ${String(checks.length)}`,
+		)
+	const repeated = sheets * (check?.duration ?? 0)
+	const compose = sumCaptureSpans(spans, 'compose') - repeated
+	if (compose < 0)
+		throw new Error(
+			`A sheets run shorter than its preflight run leaves no compose reading: ${String(compose)} ms`,
+		)
+	return {
+		discovery: sumCaptureSpans(spans, 'discovery'),
+		execution: sumCaptureSpans(spans, 'execution'),
+		integrity: sumCaptureSpans(spans, 'integrity'),
+		image: sumCaptureSpans(spans, 'image') + repeated,
+		compose,
+	}
+}
+
+/**
+ * Renders a pass as a Markdown table: one row per command with its phase spans, integrity per
+ * stage, 1-minute load before and after, and free memory, then the pass row with each phase's share.
+ */
+export function renderCapturePass(timings: readonly CaptureTiming[]): string {
+	const phases = computeCapturePhases(timings)
+	const total = timings.reduce((sum, timing) => sum + timing.duration, 0)
+	const rows = timings.map((timing) => {
+		const spans = extractCaptureSpans(timing)
+		return [
+			timing.argv.join(' '),
+			Math.round(timing.duration),
+			...CAPTURE_PHASES.map((phase) => Math.round(sumCaptureSpans(spans, phase))),
+			spans
+				.filter((span) => span.phase === 'integrity')
+				.map((span) => Math.round(span.end - span.start))
+				.join(' + '),
+			`${timing.before.load[0]?.toFixed(2) ?? '?'} to ${timing.after.load[0]?.toFixed(2) ?? '?'}`,
+			`${Math.round(timing.before.free / 1_048_576)} to ${Math.round(timing.after.free / 1_048_576)}`,
+		].join(' | ')
+	})
+	return [
+		`| command | total ms | ${CAPTURE_PHASES.join(' | ')} | integrity per stage | load 1 min | free MB |`,
+		`| ${Array.from({ length: CAPTURE_PHASES.length + 5 }, () => '---').join(' | ')} |`,
+		...rows.map((row) => `| ${row} |`),
+		`| pass | ${Math.round(total)} | ${CAPTURE_PHASES.map((phase) => `${Math.round(phases[phase])} (${((phases[phase] / total) * 100).toFixed(1)}%)`).join(' | ')} | | | |`,
+		'',
+		'The pass row moves one preflight run from compose to image for each sheets command, because sheets repeats the preflight check.',
+	].join('\n')
 }
 
 /** Supplies the real source modules from the test host without importing them in plain Node fixture children. */

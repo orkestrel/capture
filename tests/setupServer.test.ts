@@ -1,7 +1,15 @@
 import * as core from '@src/core'
 import * as server from '@src/server'
 import { spawn } from 'node:child_process'
-import { existsSync, utimesSync, statSync, writeFileSync } from 'node:fs'
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	utimesSync,
+	statSync,
+	writeFileSync,
+} from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { crc32, inflateSync } from 'node:zlib'
@@ -19,13 +27,30 @@ import { isCaptureRun, readCaptureReport } from '@src/core'
 import {
 	decodeCapturePicture,
 	CAPTURE_OWNER_FILE,
+	readCaptureInputs,
 	readCaptureProject,
 	readCaptureRequest,
 	readCaptureViewport,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
+import { CONSUMER_CONFIG } from './fixtures/capture/consumer/constants.js'
 import { createDeclarationFixture, createRequestFixture } from './setup.js'
 import {
+	CAPTURE_ARMS,
+	CAPTURE_CONSUMER_FIXTURE,
+	CAPTURE_PASS_FIXTURE,
+	CAPTURE_PHASE_REFUSALS,
+	CAPTURE_POPULATION_COPIES,
+	CAPTURE_POPULATION_INPUTS,
+	CAPTURE_POPULATION_REFUSALS,
+	CAPTURE_SCALES,
+	CAPTURE_SPAN_REFUSALS,
+	buildPopulationCases,
+	computeCapturePhases,
+	extractCaptureSpans,
+	renderCapturePass,
+	sumCaptureSpans,
+	writeCapturePopulation,
 	CAPTURE_TRANSPORT,
 	writeCaptureTransport,
 	prepareCaptureDiscovery,
@@ -1217,4 +1242,292 @@ it('reads one named consumer report through LF and CRLF output', () => {
 it('refuses missing, malformed, and non-record consumer reports', () => {
 	for (const text of ['', 'READER {', 'READER []', 'OTHER {}'])
 		expect(() => readConsumerReport(text, 'READER')).toThrow('Missing READER report')
+})
+
+describe('buildPopulationCases', () => {
+	it('builds one case per state and spreads the states over the owners in turn', () => {
+		expect(buildPopulationCases({ states: 3, owners: 2, inputs: 20 })).toEqual([
+			{
+				case: 'case 0 reaches s0',
+				owner: 'pages:part0',
+				state: 's0',
+				part: 'part0',
+				tags: ['owner:pages', 'owner:pages:part0', 'pages', 'pages:part0'],
+			},
+			{
+				case: 'case 1 reaches s1',
+				owner: 'pages:part1',
+				state: 's1',
+				part: 'part1',
+				tags: ['owner:pages', 'owner:pages:part1', 'pages', 'pages:part1'],
+			},
+			{
+				case: 'case 2 reaches s2',
+				owner: 'pages:part0',
+				state: 's2',
+				part: 'part0',
+				tags: ['owner:pages', 'owner:pages:part0', 'pages', 'pages:part0'],
+			},
+		])
+	})
+})
+
+describe('writeCapturePopulation', () => {
+	it.for(
+		Object.entries(CAPTURE_ARMS).flatMap(([arm, variants]) =>
+			Object.entries(CAPTURE_SCALES).map(([scale, size]) => ({
+				title: `${arm} arm at the ${scale} scale`,
+				population: { ...size, ...variants },
+			})),
+		),
+	)(
+		'writes the $title with its declared inputs, states, owners, and variants',
+		async ({ population }) => {
+			const scratch = createScratch({ prefix: 'capture-population-' })
+			try {
+				writeCapturePopulation(scratch.path, population)
+				const inputs = Object.keys(readCaptureInputs(scratch.path, CAPTURE_POPULATION_INPUTS))
+				expect(inputs).toHaveLength(population.inputs)
+				expect(inputs).toEqual(
+					expect.arrayContaining([
+						'journey.config.ts',
+						'specs/journey.ts',
+						'specs/ConsumerJourney.ts',
+						'src/shared.ts',
+					]),
+				)
+				const constants: unknown = await import(
+					pathToFileURL(resolve(scratch.path, 'specs/constants.ts')).href
+				)
+				if (!isRecord(constants) || !isArray(constants.CONSUMER_CASES))
+					throw new Error('The generated constants declare no cases')
+				const cases = constants.CONSUMER_CASES.filter(isRecord)
+				expect(cases).toHaveLength(population.states)
+				expect(new Set(cases.map((entry) => entry.state)).size).toBe(population.states)
+				expect(new Set(cases.map((entry) => entry.owner)).size).toBe(population.owners)
+				expect(cases.every((entry) => inputs.includes(`src/${String(entry.part)}.ts`))).toBe(true)
+				expect(constants).toMatchObject({
+					CONSUMER_CONFIG,
+					CONSUMER_FIRST: population.first,
+					CONSUMER_VARIANTS: population.variants,
+					CONSUMER_INPUTS: CAPTURE_POPULATION_INPUTS,
+				})
+				for (const [source, targets] of CAPTURE_POPULATION_COPIES)
+					for (const target of targets)
+						expect(scratch.read(target)).toBe(
+							readFileSync(resolve(CAPTURE_CONSUMER_FIXTURE, source), 'utf8'),
+						)
+			} finally {
+				scratch.destroy()
+			}
+		},
+	)
+
+	it('writes no filler at the least input count its fixed files and owner sources need', () => {
+		const scratch = createScratch({ prefix: 'capture-population-' })
+		try {
+			writeCapturePopulation(scratch.path, {
+				...CAPTURE_SCALES.rehearsal,
+				...CAPTURE_ARMS.base,
+				inputs: 21,
+			})
+			expect(Object.keys(readCaptureInputs(scratch.path, CAPTURE_POPULATION_INPUTS))).toHaveLength(
+				21,
+			)
+			expect(existsSync(resolve(scratch.path, 'src/filler'))).toBe(false)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it.for(CAPTURE_POPULATION_REFUSALS)(
+		'refuses $title before it writes',
+		({ population, reason }) => {
+			const scratch = createScratch({ prefix: 'capture-population-' })
+			try {
+				expect(() => writeCapturePopulation(scratch.path, population)).toThrow(reason)
+				expect(readdirSync(scratch.path)).toEqual([])
+			} finally {
+				scratch.destroy()
+			}
+		},
+	)
+})
+
+describe('a consumer workspace at a population', { timeout: FIXTURE_TIMEOUT }, () => {
+	it.for(Object.entries(CAPTURE_ARMS))(
+		'declares the %s arm to capture discovery through its generated wrapper',
+		async ([, arm]) => {
+			const population = { ...CAPTURE_SCALES.rehearsal, ...arm }
+			const consumer = new CaptureConsumer(undefined, population)
+			const output: string[] = []
+			const invocation = new server.CaptureInvocation({
+				command: 'journey',
+				root: consumer.root,
+				requests: resolve(consumer.root, 'tmp/capture'),
+				stdout: (text) => output.push(text),
+				stderr: (text) => output.push(text),
+			})
+			const discovery = new server.CaptureDiscovery({
+				root: consumer.root,
+				config: resolve(consumer.root, 'journey.config.ts'),
+				invocation,
+			})
+			invocation.attach()
+			try {
+				const { projects } = await discovery.describe()
+				expect(projects.map((entry) => entry.viewport)).toEqual(arm.variants)
+				expect(projects.map((entry) => entry.project.name)).toEqual(
+					arm.variants.map((variant) => `journey:${variant.name}`),
+				)
+				for (const { project } of projects) {
+					expect(project).toMatchObject({
+						first: arm.first,
+						inputs: CAPTURE_POPULATION_INPUTS,
+						variants: arm.variants.map((variant) => variant.name),
+					})
+					expect(project.tags).toEqual(
+						expect.arrayContaining([
+							'owner:pages',
+							...Array.from(
+								{ length: population.owners },
+								(_, index) => `owner:pages:part${String(index)}`,
+							),
+						]),
+					)
+				}
+			} finally {
+				await invocation.release()
+				consumer.destroy()
+			}
+		},
+	)
+
+	it('refuses a population before it leaves a workspace behind', () => {
+		requireCaptureBuild()
+		const parent = resolve(CAPTURE_WORKSPACE_ROOT, 'tmp')
+		mkdirSync(parent, { recursive: true })
+		const before = readdirSync(parent).filter((name) => name.startsWith('capture-consumer-'))
+		for (const { population, reason } of CAPTURE_POPULATION_REFUSALS)
+			expect(() => new CaptureConsumer(undefined, population)).toThrow(reason)
+		expect(readdirSync(parent).filter((name) => name.startsWith('capture-consumer-'))).toEqual(
+			before,
+		)
+	})
+
+	it('times every stdout line of a real capture command as the buffered run prints it', async () => {
+		const consumer = new CaptureConsumer()
+		try {
+			const buffered = await consumer.execute(['stale', 'all'])
+			const timing = await consumer.measure(['stale', 'all'])
+			expect(timing.code).toBe(buffered.code)
+			expect(timing.lines.map((line) => line.text.replaceAll(/\d+/gu, 'N'))).toEqual(
+				buffered.stdout
+					.split(/\r\n|\n/u)
+					.slice(0, -1)
+					.map((line) => line.replaceAll(/\d+/gu, 'N')),
+			)
+			expect(timing.lines.length).toBeGreaterThan(0)
+			expect(
+				timing.lines.every(
+					(line, index) =>
+						line.at > 0 &&
+						line.at >= (timing.lines[index - 1]?.at ?? 0) &&
+						line.at <= timing.duration,
+				),
+			).toBe(true)
+			for (const host of [timing.before, timing.after]) {
+				expect(host.load).toHaveLength(3)
+				expect(host.free).toBeGreaterThan(0)
+			}
+			expect(() => extractCaptureSpans(timing)).toThrow(`exited ${String(buffered.code)}`)
+		} finally {
+			consumer.destroy()
+		}
+	})
+})
+
+describe('extractCaptureSpans', () => {
+	it('divides each command at its stage, report, and closing lines and closes at the exit', () => {
+		expect(CAPTURE_PASS_FIXTURE.map((timing) => extractCaptureSpans(timing))).toEqual([
+			[
+				{ phase: 'discovery', start: 0, end: 712 },
+				{ phase: 'execution', start: 712, end: 4950 },
+				{ phase: 'integrity', start: 4950, end: 5283 },
+			],
+			[
+				{ phase: 'discovery', start: 0, end: 578 },
+				{ phase: 'execution', start: 578, end: 4585 },
+				{ phase: 'integrity', start: 4585, end: 6755 },
+			],
+			[
+				{ phase: 'discovery', start: 0, end: 600 },
+				{ phase: 'execution', start: 600, end: 3000 },
+				{ phase: 'integrity', start: 3000, end: 4000 },
+				{ phase: 'execution', start: 4000, end: 4100 },
+				{ phase: 'execution', start: 4100, end: 8000 },
+				{ phase: 'integrity', start: 8000, end: 9000 },
+			],
+			[{ phase: 'integrity', start: 0, end: 1081 }],
+			[{ phase: 'image', start: 0, end: 9050 }],
+			[{ phase: 'compose', start: 0, end: 23810 }],
+		])
+	})
+
+	it.for(CAPTURE_SPAN_REFUSALS)('refuses $title', ({ timing, reason }) => {
+		expect(() => extractCaptureSpans(timing)).toThrow(reason)
+	})
+})
+
+describe('sumCaptureSpans', () => {
+	it('sums every span of one phase and reads an absent phase as no time', () => {
+		const [, , frames] = CAPTURE_PASS_FIXTURE
+		if (frames === undefined) throw new Error('The pass fixture holds no frames command')
+		const spans = extractCaptureSpans(frames)
+		expect(sumCaptureSpans(spans, 'execution')).toBe(6400)
+		expect(sumCaptureSpans(spans, 'integrity')).toBe(2000)
+		expect(sumCaptureSpans(spans, 'compose')).toBe(0)
+	})
+})
+
+describe('computeCapturePhases', () => {
+	it('reads a pass by phase, moving the check sheets repeats from compose to image work', () => {
+		const phases = computeCapturePhases(CAPTURE_PASS_FIXTURE)
+		expect(phases).toEqual({
+			discovery: 1890,
+			execution: 14645,
+			integrity: 5584,
+			image: 18100,
+			compose: 14760,
+		})
+		expect(Object.values(phases).reduce((total, value) => total + value, 0)).toBe(
+			CAPTURE_PASS_FIXTURE.reduce((total, timing) => total + timing.duration, 0),
+		)
+	})
+
+	it('reads a pass without sheets with no repeated check', () => {
+		expect(
+			computeCapturePhases(CAPTURE_PASS_FIXTURE.filter((timing) => timing.argv[0] !== 'sheets')),
+		).toEqual({ discovery: 1890, execution: 14645, integrity: 5584, image: 9050, compose: 0 })
+	})
+
+	it.for(CAPTURE_PHASE_REFUSALS)('refuses $title', ({ timings, reason }) => {
+		expect(() => computeCapturePhases(timings)).toThrow(reason)
+	})
+})
+
+describe('renderCapturePass', () => {
+	it('renders one row per command and a pass row with each phase share', () => {
+		expect(renderCapturePass(CAPTURE_PASS_FIXTURE).split('\n')).toEqual(
+			expect.arrayContaining([
+				'| registry | 5283 | 712 | 4238 | 333 | 0 | 0 | 333 | 0.50 to 0.54 | 15396 to 15181 |',
+				'| frames all | 9000 | 600 | 6400 | 2000 | 0 | 0 | 1000 + 1000 | 0.50 to 0.54 | 15396 to 15181 |',
+				'| pass | 54979 | 1890 (3.4%) | 14645 (26.6%) | 5584 (10.2%) | 18100 (32.9%) | 14760 (26.8%) | | | |',
+			]),
+		)
+	})
+
+	it('refuses a pass the phase reader refuses', () => {
+		expect(() => renderCapturePass([])).toThrow('A pass with no command is no reading')
+	})
 })
