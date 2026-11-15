@@ -50,7 +50,7 @@ import {
 } from 'node:fs'
 import { createRequire } from 'node:module'
 import { freemem, loadavg } from 'node:os'
-import { basename, dirname, resolve } from 'node:path'
+import { basename, dirname, matchesGlob, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { crc32, deflateSync } from 'node:zlib'
 import {
@@ -2509,8 +2509,13 @@ export interface CaptureArm {
 	readonly variants: readonly CaptureViewport[]
 }
 
-/** Declares one consumer workspace population: its scale and its variant arm. */
-export interface CapturePopulation extends CaptureScale, CaptureArm {}
+/**
+ * Declares one consumer workspace population: its scale, its variant arm, and the shared source
+ * patterns every destination reads. Default `shared`: the consumer fixture's one shared source.
+ */
+export interface CapturePopulation extends CaptureScale, CaptureArm {
+	readonly shared?: readonly string[]
+}
 
 /** Describes one generated consumer case: its title, owner, state, source part, and Vitest tags. */
 export interface CapturePopulationCase {
@@ -2552,6 +2557,22 @@ export const CAPTURE_ARMS: Readonly<Record<'base' | 'veneer', CaptureArm>> = Obj
 
 /** Names the input patterns of a population workspace, as the consumer fixture's wrapper declares them. */
 export const CAPTURE_POPULATION_INPUTS = Object.freeze(['*.ts', 'src/**', 'specs/**'])
+
+/** Names the portfolio directory of a population workspace, as the consumer fixture declares it. */
+export const CAPTURE_POPULATION_DIRECTORY = 'tmp/captures/states'
+
+/** Names the shared and test sources of a population workspace, as the consumer fixture declares them. */
+export const CAPTURE_POPULATION_SOURCES = Object.freeze({
+	shared: Object.freeze(['src/shared.ts']),
+	tests: Object.freeze(['specs/**']),
+})
+
+/**
+ * Declares a shared pattern list that, as veneer's `CAPTURE_SHARED` does, matches most of a
+ * population's inputs: every root module, the shared source, and every filler source, leaving each
+ * owner's own source and the specs out.
+ */
+export const CAPTURE_POPULATION_SHARED = Object.freeze(['*.ts', 'src/shared.ts', 'src/filler/**'])
 
 /**
  * Names each consumer fixture file a population workspace copies unchanged, with the workspace
@@ -2616,7 +2637,7 @@ export function buildPopulationCases(scale: CaptureScale): readonly CapturePopul
  * Every refusal is thrown before the first write.
  */
 export function writeCapturePopulation(root: string, population: CapturePopulation): void {
-	const { states, owners, inputs, first, variants } = population
+	const { states, owners, inputs, first, variants, shared } = population
 	if (![states, owners, inputs].every((count) => Number.isSafeInteger(count) && count > 0))
 		throw new Error(
 			`A population declares whole positive counts; it declares states=${String(states)}, owners=${String(owners)}, inputs=${String(inputs)}`,
@@ -2643,10 +2664,15 @@ export function writeCapturePopulation(root: string, population: CapturePopulati
 			`A population declares whole positive viewports; it declares ${JSON.stringify(variants)}`,
 		)
 	const cases = buildPopulationCases(population)
+	const sources = {
+		...CAPTURE_POPULATION_SOURCES,
+		shared: shared ?? CAPTURE_POPULATION_SOURCES.shared,
+	}
 	const constants = [
-		"import type { CaptureViewport } from '@orkestrel/capture'",
+		"import type { CaptureSources, CaptureViewport } from '@orkestrel/capture'",
 		'',
-		"export { CONSUMER_DIRECTORY, CONSUMER_FINAL, CONSUMER_SOURCES } from './fixture.js'",
+		"export { CONSUMER_DIRECTORY, CONSUMER_FINAL } from './fixture.js'",
+		`export const CONSUMER_SOURCES: Pick<CaptureSources, 'shared' | 'tests'> = Object.freeze(${JSON.stringify(sources)})`,
 		`export const CONSUMER_FIRST = ${JSON.stringify(first)}`,
 		`export const CONSUMER_INPUTS = Object.freeze(${JSON.stringify(CAPTURE_POPULATION_INPUTS)})`,
 		`export const CONSUMER_VARIANTS: readonly CaptureViewport[] = Object.freeze(${JSON.stringify(variants)})`,
@@ -2680,6 +2706,13 @@ export function writeCapturePopulation(root: string, population: CapturePopulati
 		(_, index) =>
 			[`src/filler/${String(index)}.ts`, `export const FILLER = ${String(index)}\n`] as const,
 	)
+	const unmatched = sources.shared.filter(
+		(pattern) => ![...fixed, ...filler].some(([path]) => matchesGlob(path, pattern)),
+	)
+	if (unmatched.length > 0)
+		throw new Error(
+			`A population's shared patterns each match an input file; ${JSON.stringify(unmatched)} match none of its ${String(inputs)} inputs`,
+		)
 	for (const [path, text] of [...fixed, ...filler]) {
 		const file = resolve(root, path)
 		mkdirSync(dirname(file), { recursive: true })
@@ -2746,7 +2779,281 @@ export const CAPTURE_POPULATION_REFUSALS: ReadonlyArray<{
 		population: { ...CAPTURE_SCALES.rehearsal, ...CAPTURE_ARMS.base, inputs: 20 },
 		reason: 'needs at least 21 input files; it declares 20',
 	},
+	{
+		title: 'a shared pattern that matches no input',
+		population: {
+			...CAPTURE_SCALES.rehearsal,
+			...CAPTURE_ARMS.veneer,
+			inputs: 21,
+			shared: CAPTURE_POPULATION_SHARED,
+		},
+		reason: '["src/filler/**"] match none of its 21 inputs',
+	},
 ])
+
+/**
+ * Owns a committed Git workspace written at a population, an accepted registry whose receipts
+ * attest every variant of the population, and the in-process integrity engine over it, and stages
+ * `capture` runs that frame every destination of every variant.
+ *
+ * @remarks
+ * Each destination reads its part's own source, the population's shared patterns, and the specs.
+ * A stage's child is this process: it writes each variant's journal, a one-pixel frame per
+ * destination, each variant's final record, and the Vitest JSON report, as a producer writes them.
+ */
+export class PopulationFixture {
+	readonly root: string
+	readonly population: CapturePopulation
+	readonly options: CaptureIntegrityOptions
+	readonly engine: CaptureIntegrityInterface
+	readonly #modules: CaptureFixtureModules
+	readonly #scratch: ScratchInterface
+
+	/**
+	 * Writes and commits the population workspace, then accepts a registry over its variants.
+	 *
+	 * @throws Thrown when the population writer refuses the population, Git fails, or the engine
+	 * refuses the registry; the scratch workspace is released first.
+	 */
+	constructor(modules: CaptureFixtureModules, population: CapturePopulation) {
+		this.#modules = modules
+		this.population = population
+		this.#scratch = createScratch({ prefix: 'population-' })
+		this.root = this.#scratch.path
+		try {
+			writeCapturePopulation(this.root, population)
+			this.#write('.gitignore', 'tmp/\n')
+			execFileSync('git', ['init', '--quiet'], { cwd: this.root, windowsHide: true })
+			execFileSync('git', ['add', '.'], { cwd: this.root, windowsHide: true })
+			execFileSync(
+				'git',
+				[
+					'-c',
+					'user.name=Population Fixture',
+					'-c',
+					'user.email=fixture@example.invalid',
+					'commit',
+					'--quiet',
+					'--no-gpg-sign',
+					'-m',
+					'population',
+				],
+				{ cwd: this.root, windowsHide: true },
+			)
+			this.options = {
+				root: this.root,
+				inputs: CAPTURE_POPULATION_INPUTS,
+				directory: CAPTURE_POPULATION_DIRECTORY,
+				registry: `${CAPTURE_POPULATION_DIRECTORY}/registry.json`,
+				manifest: `${CAPTURE_POPULATION_DIRECTORY}/manifest.json`,
+				lookups: `${CAPTURE_POPULATION_DIRECTORY}/lookups.json`,
+				portfolios: [
+					{ portfolio: 'states', directory: CAPTURE_POPULATION_DIRECTORY, scoped: true },
+				],
+			}
+			this.engine = modules.server.createCaptureIntegrity(this.options)
+			const report = `tmp/evidence/${randomUUID()}/report.json`
+			const text = JSON.stringify(this.#report(Date.now()))
+			this.#write(report, text)
+			const inputs = modules.server.readCaptureInputs(this.root, CAPTURE_POPULATION_INPUTS)
+			const registry = modules.server.buildCaptureRegistry(
+				population.variants.map(({ name }) => ({
+					receipt: {
+						version: modules.core.CAPTURE_VERSION,
+						variant: name,
+						time: new Date().toISOString(),
+						report: { file: report, digest: createHash('sha256').update(text).digest('hex') },
+						inputs,
+						declarations: this.#declarations(name),
+						registry: this.#destinations(name),
+						complete: true,
+					},
+					report: text,
+					outcome: { code: 0, signal: null },
+					capped: false,
+				})),
+			)
+			this.#write(this.options.registry, JSON.stringify(registry))
+		} catch (error) {
+			// A throwing constructor returns no instance, so no caller's finally block can destroy it.
+			this.#scratch.destroy()
+			throw error
+		}
+	}
+
+	/**
+	 * Builds one `capture` stage over every variant, selecting every owner.
+	 *
+	 * @returns The stage passed directly to the engine's `stamp` method
+	 */
+	stage(): CaptureStageOptions {
+		const id = randomUUID()
+		const report = `tmp/stages/${id}/narrow.json`
+		const request: CaptureRequest = {
+			version: this.#modules.core.CAPTURE_VERSION,
+			id,
+			stage: 'narrow',
+			pid: process.pid,
+			config: 'journey.config.ts',
+			command: 'capture',
+			selector: 'all',
+			variants: this.population.variants.map((variant) => variant.name),
+			args: [`--outputFile.json=${resolve(this.root, report)}`],
+		}
+		const projects = request.variants.map((variant) => ({
+			name: `journey:${variant}`,
+			variant,
+			inputs: CAPTURE_POPULATION_INPUTS,
+			record: `${CAPTURE_POPULATION_DIRECTORY}/runs/${id}/narrow/${variant}.json`,
+		}))
+		return {
+			request,
+			report,
+			projects,
+			execute: async () => {
+				const start = Date.now()
+				const journals = projects.map((project) => ({
+					project,
+					file: `tmp/journey/runs/${id}/narrow/${project.variant}.txt`,
+					text: `# ${project.variant}\ncoverage=complete\nrecord=${project.record}\n`,
+				}))
+				// File times come from a coarser clock than `Date.now()`, and the engine refuses an output
+				// stamped before its snapshot, so the outputs wait for that clock to pass.
+				await waitForCondition('the file clock passes the stage start', () =>
+					journals.every((journal) => {
+						this.#write(journal.file, journal.text)
+						const stat = statSync(resolve(this.root, journal.file))
+						return stat.mtimeMs >= start && stat.ctimeMs >= start
+					}),
+				)
+				for (const { project, file, text } of journals) {
+					const registry = this.#destinations(project.variant)
+					for (const destination of registry) this.#write(destination.file, PNG)
+					const declarations = this.#declarations(project.variant)
+					this.#write(
+						project.record,
+						JSON.stringify({
+							version: 1,
+							request,
+							identity: { id, stage: request.stage, pid: request.pid, config: request.config },
+							variant: project.variant,
+							time: new Date().toISOString(),
+							complete: true,
+							reference: false,
+							artifact: { file, digest: createHash('sha256').update(text).digest('hex') },
+							declarations,
+							registry,
+							passed: declarations.map((declaration) => declaration.case),
+							observed: declarations.flatMap((declaration) => declaration.states),
+							entries: registry.map((destination) => ({ ...destination, duration: 1 })),
+						}),
+					)
+				}
+				this.#write(report, JSON.stringify(this.#report(start)))
+				return { code: 0, signal: null }
+			},
+		}
+	}
+
+	/** Releases the scratch workspace this instance created. */
+	destroy(): void {
+		this.#scratch.destroy()
+	}
+
+	#write(file: string, bytes: string | Uint8Array): void {
+		const path = resolve(this.root, file)
+		mkdirSync(dirname(path), { recursive: true })
+		writeFileSync(path, bytes)
+	}
+
+	#declarations(variant: string): readonly CaptureDeclaration[] {
+		return buildPopulationCases(this.population).map((entry) => ({
+			case: entry.case,
+			owner: entry.owner,
+			variant,
+			eligible: true,
+			states: [entry.state],
+		}))
+	}
+
+	#destinations(variant: string): readonly CaptureDestination[] {
+		return buildPopulationCases(this.population).map((entry) => ({
+			portfolio: 'states',
+			state: entry.state,
+			scope: 'pages',
+			part: entry.part,
+			variant,
+			project: `journey:${variant}`,
+			file: `${CAPTURE_POPULATION_DIRECTORY}/pages/${entry.state}--${variant}.png`,
+			case: entry.case,
+			sources: {
+				own: [`src/${entry.part}.ts`],
+				shared: this.population.shared ?? CAPTURE_POPULATION_SOURCES.shared,
+				tests: CAPTURE_POPULATION_SOURCES.tests,
+			},
+		}))
+	}
+
+	// Every case of every variant passes in one file, as one Vitest run reports every project.
+	#report(start: number): unknown {
+		return {
+			success: true,
+			numFailedTests: 0,
+			numFailedTestSuites: 0,
+			startTime: start,
+			testResults: [
+				{
+					name: 'specs/journey.ts',
+					status: 'passed',
+					startTime: start,
+					endTime: Date.now(),
+					assertionResults: this.population.variants.flatMap(({ name }) =>
+						this.#declarations(name).map((declaration) => ({
+							fullName: declaration.case,
+							title: declaration.case,
+							ancestorTitles: [],
+							status: 'passed',
+							duration: 1,
+							meta: {
+								owner: declaration.owner,
+								variant: name,
+								eligible: true,
+								states: declaration.states,
+							},
+						})),
+					),
+				},
+			],
+		}
+	}
+}
+
+/** Names the integrity operations the population bench reads, in the order a pass calls them. */
+export const INTEGRITY_OPERATIONS = Object.freeze(['stamp', 'read', 'check'] as const)
+
+/**
+ * Declares the populations the integrity bench reads at each scale, with the calls each reading
+ * takes: the base arm's one variant with the fixture's one shared file, and the veneer kind, which
+ * runs veneer's four variants over a shared list that matches most inputs.
+ */
+export const INTEGRITY_POPULATIONS: ReadonlyArray<{
+	readonly label: string
+	readonly population: CapturePopulation
+	readonly iterations: number
+}> = Object.freeze(
+	Object.entries(CAPTURE_SCALES).flatMap(([scale, size]) => [
+		{
+			label: `base ${scale}`,
+			population: { ...size, ...CAPTURE_ARMS.base },
+			iterations: scale === 'full' ? 3 : 10,
+		},
+		{
+			label: `kind ${scale}`,
+			population: { ...size, ...CAPTURE_ARMS.veneer, shared: CAPTURE_POPULATION_SHARED },
+			iterations: scale === 'full' ? 3 : 10,
+		},
+	]),
+)
 
 /** Creates an inert timed command from its arguments, duration, lines as arrival and text pairs, and exit code. */
 export function createCaptureTiming(
