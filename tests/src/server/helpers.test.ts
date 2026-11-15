@@ -10,7 +10,7 @@ import {
 	truncateSync,
 	writeFileSync,
 } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, matchesGlob, resolve, win32 } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { deflateSync, inflateSync } from 'node:zlib'
 import { parseJSON, preview } from '@orkestrel/contract'
@@ -27,6 +27,7 @@ import {
 	buildCaptureArguments,
 	buildCaptureChangePlan,
 	buildCaptureDigest,
+	filterCaptureInputs,
 	buildCaptureLookupJournal,
 	buildCaptureDiscoveryConfig,
 	buildCaptureFilter,
@@ -126,6 +127,7 @@ import {
 	ARGUMENT_REFUSALS,
 	FILTERED_PICTURE,
 	HASH_VECTORS,
+	INPUTS,
 	PNG,
 	PREDICTOR_CASES,
 	PROJECT_REFUSALS,
@@ -449,6 +451,106 @@ describe('buildCaptureDigest', () => {
 
 	it('digests an empty population', () => {
 		expect(buildCaptureDigest([], {})).toMatchObject({ patterns: [], files: {} })
+	})
+})
+
+describe('filterCaptureInputs', () => {
+	it('answers as matchesGlob over the cost map population and edge paths through one memo', () => {
+		// The cost map's population: 131 owners, each attributed to its own file, one shared file,
+		// and one test glob, over 310 input files.
+		const parts = Array.from({ length: 131 }, (_, index) => `src/parts/part-${index}.ts`)
+		const population = buildCaptureDigest(
+			INPUTS,
+			Object.fromEntries(
+				[
+					...parts,
+					...Array.from({ length: 174 }, (_, index) => `src/filler/file-${index}.ts`),
+					'src/mail/view.ts',
+					'src/board/view.ts',
+					'src/shared/theme.ts',
+					'behavior/journeys.ts',
+					'fixture with spaces.config.ts',
+				].map((path) => [path, FIXTURE_HASH]),
+			),
+		)
+		const edges = buildCaptureDigest(
+			['**'],
+			Object.fromEntries(
+				[
+					'src/a.ts',
+					'src/b.md',
+					'src/c.ts',
+					'src/d.ts',
+					'src/a1.ts',
+					'src/.hidden.ts',
+					'src/.dir/a.ts',
+					'src/x/y/a.ts',
+					'src/',
+					'src/a.ts/',
+					'src//a.ts',
+					'./src/a.ts',
+					'src/x/../a.ts',
+					'SRC/A.TS',
+					'a.ts',
+					'.git/x',
+					'src/parts/part-1.ts',
+					win32.join('src', 'a.ts'),
+					win32.join('src', 'x', 'a.ts'),
+				].map((path) => [path, FIXTURE_HASH]),
+			),
+		)
+		const lists = [
+			...parts.map((part) => [part]),
+			['src/shared/theme.ts'],
+			['behavior/**'],
+			INPUTS,
+			...[
+				'**',
+				'src/**',
+				'src/*.ts',
+				'src/**/a.ts',
+				'**/*.ts',
+				'*.ts',
+				'src/a.ts',
+				'src/a.ts/',
+				'src/{a,b}.ts',
+				'src/a{1..3}.ts',
+				'src/[a-c].ts',
+				'src/[!a-c].ts',
+				'src/+(a|b).ts',
+				'src/.*',
+			].map((pattern) => [pattern]),
+			['src/{a,b}.ts', '**/*.ts'],
+		]
+		const matches = new Map<string, ReadonlySet<string>>()
+		const answers = [population, edges].flatMap((inputs) =>
+			lists.map((patterns) => ({
+				first: filterCaptureInputs(inputs, patterns, matches),
+				second: filterCaptureInputs(inputs, patterns.toReversed(), matches),
+				expected: Object.keys(inputs.files).filter((path) =>
+					patterns.some((pattern) => matchesGlob(path, pattern)),
+				),
+			})),
+		)
+		expect(answers.map(({ first }) => [...first])).toEqual(answers.map(({ expected }) => expected))
+		expect(answers.every(({ first, second }) => first === second)).toBe(true)
+		expect(matches.size).toBe(2 * new Set(lists.map((list) => list.toSorted().join('\n'))).size)
+		expect(answers.filter(({ expected }) => expected.length > 0).length).toBeGreaterThan(
+			lists.length,
+		)
+	})
+
+	it('keeps one population from answering for another with the same patterns', () => {
+		const matches = new Map<string, ReadonlySet<string>>()
+		const wide = buildCaptureDigest(['src/**'], {
+			'src/a.ts': FIXTURE_HASH,
+			'src/b.ts': FIXTURE_HASH,
+		})
+		const narrow = buildCaptureDigest(['src/**'], { 'src/b.ts': FIXTURE_HASH })
+		expect([...filterCaptureInputs(wide, ['src/**'], matches)]).toEqual(['src/a.ts', 'src/b.ts'])
+		expect([...filterCaptureInputs(narrow, ['src/**'], matches)]).toEqual(['src/b.ts'])
+		expect([...filterCaptureInputs(narrow, ['src/a.ts'], matches)]).toEqual([])
+		expect([...filterCaptureInputs(wide, [], matches)]).toEqual([])
 	})
 })
 

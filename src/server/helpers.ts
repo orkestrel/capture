@@ -523,6 +523,42 @@ export function buildCaptureDigest(
 }
 
 /**
+ * Filters an input population's paths matching any listed pattern, memoizing each list's subset.
+ *
+ * @remarks
+ * The memo belongs to one owning operation. Its key is the population's digest with the sorted
+ * patterns, so a list repeated over one population is matched once. Each path is matched with the
+ * `matchesGlob` function from `node:path`.
+ *
+ * @param inputs - The digested input population whose paths are matched
+ * @param patterns - The native glob patterns
+ * @param matches - The owning operation's memo of matched subsets
+ * @returns The population's paths that match at least one pattern, in population order
+ *
+ * @example
+ * ```ts
+ * const inputs = buildCaptureDigest(['src/**'], { 'src/a.ts': 'f'.repeat(64), 'src/b.md': 'e'.repeat(64) })
+ * filterCaptureInputs(inputs, ['src/*.ts'], new Map()) // Set { 'src/a.ts' }
+ * ```
+ */
+export function filterCaptureInputs(
+	inputs: CaptureDigest,
+	patterns: readonly string[],
+	matches: Map<string, ReadonlySet<string>>,
+): ReadonlySet<string> {
+	const key = JSON.stringify([inputs.digest, patterns.toSorted()])
+	const known = matches.get(key)
+	if (known !== undefined) return known
+	const matched = new Set(
+		Object.keys(inputs.files).filter((path) =>
+			patterns.some((pattern) => matchesGlob(path, pattern)),
+		),
+	)
+	matches.set(key, matched)
+	return matched
+}
+
+/**
  * Stores each distinct lookup input population once in a manifest-bound journal.
  *
  * @param lookups - The expanded passing case evidence to publish

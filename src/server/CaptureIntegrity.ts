@@ -94,6 +94,7 @@ import {
 	describeCaptureFault,
 	readCaptureImage,
 	describeCaptureOutput,
+	filterCaptureInputs,
 } from './helpers.js'
 
 /**
@@ -268,6 +269,8 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		const snapshots = new Map<string, CaptureFileSnapshot | undefined>()
 		const digests = new Map<string, CaptureDigest>()
 		const stable = new Map<string, true>()
+		// Glob answers read no disk, so both passes share one memo of matched subsets.
+		const matches = new Map<string, ReadonlySet<string>>()
 		const reporter = this.#fresh(options.report, before, snapshots)
 		const report = readCaptureReport(this.#json(options.report))
 		if (report.start < before.time || report.end > Date.now())
@@ -308,7 +311,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				throw new CaptureError('Missing pre-execution project snapshot', { code: 'EVIDENCE' })
 			this.#attest(run, evidence, snapshot.inputs.files, snapshots)
 			for (const destination of run.registry)
-				this.#stable(destination, snapshot.inputs, snapshots, digests, stable)
+				this.#stable(destination, snapshot.inputs, snapshots, digests, stable, matches)
 			return { file, run, artifact }
 		})
 		const entries = records.flatMap(({ run }) => run.entries)
@@ -389,7 +392,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			if (project === undefined)
 				throw new CaptureError('Missing final input snapshot', { code: 'EVIDENCE' })
 			for (const destination of record.run.registry)
-				this.#stable(destination, project.inputs, finalSnapshots, redigests, restable)
+				this.#stable(destination, project.inputs, finalSnapshots, redigests, restable, matches)
 			if (
 				this.#digest(project.inputs.patterns, finalSnapshots, redigests).digest !==
 				project.inputs.digest
@@ -1037,6 +1040,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		snapshots: Map<string, CaptureFileSnapshot | undefined>,
 		digests: Map<string, CaptureDigest>,
 		stable: Map<string, true>,
+		matches: Map<string, ReadonlySet<string>>,
 	): void {
 		const key = JSON.stringify([
 			before.digest,
@@ -1052,20 +1056,21 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 					`Attribution outside the predeclared host population: ${entry.file}`,
 					{ code: 'STAGE' },
 				)
+			const matched = filterCaptureInputs(before, patterns, matches)
 			const previous = Object.fromEntries(
-				Object.entries(before.files).filter(([file]) =>
-					patterns.some((pattern) => matchesGlob(file, pattern)),
-				),
+				Object.entries(before.files).filter(([file]) => matched.has(file)),
 			)
 			if (collectCaptureChanges(previous, current.files).length > 0)
 				throw new CaptureError(
 					`Attributed inputs or membership changed during execution: ${entry.file}`,
 					{ code: 'STAGE' },
 				)
+			// Every current file is a member of the predeclared population, so its subsets answer here.
 			if (
-				patterns.some(
-					(pattern) => !Object.keys(current.files).some((file) => matchesGlob(file, pattern)),
-				)
+				patterns.some((pattern) => {
+					const files = filterCaptureInputs(before, [pattern], matches)
+					return !Object.keys(current.files).some((file) => files.has(file))
+				})
 			)
 				throw new CaptureError(`Declared source pattern has no files: ${entry.file}`, {
 					code: 'HOST',
