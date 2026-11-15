@@ -1,20 +1,33 @@
 import type { CaptureCLIInterface, CaptureCLIOptions, CaptureWriteHandler } from './types.js'
+import { renderProgress } from '@orkestrel/test/server'
 import { CaptureError, describeCaptureError, isCaptureError } from '@src/core'
 import { CapturePreflight } from './CapturePreflight.js'
 import { CaptureRegistrar } from './CaptureRegistrar.js'
 import { CaptureRunner } from './CaptureRunner.js'
 import { CaptureSheets } from './CaptureSheets.js'
-import { CAPTURE_DEFAULTS, CAPTURE_SUBCOMMANDS, CAPTURE_USAGE } from './constants.js'
-import { readCaptureReaderArguments, resolveCaptureExit } from './helpers.js'
+import {
+	CAPTURE_COMMAND_OPTIONS,
+	CAPTURE_DEFAULTS,
+	CAPTURE_EXIT,
+	CAPTURE_SUBCOMMANDS,
+	CAPTURE_USAGE,
+} from './constants.js'
+import {
+	readCaptureOptions,
+	readCaptureProgress,
+	readCaptureReaderArguments,
+	resolveCaptureExit,
+} from './helpers.js'
 
 /**
  * Dispatches capture commands and maps usage and evidence refusals to their exit codes.
  *
  * @remarks
  * The executable's whole behaviour: it reads the subcommand, hands the rest of the command line to
- * the runner, the registry refresh, the preflight, or the contact sheets, and turns a refused
- * usage into exit 64 and any other capture refusal into exit 1, writing the refusal to its error
- * writer. An error that is not a capture refusal propagates.
+ * the runner, the registry refresh, the preflight, or the contact sheets, or prints the progress of
+ * the stage that ran last, and turns a refused usage into exit 64 and any other capture refusal
+ * into exit 1, writing the refusal to its error writer. An error that is not a capture refusal
+ * propagates.
  *
  * @example
  * ```ts
@@ -76,6 +89,20 @@ export class CaptureCLI implements CaptureCLIInterface {
 						stdout: this.#stdout,
 						stderr: this.#stderr,
 					}).execute()
+				}
+				case 'progress': {
+					const usage = 'Usage: capture progress'
+					const { positionals } = readCaptureOptions(argv, CAPTURE_COMMAND_OPTIONS.progress, usage)
+					if (positionals.length > 0)
+						throw new CaptureError(
+							`Unexpected argument ${JSON.stringify(positionals[0]?.slice(0, 80))}: the progress command takes no argument. ${usage}`,
+							{ code: 'USAGE' },
+						)
+					const progress = readCaptureProgress(root, CAPTURE_DEFAULTS.requests)
+					this.#stdout(
+						`progress ${progress.file}\n${progress.runs.length === 0 ? 'No run has written a complete progress line yet' : renderProgress(progress.runs)}\n`,
+					)
+					return CAPTURE_EXIT.passed
 				}
 				case 'preflight': {
 					const { reader } = readCaptureReaderArguments(argv, root, CAPTURE_DEFAULTS, 'preflight')

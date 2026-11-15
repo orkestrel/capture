@@ -248,6 +248,14 @@ describe.each(RUNNER_COMMANDS)(
 			expect(
 				requests.map((request) => [request?.variants, request?.args.includes('--bail=1')]),
 			).toEqual(command === 'journey' ? VARIANTS.map(() => [VARIANTS, true]) : [])
+			const id = readCaptureInvocationId(run.stdout)
+			expect(
+				requests.map((request) => request?.args.filter((arg) => arg.includes('progress'))),
+			).toEqual(
+				requests.map(() => [
+					`--outputFile.progress=${resolve(base.root, base.requests, 'runs', id, 'selected.progress.jsonl')}`,
+				]),
+			)
 			const rest = `capture rest: ${VARIANTS.filter((variant) => variant !== COMPOSED_FIRST).join(', ')};`
 			expect(lines.slice(1).map((line) => line.includes(rest))).toEqual(
 				command === 'journey' ? [] : [true],
@@ -265,6 +273,17 @@ describe.each(RUNNER_COMMANDS)(
 				`${command} ${command === 'journey' ? 'selected' : 'rest'}: dark-390;`,
 			)
 			expect(run.stdout).not.toContain(`${command} narrow:`)
+		})
+
+		it('runs every selected case under --no-bail and names the stage progress file in the request', async () => {
+			const run = await base.run(command, ['pages:mail', '--variant', COMPOSED_FIRST, '--no-bail'])
+			expect(run.code === 0 ? 0 : run.stderr).toBe(0)
+			const args = readCaptureStageRequest(base, run.stdout, stage, COMPOSED_FIRST)?.args ?? []
+			expect(args.filter((arg) => arg.startsWith('--bail'))).toEqual([])
+			expect(args).toContain(
+				`--outputFile.progress=${resolve(base.root, base.requests, 'runs', readCaptureInvocationId(run.stdout), `${stage}.progress.jsonl`)}`,
+			)
+			expect(run.stdout).toContain(`NEXT capture journey all --config`)
 		})
 
 		it('selects an owner and its capture tag, and the union of declared scopes for all', async () => {

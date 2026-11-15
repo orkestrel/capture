@@ -6,7 +6,11 @@ import { CONSUMER_CASES, CONSUMER_DIRECTORY } from './constants.js'
 
 /** Owns the real browser tasks whose final results become consumer evidence. */
 export class ConsumerJourney {
-	readonly #context = inject('consumer')
+	readonly #variant = inject('variant')
+	readonly #capture = inject('capture')
+	readonly #request = inject('request')
+	readonly #record = inject('record')
+	readonly #sources = inject('sources')
 	readonly #tasks: Array<TestContext['task']> = []
 	readonly #emitted: CaptureDestination[] = []
 
@@ -26,16 +30,15 @@ export class ConsumerJourney {
 					: (index * 73 +
 							Math.floor(index / 97) * 31 +
 							name.length * 43 +
-							this.#context.variant.length * 17) %
+							this.#variant.length * 17) %
 						256,
 			),
 		)
 		drawing.putImageData(pixels, 0, 0)
 		document.body.replaceChildren(canvas)
 		if (
-			this.#context.capture &&
-			(this.#context.request.state === undefined ||
-				this.#context.request.state === destination.state)
+			this.#capture &&
+			(this.#request?.state === undefined || this.#request.state === destination.state)
 		) {
 			await page.screenshot({ path: `../${destination.file}` })
 			this.#emitted.push(destination)
@@ -45,7 +48,7 @@ export class ConsumerJourney {
 	}
 
 	async finish(): Promise<readonly string[]> {
-		const { request, variant } = this.#context
+		const request = this.#request
 		const passed = this.#tasks.filter((task) => task.result?.state === 'pass')
 		const entries: readonly CaptureEntry[] = this.#emitted.map((entry) => {
 			const duration = this.#tasks.find((task) => task.meta.consumer === entry.case)?.result
@@ -53,18 +56,27 @@ export class ConsumerJourney {
 			if (duration === undefined) throw new Error('Vitest supplied no completed case duration')
 			return { ...entry, duration }
 		})
-		await server.commands.persistConsumer({
+		await server.commands.persistConsumer(this.#record, {
 			version: 1,
-			identity: { id: request.id, stage: request.stage, pid: request.pid, config: request.config },
-			request,
-			variant,
+			...(request === undefined
+				? {}
+				: {
+						identity: {
+							id: request.id,
+							stage: request.stage,
+							pid: request.pid,
+							config: request.config,
+						},
+						request,
+					}),
+			variant: this.#variant,
 			time: new Date().toISOString(),
 			complete: passed.length === CONSUMER_CASES.length,
 			reference: false,
 			declarations: CONSUMER_CASES.map((entry) => ({
 				case: entry.case,
 				owner: entry.owner,
-				variant,
+				variant: this.#variant,
 				eligible: true,
 				states: [entry.state],
 			})),
@@ -77,6 +89,12 @@ export class ConsumerJourney {
 			),
 			entries,
 		})
+		const frames = await server.commands.readCaptureFrames()
+		const missing = this.#emitted.filter(
+			(entry) => !frames.includes(entry.file.slice(CONSUMER_DIRECTORY.length + 1)),
+		)
+		if (missing.length > 0)
+			throw new Error(`The frame command lists no ${missing.map((entry) => entry.file).join(', ')}`)
 		return passed.map((task) => String(task.meta.consumer))
 	}
 
@@ -86,11 +104,11 @@ export class ConsumerJourney {
 			state: entry.state,
 			scope: 'pages',
 			part: entry.part,
-			variant: this.#context.variant,
-			project: `journey:${this.#context.variant}`,
-			file: `${CONSUMER_DIRECTORY}/pages/${entry.state}--${this.#context.variant}.png`,
+			variant: this.#variant,
+			project: `journey:${this.#variant}`,
+			file: `${CONSUMER_DIRECTORY}/pages/${entry.state}--${this.#variant}.png`,
 			case: entry.case,
-			sources: { own: [`src/${entry.part}.ts`], shared: ['src/shared.ts'], tests: ['specs/**'] },
+			sources: { own: [`src/${entry.part}.ts`], ...this.#sources },
 		}))
 	}
 }

@@ -1,9 +1,18 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { isRecord, parseJSON } from '@orkestrel/contract'
+import { buildCaptureArguments } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { CONSUMER_CASE } from './fixtures/capture/consumer/constants.js'
-import { CaptureConsumer, CONSUMER_TIMEOUT, readConsumerReport } from './setupServer.js'
+import { CONSUMER_CASE, CONSUMER_FINAL } from './fixtures/capture/consumer/constants.js'
+import {
+	CAPTURE_CONTROL_CONFIG,
+	CAPTURE_WORKSPACE_ROOT,
+	CaptureConsumer,
+	CONSUMER_TIMEOUT,
+	readCaptureInvocationId,
+	readConsumerReport,
+} from './setupServer.js'
 
 describe(
 	'built executable through a real Vitest and Chromium consumer',
@@ -60,6 +69,21 @@ describe(
 					lookups: 2,
 				})
 				expect(existsSync(resolve(consumer.root, 'tmp/captures/states/manifest.json'))).toBe(false)
+				const progress = `tmp/capture/runs/${readCaptureInvocationId(journey.stdout)}/selected.progress.jsonl`
+				const lines = readFileSync(resolve(consumer.root, progress), 'utf8')
+					.split(/\r\n|\n/u)
+					.filter(Boolean)
+					.map((line) => parseJSON(line))
+				expect(lines.filter((line) => isRecord(line) && line.event === 'init')).toHaveLength(1)
+				expect(lines.at(0)).toMatchObject({ event: 'init', bail: 1 })
+				expect(lines.at(-1)).toMatchObject({ event: 'end', reason: 'passed' })
+				const reading = await consumer.drive([
+					resolve(CAPTURE_WORKSPACE_ROOT, 'dist/bin/main.js'),
+					'progress',
+				])
+				expect(reading).toMatchObject({ code: 0 })
+				expect(reading.stdout).toContain(`progress ${progress}\n`)
+				expect(reading.stdout).toMatch(/^run \d+ passed bail=1: (\d+)\/\1 cases, elapsed /mu)
 				const journal = consumer.read('tmp/captures/states/lookups.json')
 				expect(journal).toMatchObject({
 					lookups: expect.arrayContaining([
@@ -221,6 +245,58 @@ describe(
 						expect.objectContaining({ status: 'stale-own' }),
 					],
 				})
+			} finally {
+				consumer.destroy()
+			}
+		})
+
+		it('keeps the wrapper progress reporter under capture reporter flags with Chromium projects, and a wrapper without the plugin writes none', async ({
+			signal,
+		}) => {
+			const consumer = new CaptureConsumer(signal)
+			try {
+				writeFileSync(resolve(consumer.root, 'control.config.ts'), CAPTURE_CONTROL_CONFIG)
+				mkdirSync(resolve(consumer.root, 'tmp/pin'), { recursive: true })
+				const runs: Array<{
+					readonly result: Awaited<ReturnType<CaptureConsumer['drive']>>
+					readonly report: string
+					readonly progress: string
+				}> = []
+				for (const config of ['journey.config.ts', 'control.config.ts']) {
+					const report = resolve(consumer.root, 'tmp/pin', `${config}.json`)
+					const progress = resolve(consumer.root, 'tmp/pin', `${config}.progress.jsonl`)
+					const result = await consumer.drive(
+						buildCaptureArguments({
+							entry: resolve(consumer.root, 'node_modules/vitest/vitest.mjs'),
+							config: resolve(consumer.root, config),
+							report,
+							progress,
+							projects: ['journey:wide', 'journey:narrow'],
+							filter: 'owner:pages',
+							final: CONSUMER_FINAL,
+						}),
+					)
+					runs.push({ result, report, progress })
+				}
+				const [plugin, control] = runs
+				for (const run of runs) {
+					expect(run?.result).toMatchObject({ code: 0, signal: null })
+					expect(parseJSON(readFileSync(run?.report ?? '', 'utf8'))).toMatchObject({
+						success: true,
+						numFailedTests: 0,
+						numPassedTests: 8,
+					})
+				}
+				const events = readFileSync(plugin?.progress ?? '', 'utf8')
+					.split(/\r\n|\n/u)
+					.filter(Boolean)
+					.map((line) => parseJSON(line))
+					.map((line) => (isRecord(line) ? line.event : undefined))
+				expect(events.filter((event) => event === 'init')).toHaveLength(1)
+				expect(events.at(0)).toBe('init')
+				expect(events.at(-1)).toBe('end')
+				expect(events.filter((event) => event === 'module')).toHaveLength(2)
+				expect(existsSync(control?.progress ?? '')).toBe(false)
 			} finally {
 				consumer.destroy()
 			}

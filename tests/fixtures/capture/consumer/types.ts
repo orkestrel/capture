@@ -1,4 +1,4 @@
-import type { CaptureRequest, CaptureRun } from '@orkestrel/capture'
+import type { CaptureProvided, CaptureRun } from '@orkestrel/capture'
 
 declare module 'vitest' {
 	interface TaskMeta {
@@ -7,17 +7,14 @@ declare module 'vitest' {
 		readonly states?: readonly string[]
 		readonly consumer?: string
 	}
-	interface ProvidedContext {
-		readonly consumer: {
-			readonly request: CaptureRequest
-			readonly variant: string
-			readonly capture: boolean
-		}
+	interface ProvidedContext extends CaptureProvided {
+		readonly variant: string
 	}
 }
 
 declare module 'vitest/browser' {
 	interface BrowserCommands {
-		readonly persistConsumer: (run: CaptureRun) => Promise<void>
+		readonly persistConsumer: (record: string, run: CaptureRun) => Promise<void>
+		readonly readCaptureFrames: () => Promise<readonly string[]>
 	}
 }

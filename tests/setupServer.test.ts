@@ -33,7 +33,7 @@ import {
 	readCaptureViewport,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { CONSUMER_CONFIG } from './fixtures/capture/consumer/constants.js'
+import { CONSUMER_SOURCES } from './fixtures/capture/consumer/constants.js'
 import { createDeclarationFixture, createRequestFixture } from './setup.js'
 import {
 	CAPTURE_ARMS,
@@ -1307,7 +1307,7 @@ describe('writeCapturePopulation', () => {
 				expect(new Set(cases.map((entry) => entry.owner)).size).toBe(population.owners)
 				expect(cases.every((entry) => inputs.includes(`src/${String(entry.part)}.ts`))).toBe(true)
 				expect(constants).toMatchObject({
-					CONSUMER_CONFIG,
+					CONSUMER_SOURCES,
 					CONSUMER_FIRST: population.first,
 					CONSUMER_VARIANTS: population.variants,
 					CONSUMER_INPUTS: CAPTURE_POPULATION_INPUTS,
