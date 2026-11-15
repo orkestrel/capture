@@ -1,7 +1,8 @@
 import type { CaptureProducer } from '@src/server'
 import * as server from '@src/server'
-import { captureError } from '@orkestrel/test'
+import { captureError, captureProduction } from '@orkestrel/test'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
 	existsSync,
 	readFileSync,
@@ -142,6 +143,7 @@ import {
 	createWireRequest,
 	withEnvironment,
 	THUMBNAIL_FEATURES,
+	CaptureThumbnailSequence,
 	createThumbnailPicture,
 	averageThumbnailPicture,
 } from '../../setupServer.js'
@@ -1216,6 +1218,202 @@ describe('composeCapturePictures', () => {
 			code: 'USAGE',
 		})
 	})
+})
+
+describe('pixel loops', () => {
+	it('reproduce the bytes and refusals of revision 0fac494 over a seeded population', async () => {
+		const sequence = new CaptureThumbnailSequence()
+		const pngs = [
+			...[
+				[0, 1],
+				[2, 3],
+				[4, 2],
+				[6, 4],
+			].flatMap(([color = 0, channels = 1]) =>
+				[
+					...[
+						[1, 1],
+						[2, 3],
+						[7, 5],
+						[33, 17],
+						[390, 8],
+					].flatMap((size) => [0, 1, 2, 3, 4, 5].map((scheme) => ({ size, scheme }))),
+					...[
+						[131_072, 1],
+						[1, 131_072],
+					].flatMap((size) => [1, 4, 5].map((scheme) => ({ size, scheme }))),
+				].map(({ size: [width = 1, height = 1], scheme }) =>
+					createPngBytes({
+						width,
+						height,
+						color,
+						rows: Array.from({ length: height }, (_, row) => [
+							scheme === 5 ? (row + width) % 5 : scheme,
+							...Array.from({ length: width * channels }, () => sequence.next().value >>> 24),
+						]),
+					}),
+				),
+			),
+			...[1, 2, 4, 16].flatMap((depth) =>
+				[0, 2].map((color) =>
+					createPngBytes({ width: 2, height: 1, depth, color, rows: [[0, 1, 2, 3, 4, 5, 6]] }),
+				),
+			),
+			createPngBytes({ width: 2, height: 1, color: 3, rows: [[0, 1, 2]] }),
+			createPngBytes({ width: 2, height: 1, interlace: 1, rows: [[0, 1, 2, 3, 4, 5, 6]] }),
+			...[5, 255].map((filter) =>
+				createPngBytes({
+					width: 2,
+					height: 2,
+					rows: [
+						[0, 1, 2, 3, 4, 5, 6],
+						[filter, 1, 2, 3, 4, 5, 6],
+					],
+				}),
+			),
+		]
+		const lines = [0, 1, 2, 3, 4, 5, -1, 1.5, Number.NaN].flatMap((filter) =>
+			[1, 2, 3, 4, 0, -1, 1.5, 6].flatMap((channels) =>
+				[0, 1, 5, 16].flatMap((length) => {
+					const line = Uint8Array.from({ length }, () => sequence.next().value >>> 24)
+					return [undefined, length, Math.max(0, length - 1), length + 3].map((size) => ({
+						filter,
+						channels,
+						line,
+						above:
+							size === undefined
+								? undefined
+								: Uint8Array.from({ length: size }, () => sequence.next().value >>> 24),
+					}))
+				}),
+			),
+		)
+		const speckle = createThumbnailPicture('speckle', 643, 645)
+		const shrinks = [
+			...[
+				[1, 1, 3],
+				[2, 2, 12],
+				[5, 3, 45],
+				[19, 19, 1083],
+				[64, 48, 9216],
+				[2.5, 3, 30],
+				[6, 4, 40],
+				[3, 3, 40],
+			].flatMap(([width = 1, height = 1, length = 3]) => {
+				const picture = {
+					width,
+					height,
+					pixels: Uint8Array.from({ length }, () => sequence.next().value >>> 24),
+				}
+				return [1, 2, 3, 4, 9, 17, 0.5, 1.5, 2.5, 0, -1, Number.NaN, Infinity, 4294967296].flatMap(
+					(factor) =>
+						[1, 3, 400, 0, -1, 2.5, Number.NaN, Infinity].map((limit) => ({
+							picture,
+							factor,
+							limit,
+						})),
+				)
+			}),
+			...[1, 4, 9, 16, 17].flatMap((factor) =>
+				[400, 100.5].map((limit) => ({ picture: speckle, factor, limit })),
+			),
+		]
+		const composes = [false, true].flatMap((vertical) =>
+			[0, 1, 6, 12, undefined].flatMap((gap) =>
+				[1, 2, 3, 4].flatMap((count) =>
+					[-3, 0, 5].map((excess) => ({
+						vertical,
+						gap,
+						pictures: Array.from({ length: count }, () => {
+							const width = sequence.next().value % 10
+							const height = sequence.next().value % 10
+							return {
+								width,
+								height,
+								pixels: Uint8Array.from(
+									{ length: Math.max(0, width * height * 3 + excess) },
+									() => sequence.next().value >>> 24,
+								),
+							}
+						}),
+					})),
+				),
+			),
+		)
+		const entries = [
+			...pngs.map((png) => ({ family: 'decode', run: () => decodeCapturePicture(png) })),
+			...lines.map(({ filter, line, above, channels }) => ({
+				family: 'unfilter',
+				run: () => ({
+					width: 0,
+					height: 0,
+					pixels: unfilterCaptureRow(filter, line, above, channels),
+				}),
+			})),
+			...shrinks.map(({ picture, factor, limit }) => ({
+				family: 'shrink',
+				run: () => shrinkCapturePicture(picture, factor, limit),
+			})),
+			...[...composes, { vertical: false, gap: undefined, pictures: [] }].map(
+				({ vertical, gap, pictures }) => ({
+					family: 'compose',
+					run: () => composeCapturePictures(pictures, vertical, gap),
+				}),
+			),
+		]
+		const settled = await Promise.all(entries.map((entry) => captureProduction(entry.run)))
+		// A refusal other than a capture error matches by constructor; its message names the
+		// expression that threw.
+		const outcomes = settled.map((result) =>
+			result.status === 'fulfilled'
+				? `${String(result.value.width)}x${String(result.value.height)} ${result.value.pixels.constructor.name} ${createHash('sha256').update(result.value.pixels).digest('hex')}`
+				: isCaptureError(result.reason)
+					? `${result.reason.code} ${result.reason.message}`
+					: result.reason instanceof Error
+						? result.reason.name
+						: typeof result.reason,
+		)
+		const families = ['decode', 'unfilter', 'shrink', 'compose'].map((family) => {
+			const members = outcomes.filter((_, index) => entries[index]?.family === family)
+			return {
+				family,
+				fulfilled: settled.filter(
+					(result, index) => entries[index]?.family === family && result.status === 'fulfilled',
+				).length,
+				rejected: settled.filter(
+					(result, index) => entries[index]?.family === family && result.status === 'rejected',
+				).length,
+				digest: createHash('sha256').update(members.join('\n')).digest('hex'),
+			}
+		})
+		// Read from revision 0fac494, which wrote every output byte through a per-byte callback.
+		expect(families).toEqual([
+			{
+				family: 'decode',
+				fulfilled: 144,
+				rejected: 12,
+				digest: '16f81c3aca596a1ddec2951c0dc86603adcdf29803fd6d8fe28abc6d5a2ba806',
+			},
+			{
+				family: 'unfilter',
+				fulfilled: 1152,
+				rejected: 0,
+				digest: '67032e7542d61bf3228a6c32e111735a1a53375ccb50065111f95fd792207b93',
+			},
+			{
+				family: 'shrink',
+				fulfilled: 866,
+				rejected: 40,
+				digest: '3773181823e1b86df94c8709db65ec419a436c8960b590cfa73f9c68f53306e9',
+			},
+			{
+				family: 'compose',
+				fulfilled: 120,
+				rejected: 1,
+				digest: '624b31b16de4626fb6d90107bc7dcbf650827adc95b8bf2df72d303b3867336d',
+			},
+		])
+	}, 120_000)
 })
 
 describe('readCaptureRequestOwner', () => {

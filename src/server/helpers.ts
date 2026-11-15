@@ -855,8 +855,8 @@ export function unfilterCaptureRow(
 	above: Uint8Array | undefined,
 	channels: number,
 ): Uint8Array {
-	// Each reconstructed byte reads the bytes before it, so the row is a log the loop appends to.
-	const bytes: number[] = []
+	// Each byte reads reconstructed bytes before it, so the row is written once per index, in order.
+	const bytes = new Uint8Array(line.length)
 	for (const [index, value] of line.entries()) {
 		const left = index >= channels ? (bytes[index - channels] ?? 0) : 0
 		const up = above?.[index] ?? 0
@@ -871,9 +871,9 @@ export function unfilterCaptureRow(
 						: filter === 4
 							? predictCaptureByte(left, up, corner)
 							: 0
-		bytes.push((value + predicted) & 255)
+		bytes[index] = (value + predicted) & 255
 	}
-	return Uint8Array.from(bytes)
+	return bytes
 }
 
 /**
@@ -956,28 +956,37 @@ export function decodeCapturePicture(bytes: Buffer): CapturePicture {
 	)
 	if (raw.length !== length)
 		throw new CaptureError('Capture PNG scanline length differs', { code: 'EVIDENCE' })
-	// Each row reads the reconstructed row above it, so the rows are a log the loop appends to.
-	const rows: Uint8Array[] = []
+	// Each row is written once, in order, and an unfiltered row reads the reconstructed slice above it.
+	const rows = new Uint8Array(stride * height)
 	for (const row of new Array(height).keys()) {
 		const filter = raw[row * (stride + 1)]
 		if (filter === undefined || filter > 4)
 			throw new CaptureError('Unsupported capture PNG filter', { code: 'EVIDENCE' })
-		rows.push(
-			unfilterCaptureRow(
-				filter,
-				raw.subarray(row * (stride + 1) + 1, (row + 1) * (stride + 1)),
-				rows[row - 1],
-				channels,
-			),
+		const line = raw.subarray(row * (stride + 1) + 1, (row + 1) * (stride + 1))
+		rows.set(
+			filter === 0
+				? line
+				: unfilterCaptureRow(
+						filter,
+						line,
+						row === 0 ? undefined : rows.subarray((row - 1) * stride, row * stride),
+						channels,
+					),
+			row * stride,
 		)
 	}
-	const pixels = Uint8Array.from(
-		{ length: width * height * 3 },
-		(_, index) =>
-			rows[Math.floor(index / (width * 3))]?.[
-				Math.floor((index % (width * 3)) / 3) * channels + (gray ? 0 : index % 3)
-			] ?? 0,
-	)
+	if (channels === 3) return { width, height, pixels: rows }
+	const pixels = new Uint8Array(width * height * 3)
+	const columns = Array.from({ length: width }, (_, column) => column)
+	for (const row of new Array(height).keys()) {
+		for (const column of columns) {
+			const source = (row * width + column) * channels
+			const target = (row * width + column) * 3
+			pixels[target] = rows[source] ?? 0
+			pixels[target + 1] = rows[source + (gray ? 0 : 1)] ?? 0
+			pixels[target + 2] = rows[source + (gray ? 0 : 2)] ?? 0
+		}
+	}
 	return { width, height, pixels }
 }
 
@@ -1082,23 +1091,33 @@ export function shrinkCapturePicture(
 		{ length: Math.ceil(Math.min(factor, Math.max(picture.width, picture.height))) },
 		(_, index) => index,
 	)
-	const pixels = Uint8Array.from({ length: width * height * 3 }, (_, index) => {
-		const channel = index % 3
-		const x = Math.floor(index / 3) % width
-		const y = Math.floor(index / 3 / width)
+	// A clipped height can be fractional or negative, so the length follows the array-length rule.
+	const pixels = new Uint8Array(
+		Math.min(Math.max(Math.trunc(width * height * 3) || 0, 0), Number.MAX_SAFE_INTEGER),
+	)
+	const offsets = Array.from({ length: Math.min(width * 3, pixels.length) }, (_, offset) => offset)
+	// Each output row is written once per byte, in order; a partial last row stops at the length.
+	const lines = pixels.length === 0 ? 0 : Math.ceil(pixels.length / (width * 3))
+	for (const y of new Array(lines).keys()) {
 		const rows = Math.min(factor, picture.height - y * factor)
-		const columns = Math.min(factor, picture.width - x * factor)
-		const sum = span.reduce((total, row) => {
-			if (row >= rows) return total
-			const start = (y * factor + row) * picture.width * 3 + x * Math.ceil(factor) * 3 + channel
-			return span.reduce(
-				(block, column) =>
-					column >= columns ? block : block + (picture.pixels[start + column * 3] ?? 0),
-				total,
-			)
-		}, 0)
-		return Math.round(sum / (rows * columns))
-	})
+		for (const offset of offsets) {
+			const index = y * width * 3 + offset
+			if (index >= pixels.length) break
+			const channel = offset % 3
+			const x = Math.floor(offset / 3)
+			const columns = Math.min(factor, picture.width - x * factor)
+			const sum = span.reduce((total, row) => {
+				if (row >= rows) return total
+				const start = (y * factor + row) * picture.width * 3 + x * Math.ceil(factor) * 3 + channel
+				return span.reduce(
+					(block, column) =>
+						column >= columns ? block : block + (picture.pixels[start + column * 3] ?? 0),
+					total,
+				)
+			}, 0)
+			pixels[index] = Math.round(sum / (rows * columns))
+		}
+	}
 	return { width, height, pixels }
 }
 
@@ -1134,20 +1153,39 @@ export function composeCapturePictures(
 			.slice(0, position)
 			.reduce((sum, entry) => sum + (vertical ? entry.height : entry.width) + gap, 0),
 	)
-	// Each output byte belongs to the last picture that starts at or before it, or to the gray gap.
-	const pixels = Uint8Array.from({ length: width * height * 3 }, (_value, index) => {
-		const x = Math.floor((index % (width * 3)) / 3)
-		const y = Math.floor(index / (width * 3))
-		const position = offsets.findLastIndex((offset) => offset <= (vertical ? y : x))
-		const picture = pictures[position]
-		const offset = offsets[position]
-		if (picture === undefined || offset === undefined) return 128
-		const column = vertical ? x : x - offset
-		const row = vertical ? y - offset : y
-		return column < picture.width && row < picture.height
-			? (picture.pixels[(row * picture.width + column) * 3 + (index % 3)] ?? 0)
-			: 128
-	})
+	// Each picture owns the span from its offset to the next one; inside it, the picture's row is
+	// copied and the rest is the gray gap. Spans are written once each, in index order.
+	const pixels = new Uint8Array(width * height * 3)
+	const spans = pictures.map((picture, position) => ({
+		picture,
+		start: offsets[position] ?? 0,
+		end: Math.min(offsets[position + 1] ?? Infinity, vertical ? height : width),
+	}))
+	if (vertical) {
+		for (const { picture, start, end } of spans) {
+			for (const row of new Array(Math.max(0, end - start)).keys()) {
+				const copied = row < picture.height ? picture.width : 0
+				const target = (start + row) * width * 3
+				pixels.set(
+					picture.pixels.subarray(row * picture.width * 3, (row * picture.width + copied) * 3),
+					target,
+				)
+				pixels.fill(128, target + copied * 3, target + width * 3)
+			}
+		}
+		return { width, height, pixels }
+	}
+	for (const row of new Array(height).keys()) {
+		for (const { picture, start, end } of spans) {
+			const copied = row < picture.height ? Math.min(picture.width, end - start) : 0
+			const target = (row * width + start) * 3
+			pixels.set(
+				picture.pixels.subarray(row * picture.width * 3, (row * picture.width + copied) * 3),
+				target,
+			)
+			pixels.fill(128, target + copied * 3, (row * width + end) * 3)
+		}
+	}
 	return { width, height, pixels }
 }
 
