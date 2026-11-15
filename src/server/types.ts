@@ -755,7 +755,7 @@ export interface CaptureArgumentsOptions {
 	readonly config: string
 	readonly report: string
 	readonly projects: readonly string[]
-	readonly filter: string
+	readonly filter?: string
 	readonly case?: string
 	readonly final: string
 	readonly mode?: string

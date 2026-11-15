@@ -20,6 +20,7 @@ import {
 	COMPOSED_REQUESTS,
 	FIXTURE_TIMEOUT,
 	readCaptureHeld,
+	FIXTURE_FAILURES,
 	REGISTRY_REFUSALS,
 	VARIANTS,
 } from '../../setupServer.js'
@@ -289,6 +290,38 @@ describe('CaptureRegistrar', { timeout: FIXTURE_TIMEOUT }, () => {
 				expect(run.stderr).toContain(reason)
 				expect(existsSync(resolve(fixture.root, REGISTRY))).toBe(false)
 				expect(readCaptureHeld(fixture.root, fixture.requests)).toEqual([])
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+
+	it('runs the whole suite: the stage arguments carry no tag filter', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			expect((await fixture.refresh()).code).toBe(0)
+			expect(fixture.stages).toHaveLength(1)
+			for (const stage of fixture.stages) expect(stage.args).not.toContain('--tags-filter')
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it.each(FIXTURE_FAILURES)(
+		'refuses the refresh and keeps the prior registry digest when a failing case sits at %s',
+		async (failure) => {
+			const fixture = new ComposedFixture({ core, server })
+			try {
+				expect((await fixture.refresh()).code).toBe(0)
+				const before = fixture.read(REGISTRY)
+				const run = await fixture.refresh([], {
+					environment: { CAPTURE_PRODUCER_FAILURE: failure },
+				})
+				expect(run.code).toBe(1)
+				expect(run.stderr).toContain(
+					`The registry journey for ${VARIANTS.join(', ')} in stage registry did not exit successfully (1)`,
+				)
+				expect(fixture.read(REGISTRY).equals(before)).toBe(true)
 			} finally {
 				fixture.destroy()
 			}

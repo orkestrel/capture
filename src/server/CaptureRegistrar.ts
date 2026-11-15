@@ -14,7 +14,6 @@ import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { attempt, parseJSON } from '@orkestrel/contract'
 import {
-	CAPTURE_OWNER_PREFIX,
 	CAPTURE_REGISTRY_FILE,
 	CAPTURE_VERSION,
 	CaptureError,
@@ -42,7 +41,6 @@ import {
 	buildCaptureArguments,
 	requireCaptureContained,
 	describeCaptureFault,
-	buildCaptureFilter,
 	buildCaptureIntegrityOptions,
 	buildCaptureRegistry,
 	computeCaptureHash,
@@ -62,7 +60,8 @@ import {
  * requires, so it cannot stamp through the integrity engine. It reads the wrapper through the same
  * discovery the runner uses, takes the same invocation entity, request file, and Vitest child, and runs
  * every selected producing variant in one stage, one child that receives each variant's project, with
- * the `all` selector and no capture variable. It reads the stage's reporter once and each variant's
+ * the `all` selector and no capture variable. The stage passes no tag filter, so it runs the whole
+ * suite, which stands in for the consumer's complete test run. It reads the stage's reporter once and each variant's
  * final record, takes each project's input population before and after, and builds one receipt per
  * variant, all naming the one reporter, through `buildCaptureRegistry`. The registry is written to a
  * candidate beside its target, read back through the integrity engine, and only then renamed into
@@ -185,7 +184,7 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 		const retained = parsed.variants.length === 0 ? [] : this.#retain(target, variants, declared)
 		if (retained.length > 0) buildCaptureRegistry(retained)
 		if (invocation.interrupted) return CAPTURE_EXIT.failed
-		const imports = await this.#stage(invocation, parsed, projects, primary, selected)
+		const imports = await this.#stage(invocation, parsed, primary, selected)
 		if (invocation.interrupted) return CAPTURE_EXIT.failed
 		const registry = buildCaptureRegistry([...retained, ...imports])
 		const path = resolve(root, candidate)
@@ -236,14 +235,10 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 	async #stage(
 		invocation: CaptureInvocationInterface,
 		parsed: CaptureRegistryArguments,
-		projects: readonly CaptureProject[],
 		primary: CaptureProject,
 		selected: readonly CaptureProject[],
 	): Promise<readonly CaptureReceiptInput[]> {
 		const { root } = this.#options
-		const selectors = [...new Set(projects.flatMap((candidate) => candidate.tags))]
-			.filter((tag) => tag.startsWith(CAPTURE_OWNER_PREFIX))
-			.map((tag) => tag.slice(CAPTURE_OWNER_PREFIX.length))
 		const stage = CAPTURE_REGISTRY_STAGE
 		const variants = selected.map((project) => project.variant)
 		const reportFile = resolve(invocation.directory, `${stage}.json`)
@@ -254,7 +249,6 @@ export class CaptureRegistrar implements CaptureRegistrarInterface {
 			config: parsed.config,
 			report: reportFile,
 			projects: selected.map((project) => project.name),
-			filter: buildCaptureFilter('journey', 'all', selectors),
 			final: primary.final,
 			...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
 		})

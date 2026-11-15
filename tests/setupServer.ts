@@ -364,8 +364,18 @@ export const FIXTURE_POPULATIONS = Object.freeze(['changed', 'partial', 'files',
 /** Lists the defective journey artifacts a fixture child can write. */
 export const FIXTURE_JOURNALS = Object.freeze(['blind', 'foreign'] as const)
 
+/** Lists where a failing case sits in a stage's reporter: an ownerless case first or last, or an owner-bearing one. */
+export const FIXTURE_FAILURES = Object.freeze([
+	'ownerless-before',
+	'ownerless-after',
+	'owned',
+] as const)
+
 /** Selects one deliberately invalid external protocol reading or real filesystem mutation. */
 export type FixtureFault = (typeof FIXTURE_FAULTS)[number]
+
+/** Selects the failing case a stage child reports. */
+export type FixtureFailure = (typeof FIXTURE_FAILURES)[number]
 
 /** Selects an authored declaration population with changed, partial, Files, or nested owners. */
 export type FixturePopulation = (typeof FIXTURE_POPULATIONS)[number]
@@ -385,6 +395,8 @@ export interface FixtureWrite {
 	readonly records: Readonly<Record<string, string>>
 	readonly capture: boolean
 	readonly fault?: FixtureFault
+	readonly failure?: FixtureFailure
+	readonly filtered?: boolean
 	readonly duplicate?: boolean
 	readonly vue?: boolean
 }
@@ -623,7 +635,9 @@ export function isFixtureWrite(value: unknown): value is FixtureWrite {
 			(value.ending === undefined || READER_ENDINGS.some((ending) => ending === value.ending)) &&
 			(value.vue === undefined || typeof value.vue === 'boolean') &&
 			(value.duplicate === undefined || typeof value.duplicate === 'boolean') &&
-			(value.fault === undefined || FIXTURE_FAULTS.some((name) => name === value.fault)),
+			(value.fault === undefined || FIXTURE_FAULTS.some((name) => name === value.fault)) &&
+			(value.failure === undefined || FIXTURE_FAILURES.some((name) => name === value.failure)) &&
+			(value.filtered === undefined || typeof value.filtered === 'boolean'),
 	)
 }
 
@@ -739,6 +753,44 @@ export function fixtureDestinations(
 		)
 }
 
+/** Holds one reporter assertion the stage child writes. */
+export interface FixtureAssertion {
+	readonly fullName: string
+	readonly title: string
+	readonly ancestorTitles: readonly string[]
+	readonly status: string
+	readonly duration: number
+	readonly meta: Readonly<Record<string, unknown>>
+}
+
+/**
+ * Places the failing case a stage child reports among one file's assertions.
+ *
+ * @param assertions - The file's owner-bearing assertions
+ * @param failure - Where the failing case sits
+ * @param filtered - Whether the child received a tag filter, which keeps an ownerless case from running
+ * @returns The assertions with an ownerless case first or last, or the first owned case failed
+ */
+export function placeFixtureFailure(
+	assertions: readonly FixtureAssertion[],
+	failure: FixtureFailure,
+	filtered: boolean,
+): readonly FixtureAssertion[] {
+	if (failure === 'owned')
+		return assertions.map((assertion, index) =>
+			index === 0 ? { ...assertion, status: 'failed' } : assertion,
+		)
+	const ownerless: FixtureAssertion = {
+		fullName: 'ownerless fixture case',
+		title: 'ownerless fixture case',
+		ancestorTitles: [],
+		status: filtered ? 'skipped' : 'failed',
+		duration: 1,
+		meta: {},
+	}
+	return failure === 'ownerless-before' ? [ownerless, ...assertions] : [...assertions, ownerless]
+}
+
 /**
  * Writes a real external reporter, final records, and PNG bytes from inert fixture data.
  *
@@ -747,7 +799,7 @@ export function fixtureDestinations(
  */
 export function writeFixtureOutputs(input: FixtureWrite): void {
 	const start = Date.now()
-	const reports = input.variants.map((variant) => {
+	const staged = input.variants.map((variant) => {
 		const authored = fixtureDeclarations(variant, input.vue)
 		const declarations =
 			input.population === 'nested'
@@ -942,6 +994,20 @@ export function writeFixtureOutputs(input: FixtureWrite): void {
 			})),
 		}
 	})
+	const failing =
+		input.failure !== undefined && (input.failure === 'owned' || input.filtered !== true)
+	const reports = staged.map((report, index) =>
+		index === 0 && input.failure !== undefined
+			? {
+					...report,
+					assertionResults: placeFixtureFailure(
+						report.assertionResults,
+						input.failure,
+						input.filtered === true,
+					),
+				}
+			: report,
+	)
 	if (input.fault === 'own-during') writeFileSync('src/mail/view.ts', randomUUID())
 	if (input.fault === 'shared-add-during') writeFileSync('src/shared/new.ts', randomUUID())
 	if (input.fault === 'test-during') writeFileSync('behavior/journeys.ts', randomUUID())
@@ -949,14 +1015,15 @@ export function writeFixtureOutputs(input: FixtureWrite): void {
 	writeFileSync(
 		input.report,
 		JSON.stringify({
-			success: true,
-			numFailedTests: 0,
+			success: !failing,
+			numFailedTests: failing ? 1 : 0,
 			numFailedTestSuites: 0,
 			startTime: start,
 			testResults: reports,
 		}),
 	)
 	if (input.fault === 'failed-child') process.exitCode = 7
+	if (failing) process.exitCode = 1
 	if (input.fault === 'signal') process.kill(process.pid, 'SIGTERM')
 }
 

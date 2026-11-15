@@ -290,6 +290,31 @@ describe('readCaptureReport', () => {
 		])
 	})
 
+	it('reads an ownerless assertion that declares an empty meta, and drops it', () => {
+		const report = readCaptureReport(
+			createVitestFixture([{ fullName: 'ownerless', status: 'passed', meta: {} }]),
+		)
+		expect(report.assertions).toEqual([])
+	})
+
+	it('reads a file holding only ownerless skipped and todo cases', () => {
+		const report = readCaptureReport({
+			...createVitestFixture([]),
+			testResults: [
+				{
+					status: 'passed',
+					startTime: 1000,
+					endTime: 1900,
+					assertionResults: [
+						{ fullName: 'skipped', status: 'skipped', meta: {} },
+						{ fullName: 'todo', status: 'todo', meta: {} },
+					],
+				},
+			],
+		})
+		expect(report.assertions).toEqual([])
+	})
+
 	it.each([
 		['a failed reporter', { success: false }],
 		['a failed test count', { numFailedTests: 1 }],

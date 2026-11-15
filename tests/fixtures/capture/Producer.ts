@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { parseJSON } from '@orkestrel/contract'
 import {
 	FIXTURE_DISCOVERY_FAULTS,
+	FIXTURE_FAILURES,
 	FIXTURE_FAULTS,
 	isFixtureDiscovery,
 	isFixtureRequest,
@@ -83,6 +84,7 @@ if (isFixtureDiscovery(request)) {
 		await new Promise(() => undefined)
 	}
 	const fault = FIXTURE_FAULTS.find((name) => name === mode)
+	const failure = FIXTURE_FAILURES.find((name) => name === process.env.CAPTURE_PRODUCER_FAILURE)
 	writeFixtureOutputs({
 		request,
 		variants: request.variants,
@@ -96,5 +98,6 @@ if (isFixtureDiscovery(request)) {
 		capture: request.command === 'capture',
 		...(process.env.CAPTURE_PRODUCER_PICTURE === '1' ? { picture: true } : {}),
 		...(fault === undefined ? {} : { fault }),
+		...(failure === undefined ? {} : { failure, filtered: process.argv.includes('--tags-filter') }),
 	})
 }

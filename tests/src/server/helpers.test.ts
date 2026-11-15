@@ -1848,6 +1848,18 @@ describe('buildCaptureArguments', () => {
 		])
 	})
 
+	it('emits no tag filter when none is given', () => {
+		const args = buildCaptureArguments({
+			entry: BASE.entry,
+			config: BASE.config,
+			report: BASE.report,
+			projects: BASE.projects,
+			final: BASE.final,
+		})
+		expect(args).not.toContain('--tags-filter')
+		expect(args.slice(-2)).toEqual(['--project', 'bench:wide'])
+	})
+
 	it('adds one anchored pattern for an exact case and the final case', () => {
 		const exact = 'retains \'mail\' [reader] + "quotes"'
 		const args = buildCaptureArguments({ ...BASE, case: exact })

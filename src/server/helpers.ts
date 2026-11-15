@@ -1459,8 +1459,7 @@ export function buildCaptureArguments(options: CaptureArgumentsOptions): readonl
 		'--reporter=json',
 		`--outputFile.json=${options.report}`,
 		...options.projects.flatMap((project) => ['--project', project]),
-		'--tags-filter',
-		options.filter,
+		...(options.filter === undefined ? [] : ['--tags-filter', options.filter]),
 		...(options.case === undefined
 			? []
 			: [

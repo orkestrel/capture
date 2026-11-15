@@ -120,6 +120,7 @@ import {
 	isFixturePicture,
 	isFixtureRequest,
 	isFixtureWrite,
+	placeFixtureFailure,
 	readFixtureManifest,
 	withEnvironment,
 	writeFixtureDescription,
@@ -1201,6 +1202,26 @@ describe('the discovery answer of a composed workspace', { timeout: FIXTURE_TIME
 	})
 })
 describe('registry and executable fixtures', () => {
+	it('places an ownerless failing case first or last, skipped under a tag filter, and fails an owned case', () => {
+		const owned = {
+			fullName: 'a',
+			title: 'a',
+			ancestorTitles: [],
+			status: 'passed',
+			duration: 1,
+			meta: { owner: 'pages:mail' },
+		}
+		const first = placeFixtureFailure([owned], 'ownerless-before', false)
+		const last = placeFixtureFailure([owned], 'ownerless-after', false)
+		expect(first.map((entry) => entry.status)).toEqual(['failed', 'passed'])
+		expect(last.map((entry) => entry.status)).toEqual(['passed', 'failed'])
+		expect(first[0]?.meta).toEqual({})
+		expect(placeFixtureFailure([owned], 'ownerless-after', true).at(-1)?.status).toBe('skipped')
+		expect(placeFixtureFailure([owned], 'owned', true).map((entry) => entry.status)).toEqual([
+			'failed',
+		])
+	})
+
 	it('pairs every registry refusal with a fault the producer can inject', () => {
 		for (const { fault } of REGISTRY_REFUSALS) expect(FIXTURE_FAULTS).toContain(fault)
 	})
