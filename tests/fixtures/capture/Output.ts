@@ -41,6 +41,18 @@ if (mode === 'environment') {
 		process.exit(0)
 	}
 	setInterval(() => undefined, 1_000)
+} else if (mode === 'zombie') {
+	// Node reaps a child only from its event loop, so blocking the loop keeps the killed child an unreaped zombie.
+	const child = spawn(process.execPath, [resolve(import.meta.dirname, 'Sleeper.ts')], {
+		windowsHide: true,
+		stdio: 'ignore',
+	})
+	child.once('spawn', () => {
+		child.kill('SIGKILL')
+		process.stdout.write(`zombie=${String(child.pid)}\n`)
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.argv[3]))
+		process.exit(0)
+	})
 } else if (mode === 'grace') {
 	process.on('SIGTERM', () => process.stdout.write('terminating\n'))
 	process.stdout.write('ready\n')

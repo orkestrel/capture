@@ -297,7 +297,7 @@ The runner's names and bounds from [`constants.ts`](../src/server/constants.ts).
 
 ### Server helpers
 
-Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry import, flag reading, the PNG codec, the runner's parsing, and the few reads and writes of the filesystem the runner and the registry refresh make (`resolveCaptureWrapperProject`, `answerCaptureDiscovery`, `readCaptureInputs`, `readCaptureRunning`, `readCaptureRequest`, `writeCaptureDocument`). A helper that refuses an image or a receipt throws a `CaptureError` with the `EVIDENCE` condition.
+Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry import, flag reading, the PNG codec, the runner's parsing, and the few reads and writes of the filesystem the runner and the registry refresh make (`resolveCaptureWrapperProject`, `answerCaptureDiscovery`, `readCaptureInputs`, `readCaptureRequest`, `writeCaptureDocument`). A helper that refuses an image or a receipt throws a `CaptureError` with the `EVIDENCE` condition. `composeCapturePictures` refuses with that condition a width, a height, or a gap that is not a whole number from 0 to `CAPTURE_PNG_LIMITS.side`, and a composite wider or taller than that side or larger than the `CAPTURE_PNG_LIMITS.pixels` budget; one refusal names every faulty value, up to `CAPTURE_REFUSAL_LIMIT` of them.
 
 | Name                           | Kind     | Signature                                                                                                                                               | Summary                                                                                                   |
 | ------------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -344,7 +344,6 @@ Leaves from [`helpers.ts`](../src/server/helpers.ts): hashing, digests, registry
 | `scanCaptureFrames`            | function | `(images: readonly CaptureImageResult[], producers: readonly CaptureProducer[]) => readonly string[]`                                                   | Reports a portfolio, owner, and viewport whose frames mix cropped, viewport-sized, and page-sized images. |
 | `collectCaptureIdentical`      | function | `(images: readonly CaptureImageResult[]) => ReadonlyArray<readonly string[]>`                                                                           | Groups the selected images whose bytes are identical.                                                     |
 | `collectCaptureErrors`         | function | `(file: string, text: string) => readonly string[]`                                                                                                     | Finds the journey artifact lines that report an uncaught, unhandled, or logged error.                     |
-| `readCaptureRunning`           | function | `(pid: number) => boolean`                                                                                                                              | Checks whether a process with this id is running, counting one the caller may not signal.                 |
 | `resolveCaptureWrapperProject` | function | `(input: unknown, mode?: string) => Promise<unknown>`                                                                                                   | Resolves one entry of a wrapper's project list to the project it declares.                                |
 | `readCaptureEntry`             | function | `(value: unknown) => CaptureHostEntry`                                                                                                                  | Reads one wrapper project, as the description file holds it, into its host declarations and viewport.     |
 | `resolveCaptureRequests`       | function | `(directory?: string) => string`                                                                                                                        | Resolves the directory that holds the runner's request files for the process that reads them.             |
@@ -598,7 +597,7 @@ export default answered ? buildCaptureDiscoveryConfig() : { test: { projects } }
 
 **Request directory.** The one default is `CAPTURE_DEFAULTS.requests`. The runner hands the directory it publishes to every child it spawns in `CAPTURE_REQUESTS`, and `readCaptureRequest` and `answerCaptureDiscovery` read it from there when the wrapper names no `directory` of its own, so a consumer never repeats a constant it could mismatch. A wrapper that does name one declares it, and it must be the runner's.
 
-**Request.** Before each stage the runner writes `journey-selection-<pid>.json` in the request directory, named by its own process id, through a temporary sibling and a rename, and removes both in a `finally` block. Before it writes, it removes every request file named for a process that is no longer running, and never one that is. The wrapper reads the file back through `readCaptureRequest`, which accepts only the file its parent's id names, only a record whose `pid` matches, and only arguments equal to its own process's.
+**Request.** Before each stage the runner writes `journey-selection-<pid>.json` in the request directory, named by its own process id, through a temporary sibling and a rename, and removes both in a `finally` block. Before it writes, it removes every request file named for a process that has ended, and keeps one named for a process that is running or whose state the host cannot read. A directory that carries a request file's name stays in place. The wrapper reads the file back through `readCaptureRequest`, which accepts only the file its parent's id names, only a record whose `pid` matches, and only arguments equal to its own process's.
 
 The execution wrapper reads its parent's selection request:
 
@@ -615,7 +614,7 @@ const request = readCaptureRequest({
 request?.selector // 'pages:mail' when a runner is the parent, otherwise undefined
 ```
 
-**Processes.** The runner spawns `process.execPath` with the installed `node_modules/vitest/vitest.mjs`, an argument array, and no shell. The child inherits the environment with every case-folded `capture` name removed and `CAPTURE_REQUESTS` set to the request directory, and a `capture` command, like discovery, sets exactly one `CAPTURE=1`. Each stage writes its own log and JSON report under `<requests>/runs/<id>/`, and the child's output is teed to the host's streams and the log. Each child runs through `@orkestrel/process` `createDuplex` with stdin closed immediately. Its byte output is decoded with `StringDecoder`, preserving split UTF-8, carriage returns, and missing final newlines, and the decoder is flushed at termination. A writer or log failure, or a session whose output did not drain before its observation bound, refuses the stage. An interrupt aborts the stage's signal and ends each child's tree: Windows tree termination, or POSIX `SIGTERM` followed by `SIGKILL` after a 250 ms grace. A pre-aborted invocation launches no child. The invocation then removes its request and releases its handlers.
+**Processes.** The runner spawns `process.execPath` with the installed `node_modules/vitest/vitest.mjs`, an argument array, and no shell. The child inherits the environment through the `@orkestrel/process` merge, which drops every inherited name that matches `CAPTURE` or `CAPTURE_REQUESTS` in any case. The runner sets `CAPTURE_REQUESTS` to the request directory, and a `capture` command, like discovery, sets exactly one `CAPTURE=1`; every other child receives no `CAPTURE` name. Each stage writes its own log and JSON report under `<requests>/runs/<id>/`, and the child's output is teed to the host's streams and the log. Each child runs through `@orkestrel/process` `createDuplex` with stdin closed immediately. Its byte output is decoded with `StringDecoder`, preserving split UTF-8, carriage returns, and missing final newlines, and the decoder is flushed at termination. A writer or log failure, or a session whose output did not drain before its observation bound, refuses the stage. An interrupt aborts the stage's signal and ends each child's tree: Windows tree termination, or POSIX `SIGTERM` followed by `SIGKILL` after a 250 ms grace. A pre-aborted invocation launches no child. The invocation then removes its request and releases its handlers.
 
 **Host evidence (2026-10-28).** A real console Ctrl+C on Windows and a process-group SIGINT through the built executable on Linux each ended the stage tree, started no later stage, removed the request, and left the manifest bytes unchanged. The Windows reading uses a console-capable terminal; the POSIX automated case runs only where its process-group mechanism is available.
 
@@ -705,14 +704,22 @@ Serialize capture commands and the host's Vitest work per workspace. Preparation
 request directory and checks that it is a directory. An invocation writes `{pid,id}` once to
 a unique `.capture-owner.<pid>.<id>.tmp` file with flag `wx`, then claims `.capture-owner`
 with `linkSync`. The marker stays byte-identical from that link until its own invocation
-unlinks it after confirmed child termination. It stays held between stages. The temporary
-is always removed after the claim attempt. A dead pid's leftover claim temporary is swept
-best effort; sweep errors are ignored, and a live pid's temporary is never touched.
+unlinks it after confirmed child termination. It stays held between stages. The claim
+attempt then removes its temporary; a removal failure never replaces the claim's result,
+and the leftover names a live pid, so a later claim sweeps it after that process ends.
+A dead pid's leftover claim temporary is swept best effort; sweep errors are ignored, and
+the temporary of a live pid, or of a pid whose state cannot be read, is never touched.
 The marker does not coordinate another request directory or unrelated Vitest processes.
 
-A held marker is parsed as `{pid,id}`, ignoring extra members. EPERM from the pid probe
-counts as alive. After the liveness probe the claim re-reads the marker; a vanished or
-changed marker retries. Deletion advice for a dead holder requires identical content on
+Liveness comes from `inspectProcess` of `@orkestrel/process`, or from the host's `alive`
+operation. EPERM from the pid probe counts as alive. Where the host publishes a `/proc`
+process table, an exited process its parent has not reaped counts as ended once every one
+of its threads has exited. An `undefined` answer counts as neither: the holder keeps its
+marker, its request file, and its claim temporary, `holders` lists it, and the claim
+refuses with the uninspectable-holder message.
+
+A held marker is parsed as `{pid,id}`, ignoring extra members. After the liveness probe
+the claim re-reads the marker; a vanished or changed marker retries. Deletion advice for a dead holder requires identical content on
 that re-read. A live-holder refusal makes any deletion conditional on confirming that no
 capture process or surviving child is running. Empty or malformed markers require
 identical reads separated by backoff and ask for inspection. A permanent read error
@@ -722,8 +729,9 @@ Marker reads, links, and removals retry only `EBUSY` and `EMFILE` on POSIX, and 
 codes plus `EPERM` and `EACCES` on Windows, with synchronous 10 ms backoff within
 1,000 ms. On POSIX, a link failure with `EPERM`, `ENOTSUP`, `EOPNOTSUPP`, `ENOSYS`,
 or `EXDEV` refuses immediately with the hard-link requirement. Exhaustion names the
-error code and gives no deletion advice. Other temporary-write or link errors refuse
-permanently and name the operation and code.
+error code and gives no deletion advice; a marker that kept changing until the deadline
+says so in place of a code. Other temporary-write or link errors refuse permanently and
+name the operation and code.
 
 Release awaits signal-driven termination, retracts its request, and stops every child.
 It reads its marker and checks its invocation id before acting; an absent or foreign
@@ -737,14 +745,17 @@ command, every unconfirmed child pid, and the ISO timestamp of the attempt:
 {"pid":1234,"id":"RUN_ID","command":"journey","children":[5678],"at":"2026-10-28T00:00:00.000Z"}
 ```
 
-Release throws STAGE, naming the unconfirmed pids, marker, and record. A later release
+Release throws STAGE, naming the unconfirmed pids. It names the marker only when it kept
+its own marker, and the record only when the record exists after the write. A later release
 in the same process retries the stop. After termination is confirmed, release removes
 only its own marker, re-reading and checking its id on every removal retry. A successful
 release leaves no claim temporary or marker from that invocation. An exhausted or
 permanent removal failure retains the marker and joins the shutdown failure.
 
-A dead-holder refusal reads `runs/<holder id>/survivors.json` once, without retry.
-A well-formed record names its pids and path. ENOENT reports absence; other errors report
+A dead-holder refusal reads `runs/<holder id>/survivors.json` once, without retry, and only
+for a holder id of the version 4 UUID shape an invocation generates; another id reads no
+record and says so. A well-formed record names its path and its pids, at most
+`CAPTURE_REFUSAL_LIMIT` of them followed by the count omitted. ENOENT reports absence; other errors report
 the code, and malformed content reports EINVAL. The record is advisory; the marker
 provides ownership exclusion. A recorded pid is unconfirmed, not a claim that it is alive.
 Stop any recorded children and confirm the marker's content before deleting it.
@@ -758,13 +769,18 @@ Capture ownership process PID is not running; invocation "RUN_ID". RECORD_STATUS
 Unconfirmed child processes: PIDS; stop them before deleting. Child record: RECORD.
 No child record exists at RECORD.
 Child record could not be read (CODE): RECORD.
+Invocation "RUN_ID" is not an invocation id; no child record is read.
 Another runner holds this workspace (process PID); invocation "RUN_ID"; serialize capture commands. If this pid is not a capture run, confirm no capture process or surviving child is running and re-read MARKER to confirm it still names pid PID before deleting
+Capture ownership process PID could not be inspected; invocation "RUN_ID"; serialize capture commands. Confirm no capture process or surviving child is running and re-read MARKER to confirm it still names pid PID before deleting
 Capture shutdown failed; child termination was not confirmed for process PIDS; ownership marker retained: MARKER; child record: RECORD
+Capture shutdown failed; child termination was not confirmed for process PIDS; ownership marker retained: MARKER
+Capture shutdown failed; child termination was not confirmed for process PIDS
 Cannot write capture child record (CODE): RECORD
 Cannot write capture ownership temporary (CODE): TEMPORARY
 Cannot link capture ownership (CODE): MARKER; the store directory must support hard links
 Cannot link capture ownership (CODE): MARKER; inspect the filesystem error and rerun
 Capture ownership marker is temporarily unavailable (CODE): MARKER; rerun after serializing capture commands
+Capture ownership marker kept changing until the deadline: MARKER; rerun after serializing capture commands
 Capture ownership marker is unreadable: MARKER; rerun after inspecting the filesystem error
 Capture request directory is unavailable: DIRECTORY
 Capture ownership marker is empty; confirm no capture process or surviving child is running and inspect this file: MARKER; its holder cannot be established

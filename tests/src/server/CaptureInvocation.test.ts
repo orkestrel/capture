@@ -1,6 +1,15 @@
 import * as core from '@src/core'
 import * as server from '@src/server'
-import { linkSync, readFileSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import {
+	existsSync,
+	linkSync,
+	readFileSync,
+	mkdirSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from 'node:fs'
 import { resolve } from 'node:path'
 import { attempt, isNumber, isRecord, parseJSON } from '@orkestrel/contract'
 import { waitForCondition } from '@orkestrel/test'
@@ -11,6 +20,8 @@ import {
 	CaptureCLI,
 	CaptureInvocation,
 	CAPTURE_OWNER_FILE,
+	CAPTURE_REFUSAL_LIMIT,
+	CAPTURE_SURVIVORS_FILE,
 	escapeCapturePattern,
 	settleCaptureShutdown,
 } from '@src/server'
@@ -24,6 +35,7 @@ import {
 	writeCaptureRefusedOutput,
 	InvocationFixture,
 	readExitedPid,
+	startCaptureZombie,
 	startSleeper,
 	stopFixtureChild,
 	FIXTURE_TIMEOUT,
@@ -77,6 +89,272 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		} finally {
 			await invocation.release()
 			scratch.destroy()
+		}
+	})
+	// The process reader reads a zombie through the Linux `/proc` table; without one, a zombie answers the signal probe.
+	it.skipIf(!existsSync('/proc/self/stat'))(
+		'C3 reads an unreaped zombie holder as ended in the claim, holder, and request sweeps',
+		async () => {
+			const fixture = new InvocationFixture({ core, server })
+			const zombie = await startCaptureZombie()
+			try {
+				const holder = JSON.stringify({ pid: zombie.pid, id: randomUUID() })
+				const marker = `${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`
+				const request = `${RUNNER_REQUESTS}/${core.CAPTURE_REQUEST_PREFIX}-${String(zombie.pid)}.json`
+				const temporary = `${marker}.${String(zombie.pid)}.${randomUUID()}.tmp`
+				fixture.scratch.write(request, '{}\n')
+				fixture.scratch.write(temporary, 'zombie claim bytes')
+				fixture.scratch.write(marker, holder)
+				expect(process.kill(zombie.pid, 0)).toBe(true)
+				expect(fixture.invocation.holders()).toEqual([])
+				expect(() => fixture.invocation.prepare()).toThrow(
+					`process ${String(zombie.pid)} is not running`,
+				)
+				expect(fixture.scratch.has(temporary)).toBe(false)
+				expect(fixture.scratch.read(marker)).toBe(holder)
+				fixture.scratch.remove(marker)
+				fixture.invocation.prepare()
+				expect(fixture.scratch.has(request)).toBe(false)
+				await fixture.invocation.release()
+			} finally {
+				await stopFixtureChild(zombie.holder)
+				fixture.destroy()
+			}
+		},
+	)
+	it('C3 keeps a marker, a request, and a claim temporary whose holder the host cannot inspect', async () => {
+		const fixture = new InvocationFixture({ core, server })
+		const probes: number[] = []
+		const invocation = fixture.next({
+			ownership: {
+				alive: (pid) => {
+					probes.push(pid)
+					return undefined
+				},
+			},
+		})
+		try {
+			const dead = await readExitedPid()
+			const holder = JSON.stringify({ pid: dead, id: randomUUID() })
+			const marker = `${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`
+			const request = `${RUNNER_REQUESTS}/${core.CAPTURE_REQUEST_PREFIX}-${String(dead)}.json`
+			const temporary = `${marker}.${String(dead)}.${randomUUID()}.tmp`
+			fixture.scratch.write(request, '{}\n')
+			fixture.scratch.write(temporary, 'unknown claim bytes')
+			fixture.scratch.write(marker, holder)
+			expect(invocation.holders()).toEqual([dead])
+			const refusal = attempt(() => invocation.prepare())
+			expect(refusal).toMatchObject({
+				success: false,
+				error: {
+					code: 'STAGE',
+					message: expect.stringContaining(
+						`Capture ownership process ${String(dead)} could not be inspected`,
+					),
+				},
+			})
+			expect(refusal.success ? '' : String(refusal.error)).not.toContain('is not running')
+			expect(fixture.scratch.read(temporary)).toBe('unknown claim bytes')
+			expect(fixture.scratch.read(marker)).toBe(holder)
+			fixture.scratch.remove(marker)
+			invocation.prepare()
+			expect(fixture.scratch.read(request)).toBe('{}\n')
+			expect(probes.every((pid) => pid === dead)).toBe(true)
+			await invocation.release()
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('X7 keeps a held claim when its temporary cannot be removed, and a claim refusal over the same fault', async () => {
+		const fixture = new InvocationFixture({ core, server })
+		const marker = `${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`
+		const held = fixture.next({
+			ownership: {
+				link: (source, target) => {
+					linkSync(source, target)
+					rmSync(source)
+					mkdirSync(source)
+					writeFileSync(resolve(source, 'content'), 'directory prevents nonrecursive removal')
+				},
+			},
+		})
+		const refused = fixture.next({
+			ownership: {
+				write: (file) => {
+					mkdirSync(file)
+					writeFileSync(resolve(file, 'content'), 'directory prevents nonrecursive removal')
+				},
+				link: createCapturePermanentFault([], 'EACCES'),
+			},
+		})
+		try {
+			expect(() => held.prepare()).not.toThrow()
+			expect(parseJSON(fixture.scratch.read(marker) ?? '')).toEqual({
+				pid: process.pid,
+				id: held.id,
+			})
+			await held.release()
+			expect(fixture.scratch.has(marker)).toBe(false)
+			const refusal = attempt(() => refused.prepare())
+			expect(refusal).toMatchObject({
+				success: false,
+				error: {
+					code: 'STAGE',
+					message: expect.stringContaining('Cannot link capture ownership (EACCES)'),
+				},
+			})
+			expect(fixture.scratch.has(marker)).toBe(false)
+		} finally {
+			await held.release()
+			await refused.release()
+			fixture.destroy()
+		}
+	})
+	it('X7 names a child record and a retained marker only when release kept them', async () => {
+		const fixture = new InvocationFixture({ core, server })
+		const confirmation = new AbortController()
+		const marker = resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE)
+		const invocation = fixture.next({
+			terminate: async (child) => (confirmation.signal.aborted ? await child.stop() : false),
+			ownership: {
+				write: (file, text) => {
+					if (file.endsWith(CAPTURE_SURVIVORS_FILE))
+						throw Object.assign(new Error('denied record'), { code: 'EACCES' })
+					writeFileSync(file, text, { flag: 'wx' })
+				},
+			},
+		})
+		invocation.prepare()
+		const record = resolve(invocation.directory, CAPTURE_SURVIVORS_FILE)
+		const execution = invocation.spawn([OUTPUT], resolve(invocation.directory, 'child.log'), false)
+		try {
+			await waitForCondition('the unconfirmed child is ready', () =>
+				fixture.stdout.join('').includes('ready'),
+			)
+			const denied = String(await invocation.release().catch((error: unknown) => error))
+			expect(denied).toContain('child termination was not confirmed')
+			expect(denied).toContain(`ownership marker retained: ${marker}`)
+			expect(denied).not.toContain(record)
+			expect(existsSync(record)).toBe(false)
+			const foreign = JSON.stringify({ pid: process.pid, id: randomUUID() })
+			writeFileSync(marker, foreign)
+			const replaced = String(await invocation.release().catch((error: unknown) => error))
+			expect(replaced).toContain('child termination was not confirmed')
+			expect(replaced).not.toContain(marker)
+			expect(replaced).not.toContain(record)
+			expect(readFileSync(marker, 'utf8')).toBe(foreign)
+		} finally {
+			confirmation.abort()
+			await invocation.release().catch(() => undefined)
+			await Promise.allSettled([execution])
+			fixture.destroy()
+		}
+	})
+	it('X7 names no child record for a marker id outside the invocation-id shape', async () => {
+		const fixture = new InvocationFixture({ core, server })
+		try {
+			const dead = await readExitedPid()
+			const id = '../escaped'
+			const outside = `${RUNNER_REQUESTS}/escaped/${CAPTURE_SURVIVORS_FILE}`
+			fixture.scratch.write(
+				outside,
+				JSON.stringify({
+					pid: dead,
+					id,
+					command: 'journey',
+					children: [4242],
+					at: new Date(0).toISOString(),
+				}),
+			)
+			fixture.scratch.write(
+				`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`,
+				JSON.stringify({ pid: dead, id }),
+			)
+			const refusal = attempt(() => fixture.invocation.prepare())
+			const message = refusal.success ? '' : String(refusal.error)
+			expect(message).toContain(`process ${String(dead)} is not running`)
+			expect(message).toContain('is not an invocation id; no child record is read')
+			expect(message).not.toContain(resolve(fixture.scratch.path, outside))
+			expect(message).not.toContain('4242')
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('X7 caps the child list a dead owner record names at the refusal limit', async () => {
+		const fixture = new InvocationFixture({ core, server })
+		try {
+			const dead = await readExitedPid()
+			const id = randomUUID()
+			const children = Array.from(
+				{ length: CAPTURE_REFUSAL_LIMIT + 3 },
+				(_entry, position) => 7000 + position,
+			)
+			fixture.scratch.write(
+				`${RUNNER_REQUESTS}/runs/${id}/${CAPTURE_SURVIVORS_FILE}`,
+				JSON.stringify({
+					pid: dead,
+					id,
+					command: 'journey',
+					children,
+					at: new Date(0).toISOString(),
+				}),
+			)
+			fixture.scratch.write(
+				`${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`,
+				JSON.stringify({ pid: dead, id }),
+			)
+			const refusal = attempt(() => fixture.invocation.prepare())
+			const message = refusal.success ? '' : String(refusal.error)
+			expect(message).toContain(
+				`Unconfirmed child processes: ${children.slice(0, CAPTURE_REFUSAL_LIMIT).join(', ')}, … 3 more; stop them before deleting`,
+			)
+			expect(message).not.toContain(String(children.at(-1)))
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('X7 names marker churn at the deadline without a placeholder code', () => {
+		const fixture = new InvocationFixture({ core, server })
+		const marker = `${RUNNER_REQUESTS}/${CAPTURE_OWNER_FILE}`
+		const probes: number[] = []
+		const invocation = fixture.next({
+			ownership: {
+				alive: (pid) => {
+					probes.push(pid)
+					fixture.scratch.write(
+						marker,
+						JSON.stringify({ pid, id: `churn-${String(probes.length)}` }),
+					)
+					return true
+				},
+			},
+		})
+		try {
+			fixture.scratch.write(marker, JSON.stringify({ pid: process.pid, id: 'churn-0' }))
+			const refusal = attempt(() => invocation.prepare())
+			const message = refusal.success ? '' : String(refusal.error)
+			expect(message).toContain(
+				`Capture ownership marker kept changing until the deadline: ${resolve(fixture.scratch.path, marker)}`,
+			)
+			expect(message).not.toContain('(contention)')
+			expect(probes.length).toBeGreaterThan(1)
+		} finally {
+			fixture.destroy()
+		}
+	})
+	it('X7 leaves a directory that carries a dead request file name', async () => {
+		const fixture = new InvocationFixture({ core, server })
+		try {
+			const dead = await readExitedPid()
+			const directory = `${RUNNER_REQUESTS}/${core.CAPTURE_REQUEST_PREFIX}-${String(dead)}.json`
+			fixture.scratch.write(`${directory}/content`, 'directory prevents nonrecursive removal')
+			expect(() => fixture.invocation.prepare()).not.toThrow()
+			expect(fixture.scratch.read(`${directory}/content`)).toBe(
+				'directory prevents nonrecursive removal',
+			)
+			await fixture.invocation.release()
+		} finally {
+			fixture.destroy()
 		}
 	})
 	it('X6 writes a create-only survivor record and keeps the marker byte-identical', async () => {
@@ -135,22 +413,17 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		async (state) => {
 			const fixture = new InvocationFixture({ core, server })
 			const dead = await readExitedPid()
+			const id = randomUUID()
 			const marker = resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE)
-			const record = resolve(
-				fixture.scratch.path,
-				RUNNER_REQUESTS,
-				'runs',
-				'dead-record-owner',
-				'survivors.json',
-			)
-			const content = JSON.stringify({ pid: dead, id: 'dead-record-owner' })
+			const record = resolve(fixture.scratch.path, RUNNER_REQUESTS, 'runs', id, 'survivors.json')
+			const content = JSON.stringify({ pid: dead, id })
 			fixture.scratch.write(marker, content)
 			if (state === 'present')
 				fixture.scratch.write(
 					record,
 					JSON.stringify({
 						pid: dead,
-						id: 'dead-record-owner',
+						id,
 						command: 'journey',
 						children: [process.pid],
 						at: new Date().toISOString(),
@@ -163,7 +436,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 				expect(result.success).toBe(false)
 				const message = result.success ? '' : String(result.error)
 				expect(message).toContain(`process ${String(dead)} is not running`)
-				expect.soft(message).toContain('invocation "dead-record-owner"')
+				expect.soft(message).toContain(`invocation "${id}"`)
 				expect(message).toContain(marker)
 				expect(message).toContain(record)
 				expect(message).toContain(
@@ -220,7 +493,14 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 					fixture.stdout.join('').includes('ready'),
 				)
 				const failure: unknown = await invocation.release().catch((error: unknown) => error)
-				expect(failure).toMatchObject({ code: 'STAGE', message: expect.stringContaining(record) })
+				expect(failure).toMatchObject({
+					code: 'STAGE',
+					message: expect.stringContaining('child termination was not confirmed'),
+				})
+				expect(String(failure)).not.toContain(record)
+				expect(String(failure).includes(`ownership marker retained: ${marker}`)).toBe(
+					code !== 'foreign',
+				)
 				if (!(failure instanceof Error) || !(failure.cause instanceof AggregateError))
 					throw new Error('Missing shutdown cause')
 				expect(failure.cause.errors.map(String).join('\n')).toContain(
@@ -274,14 +554,9 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 		async (alive) => {
 			const fixture = new InvocationFixture({ core, server })
 			const reads: string[] = []
+			const id = randomUUID()
 			const marker = resolve(fixture.scratch.path, RUNNER_REQUESTS, CAPTURE_OWNER_FILE)
-			const record = resolve(
-				fixture.scratch.path,
-				RUNNER_REQUESTS,
-				'runs',
-				'record-read-owner',
-				'survivors.json',
-			)
+			const record = resolve(fixture.scratch.path, RUNNER_REQUESTS, 'runs', id, 'survivors.json')
 			const invocation = fixture.next({
 				ownership: {
 					alive: () => alive,
@@ -297,7 +572,7 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 					marker,
 					JSON.stringify({
 						pid: process.pid,
-						id: 'record-read-owner',
+						id,
 						children: 'ignored extra member',
 					}),
 				)
