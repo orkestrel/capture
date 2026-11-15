@@ -783,16 +783,10 @@ export function matchesCaptureSignature(bytes: Uint8Array): boolean {
  */
 export function predictCaptureByte(left: number, up: number, corner: number): number {
 	const estimate = left + up - corner
-	const distances = [
-		Math.abs(estimate - left),
-		Math.abs(estimate - up),
-		Math.abs(estimate - corner),
-	]
-	return (distances[0] ?? 0) <= (distances[1] ?? 0) && (distances[0] ?? 0) <= (distances[2] ?? 0)
-		? left
-		: (distances[1] ?? 0) <= (distances[2] ?? 0)
-			? up
-			: corner
+	const west = Math.abs(estimate - left)
+	const north = Math.abs(estimate - up)
+	const diagonal = Math.abs(estimate - corner)
+	return west <= north && west <= diagonal ? left : north <= diagonal ? up : corner
 }
 
 /**
@@ -895,23 +889,33 @@ export function unfilterCaptureRow(
 	channels: number,
 ): Uint8Array {
 	// Each byte reads reconstructed bytes before it, so the row is written once per index, in order.
+	// The filter is chosen once per row; any other filter value predicts 0 and copies the line.
 	const bytes = new Uint8Array(line.length)
-	for (const [index, value] of line.entries()) {
-		const left = index >= channels ? (bytes[index - channels] ?? 0) : 0
-		const up = above?.[index] ?? 0
-		const corner = index >= channels ? (above?.[index - channels] ?? 0) : 0
-		const predicted =
-			filter === 1
-				? left
-				: filter === 2
-					? up
-					: filter === 3
-						? (left + up) >> 1
-						: filter === 4
-							? predictCaptureByte(left, up, corner)
-							: 0
-		bytes[index] = (value + predicted) & 255
-	}
+	if (filter === 1)
+		for (const index of line.keys())
+			bytes[index] =
+				((line[index] ?? 0) + (index >= channels ? (bytes[index - channels] ?? 0) : 0)) & 255
+	else if (filter === 2)
+		for (const index of line.keys())
+			bytes[index] = ((line[index] ?? 0) + (above?.[index] ?? 0)) & 255
+	else if (filter === 3)
+		for (const index of line.keys())
+			bytes[index] =
+				((line[index] ?? 0) +
+					(((index >= channels ? (bytes[index - channels] ?? 0) : 0) + (above?.[index] ?? 0)) >>
+						1)) &
+				255
+	else if (filter === 4)
+		for (const index of line.keys())
+			bytes[index] =
+				((line[index] ?? 0) +
+					predictCaptureByte(
+						index >= channels ? (bytes[index - channels] ?? 0) : 0,
+						above?.[index] ?? 0,
+						index >= channels ? (above?.[index - channels] ?? 0) : 0,
+					)) &
+				255
+	else bytes.set(line)
 	return bytes
 }
 
