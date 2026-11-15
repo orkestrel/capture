@@ -250,6 +250,39 @@ describe(
 			}
 		})
 
+		it('exits 0 on the recommended pass, and sheets refuses an input edited after registry', async ({
+			signal,
+		}) => {
+			const consumer = new CaptureConsumer(signal)
+			try {
+				const output = ['--checks', 'checks.ts', '--output']
+				for (const argv of [
+					['registry'],
+					['frames', 'all'],
+					['stale', 'all'],
+					['sheets', 'all', ...output, 'tmp/pass-sheets'],
+				])
+					expect(await consumer.execute(argv)).toMatchObject({ code: 0 })
+				const pass = readConsumerReport(
+					(await consumer.execute(['stale', 'all'])).stdout,
+					'INTEGRITY',
+				)
+				expect(pass).toMatchObject({ warnings: [] })
+				writeFileSync(
+					resolve(consumer.root, 'src/mail.ts'),
+					"export const label = 'mail edited after registry'\n",
+				)
+				const refused = await consumer.execute(['sheets', 'all', ...output, 'tmp/refused-sheets'])
+				expect(refused.code).not.toBe(0)
+				expect(`${refused.stdout}${refused.stderr}`).toContain(
+					'No current full-collection evidence for producing variant',
+				)
+				expect(existsSync(resolve(consumer.root, 'tmp/refused-sheets'))).toBe(false)
+			} finally {
+				consumer.destroy()
+			}
+		})
+
 		it('keeps the wrapper progress reporter under capture reporter flags with Chromium projects, and a wrapper without the plugin writes none', async ({
 			signal,
 		}) => {

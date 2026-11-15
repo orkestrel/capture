@@ -2,11 +2,13 @@ import * as core from '@src/core'
 import * as server from '@src/server'
 import { existsSync, mkdirSync, renameSync, readdirSync, symlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { isRecord } from '@orkestrel/contract'
 import { createScratch, supportsDirectoryLinks } from '@orkestrel/test/server'
 import { CaptureSheets, decodeCapturePicture } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import {
 	readCaptureChildModes,
+	readConsumerReport,
 	readCaptureSheetIndex,
 	ReaderFixture,
 	FIXTURE_TIMEOUT,
@@ -224,6 +226,34 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 			expect(markdown).toContain('source 128 x 128')
 			expect(markdown).toContain('producer journey:light-390')
 			expect(decodeCapturePicture(fixture.read('tmp/mixed-sheets/sheet-001.png')).height).toBe(256)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('carries every preflight READER member in its SHEETS line for one selection', async () => {
+		const fixture = new ReaderFixture({ core, server })
+		try {
+			fixture.seed()
+			await fixture.capture({ selector: 'pages:mail', case: MAIL, picture: true })
+			const selection = ['pages:mail', '--case', MAIL, '--variant', 'light-390']
+			const preflight = await fixture.run('preflight', selection)
+			const sheets = await fixture.run('contact-sheets', [
+				...selection,
+				'--output',
+				'tmp/parity-sheets',
+			])
+			expect(preflight.status).toBe(0)
+			expect(sheets.status).toBe(0)
+			const reader = readConsumerReport(preflight.stdout, 'READER')
+			const sheet = readConsumerReport(sheets.stdout, 'SHEETS')
+			for (const member of ['selection', 'mixed', 'issues', 'identical', 'acceptance'])
+				expect(sheet[member]).toEqual(reader[member])
+			// Freshness carries a measured duration, so the deterministic entries are the member compared.
+			expect(isRecord(sheet.freshness) ? sheet.freshness.entries : undefined).toEqual(
+				isRecord(reader.freshness) ? reader.freshness.entries : null,
+			)
+			expect(sheet.identical).toEqual(expect.any(Array))
 		} finally {
 			fixture.destroy()
 		}

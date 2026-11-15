@@ -23,6 +23,7 @@ import {
 import { CaptureInvocation } from './CaptureInvocation.js'
 import { CapturePreflight } from './CapturePreflight.js'
 import {
+	collectCaptureIdentical,
 	composeCapturePictures,
 	encodeCapturePicture,
 	normalizeSlashes,
@@ -126,6 +127,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 				freshness: result.freshness,
 				mixed: result.mixed,
 				issues: result.issues,
+				identical: collectCaptureIdentical(result.images),
 				acceptance: false,
 				sheets: sheets.map((sheet) => ({
 					file: sheet.file,
