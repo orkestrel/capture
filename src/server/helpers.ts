@@ -32,11 +32,13 @@ import type {
 	CaptureInputHandler,
 	CaptureParsedArguments,
 	CapturePicture,
+	CapturePreflightResult,
 	CaptureProducer,
 	CaptureProgress,
 	CaptureProject,
 	CaptureReaderCommand,
 	CaptureReaderDefaults,
+	CaptureReaderReport,
 	CaptureReceiptInput,
 	CaptureRetractionHandler,
 	CaptureTerminationHandler,
@@ -982,29 +984,68 @@ export function predictCaptureByte(left: number, up: number, corner: number): nu
  */
 export function readCaptureChunks(bytes: Buffer, offset = 8): readonly Buffer[] {
 	requireCaptureImageSize(bytes.length)
-	// Each verified chunk names the next offset. The byte budget bounds this log, without a
-	// recursive call stack or an arbitrary cap on a valid encoder's IDAT population.
-	const positions = [offset]
-	const chunks: Buffer[] = []
-	for (const position of positions) {
-		if (!Number.isSafeInteger(position) || position < 8 || position + 12 > bytes.length)
-			throw new CaptureError('Truncated capture PNG', { code: 'EVIDENCE' })
+	const positions = scanCaptureChunks(bytes, offset, Infinity)
+	const last = positions.at(-1)
+	if (last === undefined || bytes.toString('latin1', last + 4, last + 8) !== 'IEND')
+		throw new CaptureError('Missing capture PNG closing chunk', { code: 'EVIDENCE' })
+	return positions.flatMap((position) => {
 		const length = bytes.readUInt32BE(position)
-		const end = position + 12 + length
-		if (end > bytes.length)
-			throw new CaptureError('Truncated capture PNG chunk', { code: 'EVIDENCE' })
-		const name = bytes.toString('latin1', position + 4, position + 8)
-		if (crc32(bytes.subarray(position + 4, end - 4)) >>> 0 !== bytes.readUInt32BE(end - 4))
-			throw new CaptureError('Capture PNG checksum differs', { code: 'EVIDENCE' })
-		if (name === 'IEND') {
-			if (length !== 0 || end !== bytes.length)
-				throw new CaptureError('Invalid capture PNG closing chunk', { code: 'EVIDENCE' })
-			return chunks
-		}
-		if (name === 'IDAT' && length > 0) chunks.push(bytes.subarray(position + 8, end - 4))
-		positions.push(end)
+		return bytes.toString('latin1', position + 4, position + 8) === 'IDAT' && length > 0
+			? [bytes.subarray(position + 8, position + 8 + length)]
+			: []
+	})
+}
+
+/**
+ * Walks a PNG's checked chunks from one header and returns each header's offset, up to the closing chunk.
+ *
+ * @remarks
+ * The walk reads at most `count` chunks, and never more than the bytes can hold, so an infinite or
+ * very large count ends at the closing chunk or at a refusal. Each level halves the count, so the
+ * call depth grows with the logarithm of the chunks the bytes can hold.
+ *
+ * @param bytes - The complete PNG
+ * @param position - The offset of the first chunk header to read
+ * @param count - The most chunks to read
+ * @returns The offset of each chunk header read, in order
+ * @throws Thrown for a truncated chunk, a bad checksum, or a closing chunk that is not empty and last.
+ *
+ * @example
+ * ```ts
+ * scanCaptureChunks(encodeCapturePicture({ width: 1, height: 1, pixels: Uint8Array.from([1, 2, 3]) }), 8, Infinity) // [8, 33, 57]
+ * ```
+ */
+export function scanCaptureChunks(
+	bytes: Buffer,
+	position: number,
+	count: number,
+): readonly number[] {
+	// A chunk spans at least 12 bytes, so the bytes hold fewer chunks than this.
+	const limit = Math.min(count, Math.floor(bytes.length / 12) + 1)
+	if (limit >= 2) {
+		const half = Math.ceil(limit / 2)
+		const head = scanCaptureChunks(bytes, position, half)
+		const last = head.at(-1)
+		if (last === undefined || bytes.toString('latin1', last + 4, last + 8) === 'IEND') return head
+		return [
+			...head,
+			...scanCaptureChunks(bytes, last + 12 + bytes.readUInt32BE(last), limit - half),
+		]
 	}
-	throw new CaptureError('Missing capture PNG closing chunk', { code: 'EVIDENCE' })
+	if (!(limit >= 1)) return []
+	if (!Number.isSafeInteger(position) || position < 8 || position + 12 > bytes.length)
+		throw new CaptureError('Truncated capture PNG', { code: 'EVIDENCE' })
+	const end = position + 12 + bytes.readUInt32BE(position)
+	if (end > bytes.length)
+		throw new CaptureError('Truncated capture PNG chunk', { code: 'EVIDENCE' })
+	if (crc32(bytes.subarray(position + 4, end - 4)) >>> 0 !== bytes.readUInt32BE(end - 4))
+		throw new CaptureError('Capture PNG checksum differs', { code: 'EVIDENCE' })
+	if (
+		bytes.toString('latin1', position + 4, position + 8) === 'IEND' &&
+		(end !== position + 12 || end !== bytes.length)
+	)
+		throw new CaptureError('Invalid capture PNG closing chunk', { code: 'EVIDENCE' })
+	return [position]
 }
 
 /**
@@ -1290,6 +1331,10 @@ export function encodeCapturePicture(picture: CapturePicture, compressed = true)
 /**
  * Sums a run of samples three bytes apart, one channel of consecutive RGB pixels.
  *
+ * @remarks
+ * A run of more than 16 samples that reaches outside the bytes narrows through `sumCaptureSpan`, so
+ * an infinite or very large count sums to the last sample the bytes hold.
+ *
  * @param pixels - The source RGB bytes
  * @param start - The index of the first sample
  * @param columns - The number of samples to sum
@@ -1303,6 +1348,9 @@ export function encodeCapturePicture(picture: CapturePicture, compressed = true)
 export function sumCaptureRow(pixels: Uint8Array, start: number, columns: number): number {
 	// Halving keeps the recursion depth logarithmic in the run; a leaf reads up to eight samples.
 	if (columns > 8) {
+		// Up to two leaves cost a fixed amount; a longer run that reaches outside the bytes narrows first.
+		if (columns > 16 && !(start >= 0 && start + columns * 3 < pixels.length + 3))
+			return sumCaptureSpan(pixels, start, columns)
 		const half = Math.ceil(columns / 2)
 		return (
 			sumCaptureRow(pixels, start, half) + sumCaptureRow(pixels, start + half * 3, columns - half)
@@ -1321,11 +1369,42 @@ export function sumCaptureRow(pixels: Uint8Array, start: number, columns: number
 }
 
 /**
+ * Sums the samples of a run that lie inside the bytes, after narrowing the run to them.
+ *
+ * @remarks
+ * Samples outside the bytes read 0, so the run first narrows to the samples the bytes hold, and a
+ * count of any size, `Infinity` included, costs at most those samples. It reads the same sum as
+ * `sumCaptureRow`.
+ *
+ * @param pixels - The source RGB bytes
+ * @param start - The index of the first sample
+ * @param columns - The number of samples to sum
+ * @returns The sum, reading an index outside the bytes or a fractional index as 0
+ *
+ * @example
+ * ```ts
+ * sumCaptureSpan(Uint8Array.from([5, 0, 0, 7]), -3, Infinity) // 12
+ * ```
+ */
+export function sumCaptureSpan(pixels: Uint8Array, start: number, columns: number): number {
+	const first = Math.max(0, Math.ceil(-start / 3))
+	const last = Math.min(columns, Math.ceil((pixels.length - start) / 3))
+	if (!(last > first)) return 0
+	const half = Math.ceil((last - first) / 2)
+	return (
+		sumCaptureRow(pixels, start + first * 3, half) +
+		sumCaptureRow(pixels, start + (first + half) * 3, last - first - half)
+	)
+}
+
+/**
  * Sums one channel of a picture over a block of source rows.
  *
  * @remarks
  * Source row `top + row` starts its block at `(top + row) * picture.width * 3 + left`, and each row
- * contributes `columns` samples through `sumCaptureRow`.
+ * contributes `columns` samples through `sumCaptureRow`. A block of more than 16 rows that can start
+ * outside the bytes narrows through `sumCaptureBand`, so an infinite or very large row count sums to
+ * the last row that reaches the bytes.
  *
  * @param picture - The source RGB picture
  * @param top - The block's first source row
@@ -1349,6 +1428,14 @@ export function sumCaptureBlock(
 	columns: number,
 ): number {
 	if (rows > 2) {
+		// Up to eight leaves cost a fixed amount; a taller block whose rows can start outside the
+		// bytes narrows first.
+		if (rows > 16) {
+			const stride = picture.width * 3
+			const start = (top + row) * stride + left
+			if (!(stride > 0 && start >= 0 && start + rows * stride < picture.pixels.length + stride))
+				return sumCaptureBand(picture, top, left, row, rows, columns)
+		}
 		const half = Math.ceil(rows / 2)
 		return (
 			sumCaptureBlock(picture, top, left, row, half, columns) +
@@ -1362,6 +1449,56 @@ export function sumCaptureBlock(
 		(rows > 1
 			? sumCaptureRow(picture.pixels, (top + (row + 1)) * picture.width * 3 + left, columns)
 			: 0)
+	)
+}
+
+/**
+ * Sums one channel of a block's rows that reach the bytes, after narrowing the block to them.
+ *
+ * @remarks
+ * A row whose run starts past the bytes or ends before them reads 0, so the block first narrows to
+ * the rows between, and a row count of any size, `Infinity` included, costs at most those rows.
+ * Every row of a zero-width picture reads the same run, so that block is the run's sum times the row
+ * count. It reads the same sum as `sumCaptureBlock`.
+ *
+ * @param picture - The source RGB picture
+ * @param top - The block's first source row
+ * @param left - The byte offset of the block's first sample inside a row, its channel included
+ * @param row - The first row to sum, counted from `top`
+ * @param rows - The number of rows to sum
+ * @param columns - The number of samples to sum in each row
+ * @returns The block's sum
+ *
+ * @example
+ * ```ts
+ * sumCaptureBand({ width: 1, height: 2, pixels: Uint8Array.from([1, 0, 0, 2, 0, 0]) }, 0, 0, 0, Infinity, 1) // 3
+ * ```
+ */
+export function sumCaptureBand(
+	picture: CapturePicture,
+	top: number,
+	left: number,
+	row: number,
+	rows: number,
+	columns: number,
+): number {
+	const stride = picture.width * 3
+	const start = (top + row) * stride + left
+	if (stride === 0) {
+		const sum = sumCaptureRow(picture.pixels, start, columns)
+		return sum === 0 ? 0 : sum * Math.ceil(rows)
+	}
+	// Row `j` starts at `start + j * stride`; past one bound a run starts past the bytes, and past the
+	// other it ends before them. A row of margin on each side absorbs division rounding.
+	const past = (picture.pixels.length - start) / stride
+	const before = (3 - 3 * Math.ceil(columns) - start) / stride
+	const first = Math.max(0, Math.floor(Math.min(past, before)) - 1)
+	const last = Math.min(Math.ceil(rows), Math.ceil(Math.max(past, before)) + 1)
+	if (!(last > first)) return 0
+	const half = Math.ceil((last - first) / 2)
+	return (
+		sumCaptureBlock(picture, top, left, row + first, half, columns) +
+		sumCaptureBlock(picture, top, left, row + first + half, last - first - half, columns)
 	)
 }
 
@@ -2698,6 +2835,34 @@ export function collectCaptureIdentical(
 			images.filter((image) => image.digest === digest).map((image) => image.entry.file),
 		)
 		.filter((files) => files.length > 1)
+}
+
+/**
+ * Builds the report a preflight prints and a contact-sheet index carries from one preflight result.
+ *
+ * @param result - The judged selection
+ * @returns The selection, freshness, mixed observations, issues, identical groups, image sizes, and `acceptance: false`
+ *
+ * @example
+ * ```ts
+ * buildCaptureReaderReport(await preflight.check()).acceptance // false
+ * ```
+ */
+export function buildCaptureReaderReport(result: CapturePreflightResult): CaptureReaderReport {
+	return {
+		selection: result.selection,
+		freshness: result.freshness,
+		mixed: result.mixed,
+		issues: result.issues,
+		identical: collectCaptureIdentical(result.images),
+		sizes: result.images.map(({ entry, picture, size }) => ({
+			file: entry.file,
+			width: picture.width,
+			height: picture.height,
+			bytes: size,
+		})),
+		acceptance: false,
+	}
 }
 
 /**

@@ -236,6 +236,10 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 		try {
 			fixture.seed()
 			await fixture.capture({ selector: 'pages:mail', case: MAIL, picture: true })
+			const screen = 'tmp/captures/states/pages/mail-screen--light-390.png'
+			const copy = 'tmp/captures/states/pages/mail-reader--light-390.png'
+			// The reader frame takes the screen frame's bytes, so the pair is identical and the copy reads stale.
+			fixture.write(copy, fixture.read(screen))
 			const selection = ['pages:mail', '--case', MAIL, '--variant', 'light-390']
 			const preflight = await fixture.run('preflight', selection)
 			const sheets = await fixture.run('contact-sheets', [
@@ -243,17 +247,29 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 				'--output',
 				'tmp/parity-sheets',
 			])
-			expect(preflight.status).toBe(0)
-			expect(sheets.status).toBe(0)
+			expect([preflight.status, sheets.status]).toEqual([1, 1])
 			const reader = readConsumerReport(preflight.stdout, 'READER')
 			const sheet = readConsumerReport(sheets.stdout, 'SHEETS')
-			for (const member of ['selection', 'mixed', 'issues', 'identical', 'acceptance'])
-				expect(sheet[member]).toEqual(reader[member])
-			// Freshness carries a measured duration, so the deterministic entries are the member compared.
-			expect(isRecord(sheet.freshness) ? sheet.freshness.entries : undefined).toEqual(
-				isRecord(reader.freshness) ? reader.freshness.entries : null,
-			)
-			expect(sheet.identical).toEqual(expect.any(Array))
+			expect(Object.keys(reader)).toEqual([
+				'selection',
+				'freshness',
+				'mixed',
+				'issues',
+				'identical',
+				'sizes',
+				'acceptance',
+			])
+			expect(reader.identical).toEqual([[screen, copy]])
+			// Freshness carries a measured duration, so every member but that one is compared.
+			const { freshness, ...members } = reader
+			expect(
+				Object.fromEntries(Object.keys(members).map((member) => [member, sheet[member]])),
+			).toEqual(members)
+			expect(
+				isRecord(sheet.freshness) && isRecord(freshness)
+					? { ...sheet.freshness, duration: freshness.duration }
+					: sheet.freshness,
+			).toEqual(freshness)
 		} finally {
 			fixture.destroy()
 		}

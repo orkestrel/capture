@@ -3,6 +3,7 @@ import type {
 	CapturePreflightResult,
 	CaptureSheetCell,
 	CaptureSheetGroup,
+	CaptureSheetIndex,
 	CaptureSheetOptions,
 	CaptureSheetPage,
 	CaptureSheetRow,
@@ -23,7 +24,7 @@ import {
 import { CaptureInvocation } from './CaptureInvocation.js'
 import { CapturePreflight } from './CapturePreflight.js'
 import {
-	collectCaptureIdentical,
+	buildCaptureReaderReport,
 	composeCapturePictures,
 	encodeCapturePicture,
 	normalizeSlashes,
@@ -122,13 +123,8 @@ export class CaptureSheets implements CaptureSheetsInterface {
 			mkdirSync(output)
 			for (const sheet of sheets)
 				writeFileSync(resolve(output, sheet.file), encodeCapturePicture(sheet.picture))
-			const index = {
-				selection: result.selection,
-				freshness: result.freshness,
-				mixed: result.mixed,
-				issues: result.issues,
-				identical: collectCaptureIdentical(result.images),
-				acceptance: false,
+			const index: CaptureSheetIndex = {
+				...buildCaptureReaderReport(result),
 				sheets: sheets.map((sheet) => ({
 					file: sheet.file,
 					width: sheet.picture.width,

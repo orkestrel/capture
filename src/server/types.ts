@@ -1921,6 +1921,65 @@ export interface CaptureSheetPage {
 }
 
 /**
+ * Holds the report a preflight prints on its `READER` line and a contact-sheet index carries.
+ *
+ * @remarks
+ * `identical` groups the files whose bytes are identical, and `sizes` gives each readable image's
+ * decoded dimensions and its file size in bytes. `acceptance` is always `false`: the report is
+ * iteration evidence and never assembled-portfolio acceptance.
+ *
+ * @example
+ * ```ts
+ * const report: CaptureReaderReport = buildCaptureReaderReport(await preflight.check())
+ * ```
+ */
+export interface CaptureReaderReport {
+	readonly selection: CaptureReadResult
+	readonly freshness: CaptureCheckResult
+	readonly mixed: readonly string[]
+	readonly issues: readonly string[]
+	readonly identical: ReadonlyArray<readonly string[]>
+	readonly sizes: ReadonlyArray<{
+		readonly file: string
+		readonly width: number
+		readonly height: number
+		readonly bytes: number
+	}>
+	readonly acceptance: false
+}
+
+/**
+ * Holds a contact-sheet run's `index.json` document, which its `SHEETS` line also prints.
+ *
+ * @remarks
+ * It carries every member of the preflight report beside `sheets`, which lists each written sheet
+ * with its size and its rows of groups. A cell keeps every member of its sheet cell except the
+ * picture, and `displayed` gives the size of the shrunk picture the sheet shows.
+ *
+ * @example
+ * ```ts
+ * const index: CaptureSheetIndex = { ...buildCaptureReaderReport(result), sheets: [] }
+ * ```
+ */
+export interface CaptureSheetIndex extends CaptureReaderReport {
+	readonly sheets: ReadonlyArray<{
+		readonly file: string
+		readonly width: number
+		readonly height: number
+		readonly rows: ReadonlyArray<
+			ReadonlyArray<{
+				readonly identity: string
+				readonly cells: ReadonlyArray<
+					Omit<CaptureSheetCell, 'picture'> & {
+						readonly displayed: { readonly width: number; readonly height: number }
+					}
+				>
+			}>
+		>
+	}>
+}
+
+/**
  * Carries parsed reader arguments and an optional contact-sheet output directory.
  *
  * @example
