@@ -26,11 +26,13 @@ import { CapturePreflight } from './CapturePreflight.js'
 import {
 	buildCaptureReaderReport,
 	composeCapturePictures,
+	computeCaptureComposite,
 	encodeCapturePicture,
 	normalizeSlashes,
 	resolveCapturePhysical,
 	resolveCaptureSheetIdentity,
 	splitCapturePages,
+	splitCaptureSheets,
 	resolveCaptureExit,
 	requireCaptureArgument,
 } from './helpers.js'
@@ -99,26 +101,52 @@ export class CaptureSheets implements CaptureSheetsInterface {
 					)
 			}
 			const result = await new CapturePreflight(reader).check()
-			const groups = this.#groups(result)
-			const rows = splitCapturePages(groups, CAPTURE_SHEET.pairs).map((pair): CaptureSheetRow => ({
-				groups: pair,
-				picture: composeCapturePictures(
-					pair.map((entry) => entry.picture),
-					false,
-					CAPTURE_SHEET.gap,
-				),
-			}))
-			const sheets = splitCapturePages(rows, CAPTURE_SHEET.rows).map(
-				(page, index): CaptureSheetPage => ({
+			// Rows are paged, and a row too large for any page refused, from cell sizes before composing.
+			const pages = splitCaptureSheets(
+				splitCapturePages(this.#groups(result), CAPTURE_SHEET.pairs).map((pair) => ({
+					pair,
+					...computeCaptureComposite(
+						pair.map((group) =>
+							computeCaptureComposite(
+								group.cells.map((cell) => cell.picture),
+								false,
+							),
+						),
+						false,
+						CAPTURE_SHEET.gap,
+					),
+				})),
+				CAPTURE_SHEET.rows,
+				CAPTURE_SHEET.gap,
+			)
+			const sheets = pages.map((page, index): CaptureSheetPage => {
+				const rows = page.map(({ pair }): CaptureSheetRow => {
+					const groups = pair.map((group): CaptureSheetGroup => ({
+						...group,
+						picture: composeCapturePictures(
+							group.cells.map((cell) => cell.picture),
+							false,
+						),
+					}))
+					return {
+						groups,
+						picture: composeCapturePictures(
+							groups.map((group) => group.picture),
+							false,
+							CAPTURE_SHEET.gap,
+						),
+					}
+				})
+				return {
 					file: `${CAPTURE_SHEET_FILES.prefix}${String(index + 1).padStart(CAPTURE_SHEET_FILES.digits, '0')}.png`,
-					rows: page,
+					rows,
 					picture: composeCapturePictures(
-						page.map((row) => row.picture),
+						rows.map((row) => row.picture),
 						true,
 						CAPTURE_SHEET.gap,
 					),
-				}),
-			)
+				}
+			})
 			const output = this.#output(result)
 			mkdirSync(output)
 			for (const sheet of sheets)
@@ -191,11 +219,11 @@ export class CaptureSheets implements CaptureSheetsInterface {
 	}
 
 	// Gathers the selected destinations by portfolio, owner, and state, each as a row of shrunk cells.
-	#groups(result: CapturePreflightResult): readonly CaptureSheetGroup[] {
+	#groups(result: CapturePreflightResult): ReadonlyArray<Omit<CaptureSheetGroup, 'picture'>> {
 		const identities = [
 			...new Set(result.selection.entries.map((entry) => resolveCaptureSheetIdentity(entry))),
 		]
-		return identities.map((identity): CaptureSheetGroup => {
+		return identities.map((identity): Omit<CaptureSheetGroup, 'picture'> => {
 			const cells = result.selection.entries
 				.filter((entry) => resolveCaptureSheetIdentity(entry) === identity)
 				.map((entry): CaptureSheetCell => {
@@ -229,14 +257,7 @@ export class CaptureSheets implements CaptureSheetsInterface {
 						freshness: result.freshness.entries.find((candidate) => candidate.file === entry.file),
 					}
 				})
-			return {
-				identity,
-				cells,
-				picture: composeCapturePictures(
-					cells.map((cell) => cell.picture),
-					false,
-				),
-			}
+			return { identity, cells }
 		})
 	}
 

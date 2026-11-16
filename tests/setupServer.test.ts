@@ -131,6 +131,8 @@ import {
 	withEnvironment,
 	writeFixtureDescription,
 	buildCaptureRacingScopes,
+	buildFixtureVariants,
+	createCaptureCountedPicture,
 	createCaptureWatchedPicture,
 } from './setupServer.js'
 describe('H1 shared infrastructure', () => {
@@ -952,6 +954,39 @@ describe('createReaderWrapper', () => {
 		expect(projects.test.projects).toHaveLength(1)
 		expect(READER_CONFIG).toBe('fixture with spaces.config.ts')
 		expect(READER_COMMANDS).toEqual(['preflight', 'contact-sheets'])
+	})
+
+	it('declares the geometry of every producing variant beyond the fixture four, after them', () => {
+		const projects = readCaptureWrapperProjects(
+			createReaderWrapper('/workspace', buildFixtureVariants(6)),
+		)
+		if (!isRecord(projects) || !isRecord(projects.test) || !isArray(projects.test.projects))
+			throw new Error('Missing projects')
+		expect(projects.test.projects).toHaveLength(6)
+		const last: unknown = projects.test.projects.at(-1)
+		expect(readCaptureProject(isRecord(last) ? last.test : undefined)).toMatchObject({
+			variant: 'tone1-128',
+			first: VARIANTS[0],
+			variants: [...VARIANTS, 'tone0-128', 'tone1-128'],
+		})
+	})
+})
+
+describe('buildFixtureVariants', () => {
+	it('lists the fixture variants first and numbers the rest, and never fewer than the four', () => {
+		expect(buildFixtureVariants(6)).toEqual([...VARIANTS, 'tone0-128', 'tone1-128'])
+		expect(buildFixtureVariants(2)).toEqual([...VARIANTS])
+	})
+})
+
+describe('createCaptureCountedPicture', () => {
+	it('reports each read of its width, its height, and its gray pixel buffer', () => {
+		const reads = createRecorder<readonly []>()
+		const picture = createCaptureCountedPicture(2, 1, reads.handler)
+		expect(reads.count).toBe(0)
+		expect([picture.width, picture.height]).toEqual([2, 1])
+		expect([...picture.pixels]).toEqual([128, 128, 128, 128, 128, 128])
+		expect(reads.count).toBe(3)
 	})
 })
 

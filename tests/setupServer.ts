@@ -397,7 +397,13 @@ export const FIXTURE_FAULTS = Object.freeze([
 ] as const)
 
 /** Lists the authored declaration populations a fixture child can write. */
-export const FIXTURE_POPULATIONS = Object.freeze(['changed', 'partial', 'files', 'nested'] as const)
+export const FIXTURE_POPULATIONS = Object.freeze([
+	'changed',
+	'partial',
+	'files',
+	'nested',
+	'crowded',
+] as const)
 
 /** Lists the defective journey artifacts a fixture child can write. */
 export const FIXTURE_JOURNALS = Object.freeze(['blind', 'foreign'] as const)
@@ -856,7 +862,13 @@ export function writeFixtureOutputs(input: FixtureWrite): void {
 										? { ...entry, states: [...entry.states, 'files-empty'] }
 										: entry,
 								)
-							: authored
+							: input.population === 'crowded'
+								? authored.map((entry) =>
+										entry.case === MAIL
+											? { ...entry, states: [...entry.states, 'mail-draft', 'mail-sent'] }
+											: entry,
+									)
+								: authored
 		const full = input.duplicate
 			? [
 					...declarations,
@@ -1913,8 +1925,9 @@ export function encodeFixturePicture(
  * Builds the wrapper a reader loads: one project per producing variant, all declaring the same host data.
  *
  * @remarks
- * The module is plain data, so Vite reads it with no dependency. It declares the variants in an
- * order unlike any real host's, the fixture's portfolio roots, and one standalone root.
+ * The module is plain data, so Vite reads it with no dependency. It declares the fixture's variants
+ * in an order unlike any real host's, then every other producing variant, the fixture's portfolio
+ * roots, and one standalone root.
  *
  * @param root - The absolute workspace path, which the primary directory resolves against
  * @param producers - The producing variants that get a project. Default: every fixture variant.
@@ -1935,7 +1948,11 @@ export function createReaderWrapper(
 				record: `tmp/captures/states/runs/reader/${variant}.json`,
 				inputs: INPUTS,
 				variant,
-				variants: VARIANTS.map((name) => ({ name, width: 128, height: 128 })),
+				variants: [...new Set([...VARIANTS, ...producers])].map((name) => ({
+					name,
+					width: 128,
+					height: 128,
+				})),
 				final: READER_FINAL,
 				first: VARIANTS[0],
 				...(uniform === undefined ? {} : { uniform }),
@@ -1945,6 +1962,22 @@ export function createReaderWrapper(
 		},
 	}))
 	return `export default ${JSON.stringify({ test: { projects } })}\n`
+}
+
+/**
+ * Builds the fixture's variants followed by numbered tone variants, up to the requested count.
+ *
+ * @param count - The number of variants; the fixture's four come first
+ * @returns The variant names, the first-stage variant first
+ */
+export function buildFixtureVariants(count: number): readonly string[] {
+	return [
+		...VARIANTS,
+		...Array.from(
+			{ length: Math.max(0, count - VARIANTS.length) },
+			(_, index) => `tone${String(index)}-128`,
+		),
+	]
 }
 
 /** Names the request directory, relative to the workspace, that the composed workspace's wrapper declares. */
@@ -4234,6 +4267,37 @@ export function createCaptureWatchedPicture(
 }
 
 /**
+ * Creates a gray picture whose width, height, and pixel buffer each report every read, so a proof
+ * can count the reads a composition makes.
+ *
+ * @param width - The declared width
+ * @param height - The declared height
+ * @param read - Runs on each read of the width, the height, or the pixel buffer
+ * @returns The picture, with a pixel buffer that matches its geometry
+ */
+export function createCaptureCountedPicture(
+	width: number,
+	height: number,
+	read: () => void,
+): CapturePicture {
+	const pixels = new Uint8Array(width * height * 3).fill(128)
+	return {
+		get width() {
+			read()
+			return width
+		},
+		get height() {
+			read()
+			return height
+		},
+		get pixels() {
+			read()
+			return pixels
+		},
+	}
+}
+
+/**
  * Builds the compose geometries that a contact sheet refuses, one row per refused shape.
  *
  * @param limits - The PNG budget the composite must fit
@@ -4644,46 +4708,119 @@ export function writeCaptureRefusedOutput(fixture: InvocationFixture, text: stri
 
 /** Supplies malformed PNG encodings and their exact refusal messages. */
 export const CAPTURE_PNG_REFUSALS = [
-	['a short file', () => PNG.subarray(0, 20), 'Invalid capture PNG header'],
+	[
+		'a short file',
+		() => PNG.subarray(0, 20),
+		'Invalid capture PNG header: the file is 20 bytes; expected at least 33 bytes that open with the signature 89504e470d0a1a0a and an IHDR chunk with length 13',
+	],
 	[
 		'a wrong signature',
 		() => Buffer.concat([Buffer.from([0]), PNG.subarray(1)]),
-		'Invalid capture PNG header',
+		'Invalid capture PNG header: the signature is 00504e470d0a1a0a; expected at least 33 bytes that open with the signature 89504e470d0a1a0a and an IHDR chunk with length 13',
+	],
+	[
+		'a first chunk that is no header',
+		() =>
+			Buffer.concat([
+				PNG.subarray(0, 8),
+				encodeFixtureChunk('tEXt', Buffer.alloc(13)),
+				PNG.subarray(33),
+			]),
+		'Invalid capture PNG header: the first chunk is "tEXt" with length 13; expected at least 33 bytes that open with the signature 89504e470d0a1a0a and an IHDR chunk with length 13',
 	],
 	[
 		'an indexed image',
 		() => createPngBytes({ width: 1, height: 1, rows: [[0, 0]], color: 3 }),
-		'Unsupported capture PNG encoding',
+		'Unsupported capture PNG encoding: bit depth 8, colour type 3, compression 0, filter 0, interlace 0; expected bit depth 8, colour type 0, 2, 4, or 6, compression 0, filter 0, and interlace 0',
 	],
 	[
 		'sixteen-bit samples',
 		() => createPngBytes({ width: 1, height: 1, rows: [[0, 0, 0, 0, 0, 0, 0]], depth: 16 }),
-		'Unsupported capture PNG encoding',
+		'Unsupported capture PNG encoding: bit depth 16, colour type 2, compression 0, filter 0, interlace 0; expected bit depth 8, colour type 0, 2, 4, or 6, compression 0, filter 0, and interlace 0',
 	],
 	[
 		'an interlaced image',
 		() => createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3]], interlace: 1 }),
-		'Unsupported capture PNG encoding',
+		'Unsupported capture PNG encoding: bit depth 8, colour type 2, compression 0, filter 0, interlace 1; expected bit depth 8, colour type 0, 2, 4, or 6, compression 0, filter 0, and interlace 0',
 	],
 	[
 		'a zero width',
 		() => createPngBytes({ width: 0, height: 1, rows: [[0]] }),
-		'Unsupported capture PNG encoding',
+		'Invalid capture PNG dimensions: 0 × 1; expected a width and a height of at least 1',
 	],
 	[
 		'dimensions beyond a safe length',
 		() => createPngBytes({ width: 4294967295, height: 4294967295, rows: [[0]] }),
-		'Invalid capture PNG dimensions',
+		'Invalid capture PNG dimensions: 4294967295 × 4294967295 at 3 bytes per pixel; expected scanlines of at most 9007199254740991 bytes in all',
 	],
 	[
 		'an unknown filter',
 		() => createPngBytes({ width: 1, height: 1, rows: [[5, 1, 2, 3]] }),
-		'Unsupported capture PNG filter',
+		'Unsupported capture PNG filter: type 5 on row 0; expected a type from 0 to 4',
 	],
 	[
 		'a short stream',
 		() => createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2]] }),
-		'Capture PNG scanline length differs',
+		'Capture PNG scanline length differs: the stream inflates to 3 bytes; expected 4 bytes for 1 × 1 at 3 bytes per pixel and one filter byte per row',
+	],
+	// The audit's corrupt headers: one header byte changes under the checksum of the valid header.
+	...(
+		[
+			[16, 0x40, 'width', '2dfac275'],
+			[24, 16, 'bit depth', 'c0e78f9d'],
+			[25, 3, 'colour type', '28cb34bb'],
+		] as const
+	).map(([offset, value, field, checksum]): readonly [string, () => Buffer, string] => [
+		`a corrupt ${field} under a stale header checksum`,
+		() => {
+			const png = createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3]] })
+			return Buffer.concat([
+				png.subarray(0, offset),
+				Buffer.from([value]),
+				png.subarray(offset + 1),
+			])
+		},
+		`Capture PNG checksum differs: "IHDR" at offset 8 with length 13 stores 907753de; expected ${checksum}`,
+	]),
+	[
+		'a second header chunk',
+		() => {
+			const png = createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3]] })
+			return Buffer.concat([
+				png.subarray(0, 33),
+				encodeFixtureChunk(
+					'IHDR',
+					Buffer.concat([encodeFixtureWord(2), encodeFixtureWord(2), Buffer.from([8, 2, 0, 0, 0])]),
+				),
+				png.subarray(33),
+			])
+		},
+		'Invalid capture PNG chunk order: "IHDR" at offset 33 with length 13; expected one IHDR chunk, at offset 8',
+	],
+	[
+		'an unknown critical chunk',
+		() => {
+			const png = createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3]] })
+			return Buffer.concat([
+				png.subarray(0, 33),
+				encodeFixtureChunk('ABCD', Buffer.alloc(0)),
+				png.subarray(33),
+			])
+		},
+		'Unsupported capture PNG chunk: critical "ABCD" at offset 33 with length 0; expected a critical chunk to be IHDR, PLTE, IDAT, or IEND',
+	],
+	[
+		'a compressed-data run split by an ancillary chunk',
+		() =>
+			Buffer.concat([
+				createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3]] }).subarray(0, 33),
+				encodeFixtureChunk('IDAT', Buffer.alloc(0)),
+				encodeFixtureChunk('tEXt', Buffer.alloc(0)),
+				// A stored stream has a fixed length, so the refused chunk's length is the same on every host.
+				encodeFixtureChunk('IDAT', deflateSync(Buffer.from([0, 1, 2, 3]), { level: 0 })),
+				encodeFixtureChunk('IEND', Buffer.alloc(0)),
+			]),
+		'Invalid capture PNG chunk order: "IDAT" at offset 57 with length 15 follows "tEXt" at offset 45; expected every IDAT chunk in one consecutive run',
 	],
 ] as const
 

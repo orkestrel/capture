@@ -57,9 +57,11 @@ import {
 	scanCaptureFrames,
 	collectCaptureIdentical,
 	composeCapturePictures,
+	computeCaptureComposite,
 	computeCaptureHash,
 	computeRegistryDigest,
 	decodeCapturePicture,
+	describeCaptureChunk,
 	describeCapturePortfolios,
 	describeCaptureSelectorFault,
 	encodeCaptureChunk,
@@ -99,7 +101,9 @@ import {
 	writeCaptureDocument,
 	resolveCaptureSheetIdentity,
 	splitCapturePages,
+	splitCaptureSheets,
 	matchesCaptureFile,
+	matchesCaptureLimits,
 	mergeCaptureLookups,
 	requireCaptureContained,
 	requireCaptureArgument,
@@ -155,6 +159,7 @@ import {
 	CAPTURE_PNG_REFUSALS,
 	buildCaptureArgumentFaults,
 	buildCaptureComposeRefusals,
+	createCaptureCountedPicture,
 	createCaptureGeometry,
 	createCaptureWatchedPicture,
 	createCaptureImportInput,
@@ -1278,8 +1283,8 @@ describe('readCaptureChunks', () => {
 			encodeCaptureChunk('IHDR', Buffer.alloc(13)),
 			...Array.from({ length: 100_000 }, (_, index) =>
 				encodeCaptureChunk(
-					index % 2 === 0 ? 'tEXt' : 'IDAT',
-					index % 2 === 0 ? Buffer.alloc(0) : payload,
+					index < 50_000 ? 'tEXt' : 'IDAT',
+					index < 50_000 ? Buffer.alloc(0) : payload,
 				),
 			),
 			encodeCaptureChunk('IEND', Buffer.alloc(0)),
@@ -1329,19 +1334,44 @@ describe('scanCaptureChunks', () => {
 	})
 
 	it('refuses a chain that runs past its bytes, a bad checksum, and a bad closing chunk', () => {
-		expect(() => scanCaptureChunks(bytes.subarray(0, 62), 8, Infinity)).toThrow(
-			/^Truncated capture PNG$/u,
-		)
-		expect(() => scanCaptureChunks(bytes, Number.NaN, 1)).toThrow(/^Truncated capture PNG$/u)
-		expect(() => scanCaptureChunks(bytes.subarray(0, 48), 8, Infinity)).toThrow(
-			'Truncated capture PNG chunk',
-		)
 		const corrupt = Buffer.from(bytes)
+		// The text chunk's last type byte flips from `t` to `u`, so its stored checksum is stale.
 		corrupt[40] = (corrupt[40] ?? 0) ^ 1
-		expect(() => scanCaptureChunks(corrupt, 8, Infinity)).toThrow('Capture PNG checksum differs')
-		expect(() => scanCaptureChunks(Buffer.concat([bytes, Buffer.from([0])]), 8, Infinity)).toThrow(
-			'Invalid capture PNG closing chunk',
-		)
+		expect(
+			(
+				[
+					[bytes.subarray(0, 62), 8, Infinity],
+					[bytes, Number.NaN, 1],
+					[bytes.subarray(0, 48), 8, Infinity],
+					[corrupt, 8, Infinity],
+					[Buffer.concat([bytes, Buffer.from([0])]), 8, Infinity],
+				] as const
+			).map(([input, position, count]) => {
+				const failure = captureError(() => scanCaptureChunks(input, position, count))
+				return isCaptureError(failure) ? [failure.code, failure.message] : failure
+			}),
+		).toEqual([
+			[
+				'EVIDENCE',
+				'Truncated capture PNG: no 12-byte chunk frame fits at offset 62 in 62 bytes; expected a whole offset from 8 with 12 bytes after it',
+			],
+			[
+				'EVIDENCE',
+				'Truncated capture PNG: no 12-byte chunk frame fits at offset NaN in 74 bytes; expected a whole offset from 8 with 12 bytes after it',
+			],
+			[
+				'EVIDENCE',
+				'Truncated capture PNG chunk: "tEXt" at offset 33 with length 5 ends at byte 50; expected it to end within the file\'s 48 bytes',
+			],
+			[
+				'EVIDENCE',
+				'Capture PNG checksum differs: "tEXu" at offset 33 with length 5 stores aab2a2f9; expected 61ee715c',
+			],
+			[
+				'EVIDENCE',
+				'Invalid capture PNG closing chunk: "IEND" at offset 62 with length 0 ends at byte 74 of 75; expected an empty IEND chunk that ends the file',
+			],
+		])
 	})
 })
 
@@ -1442,13 +1472,21 @@ describe('decodeCapturePicture', () => {
 	})
 	it('refuses dimensions above the independent pixel budget before inflation', () => {
 		const png = createPngBytes({ width: 32768, height: 641, rows: [[0, 1, 2, 3]] })
-		expect(() => decodeCapturePicture(png)).toThrow('pixel budget')
+		expect(captureError(() => decodeCapturePicture(png))).toMatchObject({
+			code: 'EVIDENCE',
+			message:
+				'Capture PNG exceeds the pixel budget: 32768 × 641 is 21004288 pixels; expected at most 20971520 pixels',
+		})
 		for (const height of [639, 640])
 			expect(() =>
 				decodeCapturePicture(createPngBytes({ width: 32768, height, rows: [[0, 1, 2, 3]] })),
 			).toThrow('scanline length differs')
 		const narrow = createPngBytes({ width: 1, height: 131_073, rows: [[0, 1, 2, 3]] })
-		expect(() => decodeCapturePicture(narrow)).toThrow('dimension budget')
+		expect(captureError(() => decodeCapturePicture(narrow))).toMatchObject({
+			code: 'EVIDENCE',
+			message:
+				'Capture PNG exceeds the dimension budget: 1 × 131073; expected at most 131072 pixels per side',
+		})
 		for (const height of [131_071, 131_072])
 			expect(() =>
 				decodeCapturePicture(createPngBytes({ width: 1, height, rows: [[0, 1, 2, 3]] })),
@@ -1468,7 +1506,17 @@ describe('decodeCapturePicture', () => {
 	it('H1r bounds file bytes before reading a sparse oversized image', () => {
 		for (const size of [CAPTURE_PNG_LIMITS.bytes - 1, CAPTURE_PNG_LIMITS.bytes])
 			expect(() => requireCaptureImageSize(size)).not.toThrow()
-		expect(() => requireCaptureImageSize(CAPTURE_PNG_LIMITS.bytes + 1)).toThrow('file budget')
+		expect(
+			[CAPTURE_PNG_LIMITS.bytes + 1, -1, 0.5, Number.NaN].map((size) => {
+				const failure = captureError(() => requireCaptureImageSize(size))
+				return isCaptureError(failure) ? [failure.code, failure.message] : failure
+			}),
+		).toEqual(
+			['100820584', '-1', '0.5', 'NaN'].map((size) => [
+				'EVIDENCE',
+				`Capture PNG size is outside the file budget: ${size} bytes; expected a whole number of bytes from 0 to 100820583`,
+			]),
+		)
 		const scratch = createScratch({ prefix: 'capture-image-bound-' })
 		try {
 			scratch.write('huge.png', '')
@@ -1528,7 +1576,9 @@ describe('decodeCapturePicture', () => {
 	it('refuses a stream that inflates past the declared length or is not deflate data', () => {
 		const long = createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3, 4, 5, 6, 7]] })
 		expect(captureError(() => decodeCapturePicture(long))).toMatchObject({
-			message: 'Capture PNG stream is corrupt or longer than declared',
+			message: expect.stringMatching(
+				/^Capture PNG stream is corrupt or longer than declared: ".+" in \d+ compressed bytes; expected a zlib stream that inflates to at most 4 bytes$/u,
+			),
 			code: 'EVIDENCE',
 		})
 		const header = createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3]] }).subarray(0, 33)
@@ -1550,11 +1600,22 @@ describe('inflateCaptureStream', () => {
 	})
 
 	it('refuses a longer stream and invalid data under one condition', () => {
-		expect(() => inflateCaptureStream(deflateSync(Buffer.alloc(8)), 3)).toThrow(
-			'Capture PNG stream is corrupt or longer than declared',
-		)
-		expect(() => inflateCaptureStream(Buffer.from([1, 2, 3]), 3)).toThrow(
-			'Capture PNG stream is corrupt or longer than declared',
+		const streams = [deflateSync(Buffer.alloc(8)), Buffer.from([1, 2, 3])]
+		// The zlib reason is the running Node's own text, so it is read from the same call here.
+		const reasons = streams.map((stream) => {
+			const failure = captureError(() => inflateSync(stream, { maxOutputLength: 3 }))
+			return failure instanceof Error ? failure.message : String(failure)
+		})
+		expect(
+			streams.map((stream) => {
+				const failure = captureError(() => inflateCaptureStream(stream, 3))
+				return isCaptureError(failure) ? [failure.code, failure.message] : failure
+			}),
+		).toEqual(
+			streams.map((stream, index) => [
+				'EVIDENCE',
+				`Capture PNG stream is corrupt or longer than declared: ${preview(reasons[index])} in ${String(stream.length)} compressed bytes; expected a zlib stream that inflates to at most 3 bytes`,
+			]),
 		)
 	})
 })
@@ -2095,10 +2156,127 @@ describe('composeCapturePictures', () => {
 			expect(reads.count).toBe(0)
 		},
 	)
+
+	it.each([false, true])(
+		'F1 reads each picture a bounded number of times, so doubling the count at most doubles the reads (vertical %s)',
+		(vertical) => {
+			const [small = 0, large = 0] = [512, 1024].map((count) => {
+				const reads = createRecorder<readonly []>()
+				composeCapturePictures(
+					new Array<CapturePicture>(count).fill(createCaptureCountedPicture(1, 1, reads.handler)),
+					vertical,
+					0,
+				)
+				return reads.count
+			})
+			expect(small).toBeGreaterThan(0)
+			expect(large).toBeLessThanOrEqual(2 * small)
+		},
+	)
+
+	it('F2 reads the same count of empty pictures whatever the composite height', () => {
+		const [short = 0, tall = 0] = [512, 1024].map((height) => {
+			const reads = createRecorder<readonly []>()
+			const sheet = composeCapturePictures(
+				new Array<CapturePicture>(256).fill(createCaptureCountedPicture(0, height, reads.handler)),
+				false,
+				0,
+			)
+			expect([sheet.width, sheet.height, sheet.pixels.length]).toEqual([0, height, 0])
+			return reads.count
+		})
+		expect(short).toBeGreaterThan(0)
+		expect(tall).toBe(short)
+	})
+})
+
+describe('computeCaptureComposite', () => {
+	it('sums the axis it places pictures along with the gaps and takes the largest other side', () => {
+		const sizes = [createCaptureGeometry(4, 2), createCaptureGeometry(3, 5)]
+		expect(computeCaptureComposite(sizes, false)).toEqual({ width: 13, height: 5 })
+		expect(computeCaptureComposite(sizes, true, 1)).toEqual({ width: 4, height: 8 })
+		expect(computeCaptureComposite([], true)).toEqual({ width: 0, height: 0 })
+	})
+
+	it('gives the size composeCapturePictures builds for each axis and gap', () => {
+		const pictures = [
+			createCaptureSolidPicture(2, 3, 10),
+			createCaptureSolidPicture(0, 1, 20),
+			createCaptureSolidPicture(5, 0, 30),
+		]
+		for (const vertical of [false, true])
+			for (const gap of [0, 1, 12]) {
+				const sheet = composeCapturePictures(pictures, vertical, gap)
+				expect(computeCaptureComposite(pictures, vertical, gap)).toEqual({
+					width: sheet.width,
+					height: sheet.height,
+				})
+			}
+	})
+})
+
+describe('matchesCaptureLimits', () => {
+	it.each([
+		{ width: 0, height: 0, expected: true },
+		{ width: CAPTURE_PNG_LIMITS.side, height: 160, expected: true },
+		{ width: CAPTURE_PNG_LIMITS.side + 1, height: 1, expected: false },
+		{ width: 1, height: CAPTURE_PNG_LIMITS.side + 1, expected: false },
+		{ width: 13040, height: 1224, expected: true },
+		{ width: 13040, height: 1636, expected: false },
+	])('reads $width × $height as $expected', ({ width, height, expected }) => {
+		expect(matchesCaptureLimits({ width, height })).toBe(expected)
+	})
+})
+
+describe('splitCaptureSheets', () => {
+	it('fills each page to its row count while the stacked rows fit', () => {
+		const rows = Array.from({ length: 5 }, () => createCaptureGeometry(10, 10))
+		expect(splitCaptureSheets(rows, 4, 12).map((page) => page.length)).toEqual([4, 1])
+		expect(splitCaptureSheets(rows, 4, 12)[0]?.[0]).toBe(rows[0])
+		expect(splitCaptureSheets([], 4, 12)).toEqual([])
+	})
+
+	it('closes a page before the row that would pass the pixel budget or a side', () => {
+		const wide = Array.from({ length: 4 }, () => createCaptureGeometry(13040, 400))
+		expect(splitCaptureSheets(wide, 4, 12).map((page) => page.length)).toEqual([3, 1])
+		const tall = Array.from({ length: 3 }, () =>
+			createCaptureGeometry(1, CAPTURE_PNG_LIMITS.side / 2),
+		)
+		expect(splitCaptureSheets(tall, 4, 0).map((page) => page.length)).toEqual([2, 1])
+		expect(splitCaptureSheets(tall, 4, 1).map((page) => page.length)).toEqual([1, 1, 1])
+	})
+
+	it('refuses a row that alone does not fit, as usage naming its composite and the recovery', () => {
+		expect(
+			captureError(() =>
+				splitCaptureSheets(
+					[createCaptureGeometry(10, 10), createCaptureGeometry(52812, 400)],
+					4,
+					12,
+				),
+			),
+		).toMatchObject({
+			code: 'USAGE',
+			message:
+				'Contact-sheet row is out of range: composite is 52812 × 400; expected at most 131072 per side and 20971520 pixels; select fewer variants with --variant',
+		})
+	})
+})
+
+describe('describeCaptureChunk', () => {
+	it('names a chunk by its encoded type, its offset, and its length', () => {
+		const bytes = Buffer.concat([
+			Buffer.alloc(8),
+			encodeCaptureChunk('tEXt', Buffer.alloc(5)),
+			encodeCaptureChunk('I\nD\u0000', Buffer.alloc(0)),
+		])
+		expect(describeCaptureChunk(bytes, 8)).toBe('"tEXt" at offset 8 with length 5')
+		expect(describeCaptureChunk(bytes, 25)).toBe('"I\\nD\\u0000" at offset 25 with length 0')
+	})
 })
 
 describe('pixel loops', () => {
-	it('reproduce the bytes and refusals of revision 0fac494 over a seeded population', async () => {
+	it('reproduce the bytes of revision 0fac494 and pin every refusal over a seeded population', async () => {
 		const sequence = new CaptureThumbnailSequence()
 		const pngs = [
 			...[
@@ -2263,13 +2441,14 @@ describe('pixel loops', () => {
 				digest: createHash('sha256').update(members.join('\n')).digest('hex'),
 			}
 		})
-		// Read from revision 0fac494, which wrote every output byte through a per-byte callback.
+		// The bytes are read from revision 0fac494, which wrote every output byte through a per-byte
+		// callback; each decode refusal names its found and expected values.
 		expect(families).toEqual([
 			{
 				family: 'decode',
 				fulfilled: 144,
 				rejected: 12,
-				digest: '16f81c3aca596a1ddec2951c0dc86603adcdf29803fd6d8fe28abc6d5a2ba806',
+				digest: '1bf6a87aed16261bfa1452c330a5437b31b9b047e75b3e6e88d03e4f28f1493b',
 			},
 			{
 				family: 'unfilter',
@@ -3972,6 +4151,42 @@ describe('collectCaptureIdentical', () => {
 			]),
 		).toEqual([])
 		expect(collectCaptureIdentical([])).toEqual([])
+	})
+
+	it('orders the groups by the first image of each digest and each group by image order', () => {
+		expect(
+			collectCaptureIdentical(
+				[
+					['a.png', 'x'],
+					['b.png', 'y'],
+					['c.png', 'x'],
+					['d.png', 'z'],
+					['e.png', 'y'],
+				].map(([file = '', digest = '']) => createCaptureDigestImageFixture(file, digest)),
+			),
+		).toEqual([
+			['a.png', 'c.png'],
+			['b.png', 'e.png'],
+		])
+	})
+
+	it('A2 reads each digest a bounded number of times, so doubling the images at most doubles the reads', () => {
+		const [small = 0, large = 0] = [512, 1024].map((count) => {
+			const reads = createRecorder<readonly []>()
+			const groups = collectCaptureIdentical(
+				Array.from({ length: count }, (_, index) => ({
+					...createCaptureDigestImageFixture(`${String(index)}.png`, ''),
+					get digest() {
+						reads.handler()
+						return String(index % (count / 2))
+					},
+				})),
+			)
+			expect(groups).toHaveLength(count / 2)
+			return reads.count
+		})
+		expect(small).toBeGreaterThan(0)
+		expect(large).toBeLessThanOrEqual(2 * small)
 	})
 })
 

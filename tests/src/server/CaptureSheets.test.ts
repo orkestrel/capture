@@ -7,6 +7,8 @@ import { createScratch, supportsDirectoryLinks } from '@orkestrel/test/server'
 import { CaptureSheets, decodeCapturePicture } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import {
+	buildFixtureVariants,
+	createReaderWrapper,
 	readCaptureChildModes,
 	readConsumerReport,
 	readCaptureSheetIndex,
@@ -346,6 +348,75 @@ describe('CaptureSheets over a real wrapper and real frames', { timeout: FIXTURE
 			expect(rows.map((row: unknown) => (Array.isArray(row) ? row.length : -1))).toEqual([2, 2, 1])
 			expect(result.stdout.match(/"displayed":/gu)).toHaveLength(18)
 			expect(existsSync(resolve(fixture.root, 'tmp/all-sheets/sheet-002.png'))).toBe(false)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('F3 pages a 20-variant selection by the pixel budget and returns the preflight exit', async () => {
+		const fixture = new ReaderFixture({ core, server })
+		try {
+			const variants = buildFixtureVariants(20)
+			const cell = { width: server.CAPTURE_SHEET.cell, height: server.CAPTURE_SHEET.limit }
+			fixture.write(READER_CONFIG, createReaderWrapper(fixture.root, variants))
+			fixture.seed({ variants, population: 'crowded' })
+			// Seven states make four rows of 320 × 400 cells, and four such rows pass the pixel budget.
+			await fixture.capture({
+				variants,
+				population: 'crowded',
+				picture: Object.fromEntries(
+					[
+						'mail-screen',
+						'mail-reader',
+						'mail-draft',
+						'mail-sent',
+						'mail-quotes',
+						'board-screen',
+						'files-reading',
+					].map((state) => [state, cell]),
+				),
+			})
+			const preflight = await fixture.run('preflight', ['all'])
+			const sheets = await fixture.run('contact-sheets', ['all', '--output', 'tmp/wide-sheets'])
+			expect([preflight.status, sheets.status, sheets.stderr]).toEqual([0, 0, ''])
+			const index = readCaptureSheetIndex(fixture, 'tmp/wide-sheets')
+			if (!Array.isArray(index.sheets)) throw new Error('Missing sheets')
+			expect(
+				index.sheets.map((sheet: unknown) =>
+					isRecord(sheet) && Array.isArray(sheet.rows)
+						? [sheet.file, sheet.rows.length, sheet.height]
+						: sheet,
+				),
+			).toEqual([
+				['sheet-001.png', 3, 1224],
+				['sheet-002.png', 1, 400],
+			])
+			const first = decodeCapturePicture(fixture.read('tmp/wide-sheets/sheet-001.png'))
+			expect([first.width, first.height]).toEqual([13040, 1224])
+			expect(first.width * first.height).toBeLessThanOrEqual(server.CAPTURE_PNG_LIMITS.pixels)
+			expect(sheets.stdout.match(/"displayed":/gu)).toHaveLength(122)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('refuses a row that alone passes the pixel budget with exit 64 before writing any sheet', async () => {
+		const fixture = new ReaderFixture({ core, server })
+		try {
+			const variants = buildFixtureVariants(81)
+			const cell = { width: server.CAPTURE_SHEET.cell, height: server.CAPTURE_SHEET.limit }
+			fixture.write(READER_CONFIG, createReaderWrapper(fixture.root, variants))
+			fixture.seed({ variants })
+			// Two states of 81 cells pair into a row of 81 × 652 = 52812 pixels at 400 tall.
+			await fixture.capture({ variants, picture: { 'mail-screen': cell, 'mail-reader': cell } })
+			const preflight = await fixture.run('preflight', ['all'])
+			const sheets = await fixture.run('contact-sheets', ['all', '--output', 'tmp/wide-sheets'])
+			expect([preflight.status, sheets.status]).toEqual([0, 64])
+			expect(sheets.stderr).toBe(
+				'Contact-sheet row is out of range: composite is 52812 × 400; expected at most 131072 per side and 20971520 pixels; select fewer variants with --variant\n',
+			)
+			expect(sheets.stdout).toBe('')
+			expect(existsSync(resolve(fixture.root, 'tmp/wide-sheets'))).toBe(false)
 		} finally {
 			fixture.destroy()
 		}
