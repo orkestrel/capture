@@ -2233,6 +2233,37 @@ export function requireCaptureSelection(
 }
 
 /**
+ * Picks the standalone portfolio root a selection names by its selector or its portfolio.
+ *
+ * @remarks
+ * A standalone root has no stamping route and no registry refresh, so a selection reads it only
+ * when it names the root's portfolio. Every other selection reads the primary directory.
+ *
+ * @param roots - The wrapper's standalone roots
+ * @param selector - The selected owner selector
+ * @param portfolio - The selected portfolio, when the selection names one
+ * @returns The named standalone root, or `undefined` for a primary selection
+ * @example
+ * ```ts
+ * const vue = { portfolio: 'vue', directory: 'tmp/captures/vue', scoped: false }
+ * resolveCaptureStandalone([vue], 'vue:home') // vue
+ * resolveCaptureStandalone([vue], 'pages:mail') // undefined
+ * ```
+ */
+export function resolveCaptureStandalone(
+	roots: readonly CapturePortfolioRoot[],
+	selector: string,
+	portfolio?: string,
+): CapturePortfolioRoot | undefined {
+	return roots.find(
+		(root) =>
+			portfolio === root.portfolio ||
+			selector === root.portfolio ||
+			selector.startsWith(`${root.portfolio}:`),
+	)
+}
+
+/**
  * Reads output variant candidates without authenticating or accepting registry evidence.
  * @remarks Missing, unreadable, or malformed registries supply no candidate hints; the integrity engine still authenticates every accepted read.
  * @example

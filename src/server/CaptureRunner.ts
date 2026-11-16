@@ -53,6 +53,7 @@ import {
 	resolveCaptureStages,
 	resolveCaptureVariants,
 	resolveCaptureExit,
+	resolveCaptureStandalone,
 	readCaptureTitles,
 	describeCaptureMembers,
 	describeCaptureFault,
@@ -115,10 +116,22 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		// The NEXT commands the outcome's reports record for stdout after the report they follow.
 		const reports: string[] = []
 		const argumentsResult = attempt(() => readCaptureArguments(argv, command, root, config))
-		const result = await this.#dispatch(invocation, invocations, reports, argumentsResult).then(
-			(code) => success(code),
+		const described = await this.#describe(invocation, argumentsResult).then(
+			(description) => success(description),
 			(error: unknown) => failure(error),
 		)
+		const result = isFailure(described)
+			? described
+			: await this.#dispatch(
+					invocation,
+					invocations,
+					reports,
+					described.value.parsed,
+					described.value.projects,
+				).then(
+					(code) => success(code),
+					(error: unknown) => failure(error),
+				)
 		try {
 			const code = isSuccess(result) ? result.value : resolveCaptureExit(result.error)
 			if (code === CAPTURE_EXIT.usage)
@@ -128,6 +141,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 				invocations,
 				reports,
 				argumentsResult.success ? argumentsResult.value : undefined,
+				isSuccess(described) ? described.value.projects : [],
 			)
 			return code
 		} finally {
@@ -139,13 +153,15 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		}
 	}
 
-	async #dispatch(
+	// Prepares the invocation, then reads the wrapper's projects through the discovery child.
+	async #describe(
 		invocation: CaptureInvocationInterface,
-		invocations: CaptureInvocationInterface[],
-		reports: string[],
 		argumentsResult: Result<CaptureRunnerArguments>,
-	): Promise<number> {
-		const { command, root } = this.#options
+	): Promise<{
+		readonly parsed: CaptureRunnerArguments
+		readonly projects: readonly CaptureProject[]
+	}> {
+		const { root } = this.#options
 		invocation.prepare()
 		if (!argumentsResult.success) throw argumentsResult.error
 		const parsed = argumentsResult.value
@@ -156,7 +172,17 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
 			...(this.#options.deadline === undefined ? {} : { deadline: this.#options.deadline }),
 		}).describe()
-		const projects = description.projects.map((entry) => entry.project)
+		return { parsed, projects: description.projects.map((entry) => entry.project) }
+	}
+
+	async #dispatch(
+		invocation: CaptureInvocationInterface,
+		invocations: CaptureInvocationInterface[],
+		reports: string[],
+		parsed: CaptureRunnerArguments,
+		projects: readonly CaptureProject[],
+	): Promise<number> {
+		const { command } = this.#options
 		if (parsed.selector !== undefined) {
 			requireCaptureSelection(parsed.selector, [], projects, [], parsed.portfolio)
 		}
@@ -181,13 +207,20 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		invocations: readonly CaptureInvocationInterface[],
 		reports: readonly string[],
 		parsed: CaptureRunnerArguments | undefined,
+		projects: readonly CaptureProject[],
 	): void {
 		const { command } = this.#options
-		// A refusal that recorded no report line derives its recovery from its condition alone.
+		// A refusal with no report line derives its recovery from its condition and any interrupt of the call.
 		const lines =
 			reports.length > 0 || isSuccess(result) || parsed === undefined
 				? reports
-				: this.#recover(result.error, parsed, parsed.selector, false)
+				: this.#recover(
+						result.error,
+						parsed,
+						parsed.selector,
+						invocations.some((entry) => entry.interrupted),
+						projects,
+					)
 		const next = [...new Set(lines)].map((line) => `NEXT ${line}\n`).join('')
 		if (reports.length > 0 && next !== '') this.#stdout(next)
 		if (isSuccess(result)) return
@@ -279,7 +312,8 @@ export class CaptureRunner implements CaptureRunnerInterface {
 						if (matchesCaptureVersionRefusal(error)) throw error
 						this.#stderr(`${describeCaptureError(error)}\n`)
 						// A refusal before the owner's stage report recorded no line, so its condition names one.
-						if (lines.length === 0) lines.push(...this.#recover(error, owned, owner, false))
+						if (lines.length === 0)
+							lines.push(...this.#recover(error, owned, owner, false, projects))
 						return resolveCaptureExit(error)
 					})
 				if (code !== CAPTURE_EXIT.passed) recorded.push(...lines)
@@ -428,16 +462,18 @@ export class CaptureRunner implements CaptureRunnerInterface {
 								: 'empty selected workload',
 			})}\n`,
 		)
-		const own = renderCaptureCommand(command, parsed, selector, root)
-		// A stage that launched and did not complete, or an interrupt, leaves the selection to rerun.
+		// A passing whole-case journey of all is the complete journey; an unfinished stage reruns itself.
 		reports.push(
 			...(passed
-				? [this.#complete(parsed)].filter((line) => line !== own)
+				? command === 'journey' && selector === 'all' && parsed.case === undefined
+					? []
+					: [this.#complete(parsed)]
 				: this.#recover(
 						isFailure(result) ? result.error : undefined,
 						parsed,
 						selector,
 						failed.length > 0 || invocation.interrupted,
+						projects,
 					)),
 		)
 		if (isFailure(result)) throw result.error
@@ -610,13 +646,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 				{ code: 'USAGE' },
 			)
 		const primary = requireCaptureProjects(projects)
-		// A standalone root has no stamping route and is read only when a selection names it.
-		const standalone = primary.standalone.find(
-			(root) =>
-				parsed.portfolio === root.portfolio ||
-				selector === root.portfolio ||
-				selector.startsWith(`${root.portfolio}:`),
-		)
+		const standalone = resolveCaptureStandalone(primary.standalone, selector, parsed.portfolio)
 		requireCaptureSelection(
 			selector,
 			parsed.variants,
@@ -641,13 +671,23 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			...(parsed.portfolio === undefined ? {} : { portfolio: parsed.portfolio }),
 		})
 		this.#stdout(`INTEGRITY ${JSON.stringify({ command: 'stale', ...result })}\n`)
-		// A frames run over the selection restamps every producing variant, so the line names none.
+		// A frames run over the selector restamps every variant and state, so the line names neither.
 		if (
 			standalone === undefined &&
 			result.entries.some((entry) => CAPTURE_STATUS_RECOVERIES[entry.status] === 'capture')
 		)
 			reports.push(
-				renderCaptureCommand('capture', { ...parsed, variants: [] }, selector, this.#options.root),
+				renderCaptureCommand(
+					'capture',
+					{
+						config: parsed.config,
+						variants: [],
+						...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
+						...(parsed.case === undefined ? {} : { case: parsed.case }),
+					},
+					selector,
+					this.#options.root,
+				),
 			)
 		return result.entries.every((entry) => entry.status === 'current')
 			? CAPTURE_EXIT.passed
@@ -660,13 +700,23 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		parsed: CaptureRunnerArguments,
 		selector: string | undefined,
 		unfinished: boolean,
+		projects: readonly CaptureProject[],
 	): readonly string[] {
 		// A version refusal names its own recovery, and every command fails until that recovery runs.
 		if (matchesCaptureVersionRefusal(error)) return []
 		const { command, root } = this.#options
 		const recovery = isCaptureError(error) ? CAPTURE_RECOVERIES[error.code] : undefined
+		// The registry refresh writes the primary registry alone, so a standalone stale reading has no refresh.
+		const standalone =
+			command === 'stale' &&
+			selector !== undefined &&
+			resolveCaptureStandalone(
+				projects.flatMap((project) => project.standalone),
+				selector,
+				parsed.portfolio,
+			) !== undefined
 		return [
-			...(recovery === 'registry'
+			...(recovery === 'registry' && !standalone
 				? [
 						renderCaptureCommand(
 							'registry',

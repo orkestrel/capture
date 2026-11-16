@@ -5,6 +5,7 @@ import type {
 	CaptureDeclaration,
 	CaptureReceipt,
 	CaptureDestination,
+	CaptureErrorCode,
 	CaptureRegistry,
 	CaptureRequest,
 	CaptureRun,
@@ -3609,8 +3610,13 @@ export class IntegrityFixture {
 		}
 	}
 
-	/** Creates a private committed Git workspace holding the fixture's sources. */
-	constructor(modules: CaptureFixtureModules, parent?: string) {
+	/**
+	 * Creates a private committed Git workspace holding the fixture's sources.
+	 *
+	 * @param parent - The directory the scratch workspace sits in. Default: the host's temporary directory
+	 * @param source - A workspace to copy whole, Git history and evidence included, in place of new sources
+	 */
+	constructor(modules: CaptureFixtureModules, parent?: string, source?: string) {
 		this.modules = modules
 		if (parent !== undefined) mkdirSync(parent, { recursive: true })
 		this.#scratch = createScratch({
@@ -3619,33 +3625,35 @@ export class IntegrityFixture {
 		})
 		this.root = this.#scratch.path
 		try {
-			for (const path of [
-				'src/mail/view.ts',
-				'src/board/view.ts',
-				'src/shared/theme.ts',
-				'behavior/journeys.ts',
-			])
-				this.write(path, `// ${path}\n`)
-			this.write('outside.ts', '// deliberately outside the bounded inputs\n')
-			this.write('fixture with spaces.config.ts', 'export default {}\n')
-			this.write('.gitignore', 'tmp/\n')
-			execFileSync('git', ['init', '--quiet'], { cwd: this.root, windowsHide: true })
-			execFileSync('git', ['add', '.'], { cwd: this.root, windowsHide: true })
-			execFileSync(
-				'git',
-				[
-					'-c',
-					'user.name=Integrity Fixture',
-					'-c',
-					'user.email=fixture@example.invalid',
-					'commit',
-					'--quiet',
-					'--no-gpg-sign',
-					'-m',
-					'fixture',
-				],
-				{ cwd: this.root, windowsHide: true },
-			)
+			if (source === undefined) {
+				for (const path of [
+					'src/mail/view.ts',
+					'src/board/view.ts',
+					'src/shared/theme.ts',
+					'behavior/journeys.ts',
+				])
+					this.write(path, `// ${path}\n`)
+				this.write('outside.ts', '// deliberately outside the bounded inputs\n')
+				this.write('fixture with spaces.config.ts', 'export default {}\n')
+				this.write('.gitignore', 'tmp/\n')
+				execFileSync('git', ['init', '--quiet'], { cwd: this.root, windowsHide: true })
+				execFileSync('git', ['add', '.'], { cwd: this.root, windowsHide: true })
+				execFileSync(
+					'git',
+					[
+						'-c',
+						'user.name=Integrity Fixture',
+						'-c',
+						'user.email=fixture@example.invalid',
+						'commit',
+						'--quiet',
+						'--no-gpg-sign',
+						'-m',
+						'fixture',
+					],
+					{ cwd: this.root, windowsHide: true },
+				)
+			} else cpSync(source, this.root, { recursive: true })
 			this.options = {
 				root: this.root,
 				inputs: INPUTS,
@@ -3874,8 +3882,9 @@ export class ComposedFixture extends IntegrityFixture {
 	 * Creates the committed workspace and writes the wrapper and the Vitest stand-in it spawns.
 	 *
 	 * @param options - The wrapper path and request directory to use in place of the fixture's own, as
-	 * an executable's built-in defaults need, the variant the wrapper stages alone first, and whether
-	 * to commit the wrapper as the Git baseline for changed-selection proofs
+	 * an executable's built-in defaults need, the variant the wrapper stages alone first, whether
+	 * to commit the wrapper as the Git baseline for changed-selection proofs, and a composed workspace
+	 * to copy whole, whose wrapper is rewritten for this root
 	 */
 	constructor(
 		modules: CaptureFixtureModules,
@@ -3884,9 +3893,10 @@ export class ComposedFixture extends IntegrityFixture {
 			readonly requests?: string
 			readonly first?: string
 			readonly committed?: boolean
+			readonly source?: string
 		} = {},
 	) {
-		super(modules)
+		super(modules, undefined, options.source)
 		this.config = options.config ?? READER_CONFIG
 		this.requests = options.requests ?? COMPOSED_REQUESTS
 		try {
@@ -4646,6 +4656,492 @@ export function readCaptureRunnerStatuses(stdout: string): readonly unknown[] {
 		? result.entries.map((entry: unknown) => (isRecord(entry) ? entry.status : undefined))
 		: []
 }
+
+/** Lists the conditions of the recovery closure matrix: a shared workspace state, or an event of the first run. */
+export const CAPTURE_CLOSURE_CONDITIONS = Object.freeze([
+	'absent registry',
+	'lagging registry',
+	'unattested variant',
+	'stale lookup',
+	...CAPTURE_STALE_STATUSES,
+	'interrupt in discovery',
+	'interrupt in a stage',
+	'failed child',
+] as const)
+
+/** Names one condition of the recovery closure matrix. */
+export type CaptureClosureCondition = (typeof CAPTURE_CLOSURE_CONDITIONS)[number]
+
+/** Lists the portfolio roots a closure cell selects: the primary directory, and the standalone Vue root. */
+export const CAPTURE_CLOSURE_ROOTS = Object.freeze(['primary', 'standalone'] as const)
+
+/** Lists the selection flags a closure cell adds after its selector, `none` adding nothing. */
+export const CAPTURE_CLOSURE_FLAGS = Object.freeze([
+	'none',
+	'--state',
+	'--case',
+	'--variant',
+	'--mode',
+] as const)
+
+/** Lists the runner commands a closure cell invokes. */
+export const CAPTURE_CLOSURE_COMMANDS = Object.freeze(['journey', 'capture', 'stale'] as const)
+
+/** Names the declared producing variant the lagging registry never attested. */
+export const CAPTURE_CLOSURE_UNATTESTED = 'light-1280'
+
+/** Supplies each closure root's selector and the state and case its selection flags name. */
+export const CAPTURE_CLOSURE_SELECTIONS = Object.freeze({
+	primary: Object.freeze({ selector: 'pages:mail', state: 'mail-screen', case: MAIL }),
+	standalone: Object.freeze({ selector: 'vue', state: 'vue-home', case: 'vue fixture home' }),
+})
+
+/** Supplies the environment and the interrupt of the first run under each condition that is an event. */
+export const CAPTURE_CLOSURE_EXECUTIONS: Readonly<
+	Partial<Record<CaptureClosureCondition, ComposedExecution>>
+> = Object.freeze({
+	'interrupt in discovery': {
+		environment: { CAPTURE_PRODUCER_DISCOVERY: 'hang' },
+		interrupt: 'emit',
+	},
+	'interrupt in a stage': { environment: { CAPTURE_PRODUCER_MODE: 'hang' }, interrupt: 'emit' },
+	'failed child': { environment: { CAPTURE_PRODUCER_MODE: 'failed-child' } },
+})
+
+/**
+ * Names the shared workspace states the closure cells copy, each built once.
+ *
+ * @remarks A run record names its reporter by absolute path, so a copied workspace refuses the
+ * stamped evidence of the workspace it copies: a shared state holds a seeded registry and no run.
+ */
+export const CAPTURE_CLOSURE_STATES = Object.freeze([
+	'empty',
+	'lagging',
+	'seeded',
+	'standalone lagging',
+	'standalone seeded',
+	'standalone missing',
+] as const)
+
+/** Names one shared workspace state of the closure matrix. */
+export type CaptureClosureState = (typeof CAPTURE_CLOSURE_STATES)[number]
+
+/** Describes one run a closure cell makes in its own copy before its first run, which must pass. */
+export interface CaptureClosurePrelude {
+	readonly command: CaptureCommand
+	readonly argv: readonly string[]
+}
+
+/**
+ * Describes one closure cell: its axes, its command line, the state it copies, the runs and the edit
+ * that put its own copy in its condition, and its first run's events.
+ */
+export interface CaptureClosureCell {
+	readonly title: string
+	readonly condition: CaptureClosureCondition
+	readonly root: (typeof CAPTURE_CLOSURE_ROOTS)[number]
+	readonly flag: (typeof CAPTURE_CLOSURE_FLAGS)[number]
+	readonly command: (typeof CAPTURE_CLOSURE_COMMANDS)[number]
+	readonly argv: readonly string[]
+	readonly state: CaptureClosureState
+	readonly preludes: readonly CaptureClosurePrelude[]
+	readonly edit?: (typeof CAPTURE_STALE_STATUSES)[number]
+	readonly execution?: ComposedExecution
+}
+
+/** Names a closure cell the fixture cannot reach, and why. */
+export interface CaptureClosureSkip {
+	readonly title: string
+	readonly reason: string
+}
+
+/** Holds every cell of the closure matrix: the cells to run, and the cells skipped with a reason. */
+export interface CaptureClosureMatrix {
+	readonly cells: readonly CaptureClosureCell[]
+	readonly skipped: readonly CaptureClosureSkip[]
+}
+
+/**
+ * Names why the fixture cannot reach a closure cell.
+ *
+ * @returns The reason, or `undefined` for a cell the fixture reaches
+ */
+export function describeCaptureClosureSkip(
+	cell: Pick<CaptureClosureCell, 'condition' | 'root' | 'flag' | 'command'>,
+): string | undefined {
+	const staged = cell.condition === 'interrupt in a stage' || cell.condition === 'failed child'
+	if (
+		cell.root === 'standalone' &&
+		(cell.condition === 'stale lookup' ||
+			cell.condition === 'stale-own' ||
+			cell.condition === 'stale-shared')
+	)
+		return 'a standalone root has no stamping route, so it holds no stamp or lookup to go stale'
+	if (cell.root === 'standalone' && staged) return 'a standalone selection starts no stage child'
+	if (cell.command === 'stale' && staged) return 'stale starts no stage child'
+	if (
+		cell.command === 'journey' &&
+		cell.flag === '--state' &&
+		(staged || cell.condition === 'interrupt in discovery')
+	)
+		return 'journey refuses --state while it reads its arguments, before any child starts'
+	return undefined
+}
+
+/**
+ * Resolves the shared workspace state a closure cell copies.
+ *
+ * @returns The state, or `undefined` where the root holds no such state
+ */
+export function resolveCaptureClosureState(
+	condition: CaptureClosureCondition,
+	root: (typeof CAPTURE_CLOSURE_ROOTS)[number],
+): CaptureClosureState | undefined {
+	switch (condition) {
+		case 'absent registry':
+			return 'empty'
+		case 'lagging registry':
+		case 'unattested variant':
+			return root === 'primary' ? 'lagging' : 'standalone lagging'
+		case 'stale lookup':
+		case 'stale-own':
+		case 'stale-shared':
+		case 'interrupt in a stage':
+		case 'failed child':
+			return root === 'primary' ? 'seeded' : undefined
+		case 'missing':
+			return root === 'primary' ? 'seeded' : 'standalone missing'
+		case 'unstamped':
+		case 'interrupt in discovery':
+			return root === 'primary' ? 'seeded' : 'standalone seeded'
+	}
+}
+
+/**
+ * Lists the runs a primary closure cell makes in its own copy before its first run.
+ *
+ * @remarks A freshness condition needs current frames to edit, and a stage event under `--state`
+ * needs the owner's lookup, or the frames run refuses before its stage starts.
+ */
+export function resolveCaptureClosurePreludes(
+	cell: Pick<CaptureClosureCell, 'condition' | 'root' | 'flag' | 'command'>,
+): readonly CaptureClosurePrelude[] {
+	if (cell.root === 'standalone') return []
+	if (CAPTURE_STALE_STATUSES.some((status) => status === cell.condition))
+		return [{ command: 'capture', argv: ['all'] }]
+	if (
+		(cell.condition === 'interrupt in a stage' || cell.condition === 'failed child') &&
+		cell.command === 'capture' &&
+		cell.flag === '--state'
+	)
+		return [{ command: 'journey', argv: [CAPTURE_CLOSURE_SELECTIONS.primary.selector] }]
+	return []
+}
+
+/**
+ * Builds every cell of the recovery closure matrix over its conditions, roots, flags, and commands.
+ *
+ * @returns The cells the fixture reaches, and each other cell with the reason it is skipped
+ */
+export function buildCaptureClosureMatrix(): CaptureClosureMatrix {
+	const product = CAPTURE_CLOSURE_CONDITIONS.flatMap((condition) =>
+		CAPTURE_CLOSURE_ROOTS.flatMap((root) =>
+			CAPTURE_CLOSURE_FLAGS.flatMap((flag) =>
+				CAPTURE_CLOSURE_COMMANDS.map((command) => {
+					const selection = CAPTURE_CLOSURE_SELECTIONS[root]
+					const argv = [
+						selection.selector,
+						...(condition === 'unattested variant'
+							? ['--variant', CAPTURE_CLOSURE_UNATTESTED]
+							: []),
+						...{
+							none: [],
+							'--state': ['--state', selection.state],
+							'--case': ['--case', selection.case],
+							'--variant': ['--variant', COMPOSED_FIRST],
+							'--mode': ['--mode', 'vue'],
+						}[flag],
+					]
+					const execution = CAPTURE_CLOSURE_EXECUTIONS[condition]
+					const edit = CAPTURE_STALE_STATUSES.find((status) => status === condition)
+					return {
+						title: `${condition}, ${root} root: ${command === 'capture' ? 'frames' : command} ${argv.join(' ')}`,
+						condition,
+						root,
+						flag,
+						command,
+						argv,
+						state: resolveCaptureClosureState(condition, root),
+						preludes: resolveCaptureClosurePreludes({ condition, root, flag, command }),
+						reason: describeCaptureClosureSkip({ condition, root, flag, command }),
+						...(edit === undefined || root === 'standalone' ? {} : { edit }),
+						...(execution === undefined ? {} : { execution }),
+					}
+				}),
+			),
+		),
+	)
+	return {
+		cells: product.flatMap(({ reason, state, ...cell }) =>
+			reason === undefined && state !== undefined ? [{ ...cell, state }] : [],
+		),
+		skipped: product.flatMap((cell) =>
+			cell.reason === undefined ? [] : [{ title: cell.title, reason: cell.reason }],
+		),
+	}
+}
+
+/**
+ * Builds one shared closure state in a fresh composed workspace.
+ *
+ * @param fixture - The fresh workspace, which this call destroys when the state cannot be built
+ * @param state - The state to build
+ * @returns The same workspace, holding the state
+ * @throws Thrown when a seeding the state needs fails.
+ */
+export function prepareCaptureClosureState(
+	fixture: ComposedFixture,
+	state: CaptureClosureState,
+): ComposedFixture {
+	const lagging = VARIANTS.filter((variant) => variant !== CAPTURE_CLOSURE_UNATTESTED)
+	try {
+		if (state === 'seeded') fixture.seed()
+		if (state === 'lagging') fixture.seed({ variants: lagging })
+		if (state === 'standalone lagging') fixture.seed({ vue: true, variants: lagging })
+		if (state === 'standalone seeded' || state === 'standalone missing') fixture.seed({ vue: true })
+		if (state === 'standalone missing')
+			removeCaptureFixtureFile(fixture, `tmp/captures/vue/vue-home--${COMPOSED_FIRST}.png`)
+		return fixture
+	} catch (error) {
+		fixture.destroy()
+		throw error
+	}
+}
+
+/**
+ * Puts a closure cell's own copy in its condition: runs its preludes, then makes its freshness edit.
+ *
+ * @param fixture - The cell's own copy, which this call destroys when a prelude fails
+ * @param cell - The cell
+ * @returns The same workspace, in the cell's condition
+ * @throws Thrown when a prelude run does not pass.
+ */
+export async function prepareCaptureClosureCell(
+	fixture: ComposedFixture,
+	cell: CaptureClosureCell,
+): Promise<ComposedFixture> {
+	try {
+		for (const prelude of cell.preludes) {
+			const run = await fixture.run(prelude.command, prelude.argv)
+			if (run.code !== 0)
+				throw new Error(`Closure prelude ${prelude.command} failed: ${run.stderr}`)
+		}
+		if (cell.edit !== undefined) editCaptureFreshness(fixture, cell.edit)
+		return fixture
+	} catch (error) {
+		fixture.destroy()
+		throw error
+	}
+}
+
+/**
+ * Builds each closure state once and copies it for every cell, so a cell pays for its own runs alone.
+ */
+export class CaptureClosureWorkspaces {
+	readonly #modules: CaptureFixtureModules
+	// A memo of each state's build, written once per state.
+	readonly #templates = new Map<CaptureClosureState, ComposedFixture>()
+
+	/** Binds the modules every workspace runs. */
+	constructor(modules: CaptureFixtureModules) {
+		this.#modules = modules
+	}
+
+	/**
+	 * Copies the workspace that holds a cell's state, building it on first use, and puts the copy in
+	 * the cell's condition.
+	 *
+	 * @param cell - The cell the copy serves
+	 * @returns A caller-owned copy
+	 */
+	async open(cell: CaptureClosureCell): Promise<ComposedFixture> {
+		const known = this.#templates.get(cell.state)
+		const template =
+			known ?? prepareCaptureClosureState(new ComposedFixture(this.#modules), cell.state)
+		if (known === undefined) this.#templates.set(cell.state, template)
+		return await prepareCaptureClosureCell(
+			new ComposedFixture(this.#modules, { source: template.root }),
+			cell,
+		)
+	}
+
+	/** Removes every state workspace this instance built. */
+	destroy(): void {
+		for (const template of this.#templates.values()) template.destroy()
+		this.#templates.clear()
+	}
+}
+
+/** Reads one runner command a `NEXT` line names: the runner command or `registry`, and its arguments. */
+export interface CaptureNextCommand {
+	readonly command: CaptureCommand | 'registry'
+	readonly argv: readonly string[]
+}
+
+/**
+ * Reads a printed `NEXT` command back into its command and arguments, undoing the host shell quoting.
+ *
+ * @remarks The renderer quotes for the host shell, so this reads PowerShell quoting on Windows and
+ * POSIX quoting elsewhere.
+ * @param line - The command after `NEXT `
+ * @returns The command and its arguments
+ * @throws Thrown when the line names no capture command.
+ */
+export function extractCaptureNextCommand(line: string): CaptureNextCommand {
+	const words = [
+		...line.matchAll(
+			process.platform === 'win32' ? /(?:'(?:[^']|'')*'|[^\s'])+/gu : /(?:'[^']*'|\\'|[^\s'\\])+/gu,
+		),
+	].map(([word]) =>
+		process.platform === 'win32'
+			? word.replace(/'((?:[^']|'')*)'/gu, (_match: string, inner: string) =>
+					inner.replaceAll("''", "'"),
+				)
+			: word.replace(
+					/'([^']*)'|\\'/gu,
+					(_match: string, inner: string | undefined) => inner ?? "'",
+				),
+	)
+	const [program, name, ...argv] = words
+	const command =
+		name === 'frames'
+			? 'capture'
+			: name === 'journey' || name === 'stale' || name === 'registry'
+				? name
+				: undefined
+	if (program !== 'capture' || command === undefined)
+		throw new Error(`The NEXT line names no capture command: ${line}`)
+	return { command, argv }
+}
+
+/** Records one followed `NEXT` command and the exit it returned. */
+export interface CaptureClosureFollow {
+	readonly line: string
+	readonly code: number
+}
+
+/** Records one run of a closure cell's invocation: its outcome, and the `NEXT` commands followed after it. */
+export interface CaptureClosureStep {
+	readonly code: number
+	readonly next: readonly string[]
+	readonly refusal: string
+	readonly statuses: readonly CaptureStatus[]
+	readonly follows: readonly CaptureClosureFollow[]
+}
+
+/** Records every run of a closure cell, and whether a run repeated an earlier outcome after its commands ran. */
+export interface CaptureClosureTrace {
+	readonly steps: readonly CaptureClosureStep[]
+	readonly repeated: boolean
+}
+
+/** Bounds the reruns of one closure cell, each after the `NEXT` commands its previous run printed. */
+export const CAPTURE_CLOSURE_LIMIT = 4
+
+/**
+ * Runs a closure cell, follows every `NEXT` line it prints in order, and reruns it until it prints none.
+ *
+ * @param fixture - The cell's own workspace
+ * @param cell - The cell, whose events apply to its first run alone
+ * @returns Every run, and whether a run repeated an earlier outcome
+ */
+export async function executeCaptureClosure(
+	fixture: ComposedFixture,
+	cell: CaptureClosureCell,
+): Promise<CaptureClosureTrace> {
+	return await continueCaptureClosure(fixture, cell, [], cell.execution ?? {})
+}
+
+/**
+ * Runs a closure cell once after its earlier steps, then follows and reruns while it prints `NEXT` lines.
+ *
+ * @param fixture - The cell's own workspace
+ * @param cell - The cell
+ * @param steps - The runs so far
+ * @param execution - The events of this run
+ * @returns Every run, and whether a run repeated an earlier outcome
+ */
+export async function continueCaptureClosure(
+	fixture: ComposedFixture,
+	cell: CaptureClosureCell,
+	steps: readonly CaptureClosureStep[],
+	execution: ComposedExecution,
+): Promise<CaptureClosureTrace> {
+	const run = await fixture.run(cell.command, cell.argv, execution)
+	const recoveries = readCaptureRecoveries(run)
+	const outcome = {
+		code: run.code,
+		next: [...recoveries.stdout, ...recoveries.stderr].map((line) => line.slice('NEXT '.length)),
+		refusal: run.stderr
+			.split(/\r\n|\n/u)
+			.filter((line) => line !== '' && !line.startsWith('NEXT '))
+			.join('\n'),
+		statuses: readCaptureRunnerStatuses(run.stdout).filter(
+			(status): status is CaptureStatus =>
+				status === 'current' ||
+				fixture.modules.core.CAPTURE_STATUS_PRECEDENCE.some((entry) => entry === status),
+		),
+	}
+	const repeated = steps.some(
+		(step) =>
+			step.code === outcome.code &&
+			step.refusal === outcome.refusal &&
+			JSON.stringify(step.next) === JSON.stringify(outcome.next),
+	)
+	if (
+		outcome.code === 0 ||
+		outcome.next.length === 0 ||
+		repeated ||
+		steps.length === CAPTURE_CLOSURE_LIMIT
+	)
+		return { steps: [...steps, { ...outcome, follows: [] }], repeated }
+	const follows: CaptureClosureFollow[] = []
+	for (const line of outcome.next) {
+		const next = extractCaptureNextCommand(line)
+		const followed =
+			next.command === 'registry'
+				? await fixture.refresh(next.argv)
+				: await fixture.run(next.command, next.argv)
+		follows.push({ line, code: followed.code })
+	}
+	return await continueCaptureClosure(fixture, cell, [...steps, { ...outcome, follows }], {})
+}
+
+/** Pairs a terminal refusal's text with the condition code the ruling gives it, and whether it left work unfinished. */
+export interface CaptureClosureRefusal {
+	readonly text: string
+	readonly code: CaptureErrorCode
+	readonly unfinished: boolean
+}
+
+/**
+ * Lists the refusals a closure run can end at, each with the code the recovery ruling gives its
+ * condition, independently of the code the runner carries.
+ *
+ * @remarks An interrupted run and a failed stage child leave their selection unfinished, which the
+ * run's own command clears whatever the code.
+ */
+export const CAPTURE_CLOSURE_REFUSALS: readonly CaptureClosureRefusal[] = Object.freeze([
+	{ text: "Unknown option '--state'", code: 'USAGE', unfinished: false },
+	{ text: 'Unknown scope:', code: 'USAGE', unfinished: false },
+	{ text: 'Unknown case;', code: 'USAGE', unfinished: false },
+	{ text: 'Missing accepted registry', code: 'REGISTRY', unfinished: false },
+	{ text: 'Unattested declared variant', code: 'REGISTRY', unfinished: false },
+	{ text: 'Unknown or unattested selected variant', code: 'REGISTRY', unfinished: false },
+	{ text: 'Missing or stale state lookup', code: 'LOOKUP', unfinished: false },
+	{ text: 'Runner interrupted', code: 'STAGE', unfinished: true },
+	{ text: FIXTURE_FAULT_MESSAGES['failed-child'], code: 'STAGE', unfinished: true },
+])
 
 /** Names the structured integrity report line a runner prints. */
 export const CAPTURE_INTEGRITY_PREFIX = 'INTEGRITY '

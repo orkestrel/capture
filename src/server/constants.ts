@@ -5,8 +5,9 @@ import type { CaptureErrorCode, CaptureStatus } from '@src/core'
  *
  * @remarks
  * `registry` is the complete-registry refresh, and `journey` is the selected owner's journey, which
- * refreshes its state lookups. A runner prints the command after the refusal; a condition with no
- * command prints none.
+ * refreshes its state lookups. A runner prints the command on stdout after the report line it
+ * follows, ahead of the refusal on stderr, and on stderr after the refusal when no report line
+ * precedes it; a condition with no command prints none.
  *
  * @example
  * ```ts

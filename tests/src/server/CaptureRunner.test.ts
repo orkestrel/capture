@@ -3,17 +3,28 @@ import * as server from '@src/server'
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
+import { requireValue } from '@orkestrel/test'
 import { isRunning } from '@orkestrel/test/server'
 import { isCaptureRun } from '@src/core'
 import {
 	CAPTURE_COMMAND_NAMES,
 	CAPTURE_OWNER_FILE,
+	CAPTURE_RECOVERIES,
 	CAPTURE_REFUSAL_LIMIT,
 	CAPTURE_RUNS_DIRECTORY,
+	CAPTURE_STATUS_RECOVERIES,
 	createCaptureRunner,
 } from '@src/server'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+	CAPTURE_CLOSURE_COMMANDS,
+	CAPTURE_CLOSURE_CONDITIONS,
+	CAPTURE_CLOSURE_FLAGS,
+	CAPTURE_CLOSURE_REFUSALS,
+	CAPTURE_CLOSURE_ROOTS,
+	CaptureClosureWorkspaces,
+	buildCaptureClosureMatrix,
+	executeCaptureClosure,
 	readCaptureChildModes,
 	readCaptureInvocationId,
 	readCaptureStageRequest,
@@ -1183,6 +1194,25 @@ describe('CaptureRunner NEXT lines', { timeout: FIXTURE_TIMEOUT }, () => {
 		})
 	})
 
+	it('prints no NEXT line after a passing complete journey under --no-bail, which the closing command omits', async () => {
+		const runs = [
+			await base.run('journey', ['all', '--no-bail']),
+			await base.run('journey', ['all', '--no-bail', '--variant', COMPOSED_FIRST, '--mode', 'vue']),
+		]
+		expect(runs.map((run) => readCaptureRecoveries(run))).toEqual([
+			{ code: 0, stdout: [], stderr: [] },
+			{ code: 0, stdout: [], stderr: [] },
+		])
+	})
+
+	it('prints the complete journey after a passing case-scoped journey of all', async () => {
+		expect(readCaptureRecoveries(await base.run('journey', ['all', '--case', MAIL]))).toEqual({
+			code: 0,
+			stdout: [`NEXT capture journey all ${config}`],
+			stderr: [],
+		})
+	})
+
 	it('prints a failed owner command once on stdout after a changed run with one failed owner', async () => {
 		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
@@ -1648,6 +1678,228 @@ describe('CaptureRunner recoveries', { timeout: FIXTURE_TIMEOUT }, () => {
 		} finally {
 			fixture.destroy()
 		}
+	})
+
+	it.each(['journey', 'capture', 'stale'] as const)(
+		'prints the %s run command on stderr after an interrupt during discovery, and the rerun clears it',
+		async (command) => {
+			const fixture = new ComposedFixture({ core, server })
+			try {
+				fixture.seed()
+				const first = await fixture.run(command, ['pages:mail'], {
+					environment: { CAPTURE_PRODUCER_DISCOVERY: 'hang' },
+					interrupt: 'emit',
+				})
+				expect(first.stderr).toContain('Runner interrupted')
+				expect(readCaptureRecoveries(first)).toEqual({
+					code: 1,
+					stdout: [],
+					stderr: [`NEXT capture ${CAPTURE_COMMAND_NAMES[command]} pages:mail ${config}`],
+				})
+				// The rerun meets no refusal: a frames or journey run passes, and stale prints its report.
+				expect((await fixture.run(command, ['pages:mail'])).stderr).toBe('')
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+
+	it('prints no NEXT line after a changed run is interrupted during discovery, because it has no selector', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			fixture.seed()
+			fixture.write('src/mail/view.ts', '// changed mail source\n')
+			const run = await fixture.run('journey', ['--changed', 'HEAD'], {
+				environment: { CAPTURE_PRODUCER_DISCOVERY: 'hang' },
+				interrupt: 'emit',
+			})
+			expect(run.stderr).toContain('Runner interrupted')
+			expect(readCaptureRecoveries(run)).toEqual({ code: 1, stdout: [], stderr: [] })
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints no NEXT line after an absent or a lagging standalone registry, which the registry refresh never writes', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			const absent = await fixture.run('stale', ['vue'])
+			fixture.seed({ vue: true, variants: [COMPOSED_FIRST] })
+			const lagging = await fixture.run('stale', ['vue'])
+			const unattested = await fixture.run('stale', ['vue', '--variant', 'light-1280'])
+			expect(absent.stderr).toContain('Missing accepted registry')
+			expect(lagging.stderr).toContain('Unattested declared variant: light-1280')
+			expect(unattested.stderr).toContain('Unknown or unattested selected variant')
+			expect([absent, lagging, unattested].map((run) => readCaptureRecoveries(run))).toEqual([
+				{ code: 1, stdout: [], stderr: [] },
+				{ code: 1, stdout: [], stderr: [] },
+				{ code: 1, stdout: [], stderr: [] },
+			])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints the registry refresh after --variant names a declared variant the registry never attested, and the refresh clears it', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			fixture.seed({ variants: VARIANTS.filter((variant) => variant !== 'light-1280') })
+			const stale = ['examples:board', '--variant', 'light-1280']
+			const frames = ['pages:mail', '--variant', 'light-1280', '--state', 'mail-reader']
+			const first = [await fixture.run('stale', stale), await fixture.run('capture', frames)]
+			for (const run of first)
+				expect(run.stderr).toContain('Unknown or unattested selected variant')
+			expect(first.map((run) => readCaptureRecoveries(run))).toEqual([
+				{ code: 1, stdout: [], stderr: [registry] },
+				{ code: 1, stdout: [], stderr: [registry] },
+			])
+			expect((await fixture.refresh()).code).toBe(0)
+			const rerun = [await fixture.run('stale', stale), await fixture.run('capture', frames)]
+			for (const run of rerun) expect(run.stderr).not.toContain('Unknown or unattested')
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('keeps an undeclared variant a usage refusal with no NEXT line', async () => {
+		const runs = [
+			await base.run('stale', ['pages:mail', '--variant', 'light-1440']),
+			await base.run('capture', [
+				'pages:mail',
+				'--variant',
+				'light-1440',
+				'--state',
+				'mail-reader',
+			]),
+		]
+		expect(runs.map((run) => readCaptureRecoveries(run))).toEqual([
+			{ code: 64, stdout: [], stderr: [] },
+			{ code: 64, stdout: [], stderr: [] },
+		])
+		for (const run of runs) expect(run.stderr).toContain('light-1440')
+	})
+
+	it.each(['stale-own', 'stale-shared'] as const)(
+		'prints the frames refresh without --state or --variant after the %s reading of a state, and the frames run clears it',
+		async (status) => {
+			const fixture = new ComposedFixture({ core, server })
+			try {
+				fixture.seed()
+				expect((await fixture.run('capture', ['all'])).code).toBe(0)
+				editCaptureFreshness(fixture, status)
+				const args = [
+					'pages:mail',
+					'--state',
+					'mail-screen',
+					'--case',
+					MAIL,
+					'--mode',
+					'vue',
+					'--variant',
+					COMPOSED_FIRST,
+				]
+				const first = await fixture.run('stale', args)
+				expect(readCaptureRunnerStatuses(first.stdout)).toContain(status)
+				expect(readCaptureRecoveries(first)).toEqual({
+					code: 1,
+					stdout: [`NEXT capture frames pages:mail --mode vue --case '${MAIL}' ${config}`],
+					stderr: [],
+				})
+				expect(
+					(await fixture.run('capture', ['pages:mail', '--mode', 'vue', '--case', MAIL])).code,
+				).toBe(0)
+				expect((await fixture.run('stale', args)).code).toBe(0)
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+})
+
+// Each cell runs its command, follows every NEXT line it prints in order, and reruns it until it
+// prints none. A cell with no first-run event shares no process state, so those cells run concurrently.
+describe('CaptureRunner recovery closure', { timeout: FIXTURE_TIMEOUT }, () => {
+	const matrix = buildCaptureClosureMatrix()
+	const workspaces = new CaptureClosureWorkspaces({ core, server })
+
+	afterAll(() => workspaces.destroy())
+
+	it('runs every cell the fixture reaches, the findings cells included, and names why it skips each other cell', () => {
+		const titles = matrix.cells.map((cell) => cell.title)
+		const product =
+			CAPTURE_CLOSURE_CONDITIONS.length *
+			CAPTURE_CLOSURE_ROOTS.length *
+			CAPTURE_CLOSURE_FLAGS.length *
+			CAPTURE_CLOSURE_COMMANDS.length
+		expect({
+			cells: new Set([...titles, ...matrix.skipped.map((skip) => skip.title)]).size,
+			reasons: [...new Set(matrix.skipped.map((skip) => skip.reason))].toSorted(),
+		}).toEqual({
+			cells: product,
+			reasons: [
+				'a standalone root has no stamping route, so it holds no stamp or lookup to go stale',
+				'a standalone selection starts no stage child',
+				'journey refuses --state while it reads its arguments, before any child starts',
+				'stale starts no stage child',
+			],
+		})
+		expect(titles.length + matrix.skipped.length).toBe(product)
+		expect(titles).toEqual(
+			expect.arrayContaining([
+				'interrupt in discovery, primary root: journey pages:mail',
+				'interrupt in discovery, primary root: frames pages:mail',
+				'absent registry, standalone root: stale vue',
+				'lagging registry, standalone root: stale vue',
+				'unattested variant, primary root: stale pages:mail --variant light-1280',
+				'unattested variant, primary root: frames pages:mail --variant light-1280 --state mail-screen',
+				'stale-own, primary root: stale pages:mail --state mail-screen',
+				'stale-shared, primary root: stale pages:mail --state mail-screen',
+			]),
+		)
+	})
+
+	describe.each([
+		{ group: 'cells without a first-run event', concurrent: true },
+		{ group: 'cells with a first-run event', concurrent: false },
+	])('$group', ({ concurrent }) => {
+		it.each(matrix.cells.filter((entry) => (entry.execution === undefined) === concurrent))(
+			'$title',
+			{ concurrent },
+			async (cell) => {
+				const fixture = await workspaces.open(cell)
+				try {
+					const trace = await executeCaptureClosure(fixture, cell)
+					const last = requireValue(trace.steps.at(-1), 'The closure ran no step')
+					const refusal = CAPTURE_CLOSURE_REFUSALS.find((entry) =>
+						last.refusal.includes(entry.text),
+					)
+					// A standalone stale reading has no refresh route, so its registry refusal and its
+					// classifications name no command.
+					const standalone = cell.root === 'standalone' && cell.command === 'stale'
+					// The last run passes, or prints no NEXT line because its condition maps to no command.
+					const settled =
+						last.code === 0 ||
+						(last.next.length === 0 &&
+							(last.refusal === ''
+								? last.statuses.every(
+										(status) => standalone || CAPTURE_STATUS_RECOVERIES[status] === undefined,
+									)
+								: refusal !== undefined &&
+									!refusal.unfinished &&
+									(last.code === 64) === (refusal.code === 'USAGE') &&
+									(CAPTURE_RECOVERIES[refusal.code] === undefined ||
+										(standalone && refusal.code === 'REGISTRY'))))
+					// The trace rides along as text, so a red cell's diff shows every run it made.
+					expect({ repeated: trace.repeated, settled, trace: JSON.stringify(trace) }).toEqual({
+						repeated: false,
+						settled: true,
+						trace: expect.any(String),
+					})
+				} finally {
+					fixture.destroy()
+				}
+			},
+		)
 	})
 })
 

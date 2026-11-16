@@ -2066,9 +2066,20 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 		try {
 			fixture.seed({ variants: ['light-390', 'dark-390'] })
 			const desktop = { selector: 'examples:files', variants: ['dark-320'] }
-			await expect(fixture.engine.read(desktop)).rejects.toThrow(
-				'Unknown or unattested selected variant',
-			)
+			// A producing variant the registry never attested is a registry condition, under every reader.
+			const unattested = {
+				code: 'REGISTRY',
+				message: expect.stringContaining('Unknown or unattested selected variant'),
+			}
+			await expect(fixture.engine.read(desktop)).rejects.toMatchObject(unattested)
+			await expect(fixture.engine.check(desktop)).rejects.toMatchObject(unattested)
+			await expect(
+				fixture.engine.lookup({
+					selector: 'examples:files',
+					state: 'files-reading',
+					variants: ['dark-1280'],
+				}),
+			).rejects.toMatchObject(unattested)
 			await fixture.capture({
 				command: 'journey',
 				selector: 'examples:files',

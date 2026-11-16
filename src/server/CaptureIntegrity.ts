@@ -1435,10 +1435,11 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			),
 		]
 		const unknown = options.variants.find((variant) => !variants.includes(variant))
+		// A caller refuses an undeclared variant before the read, so one outside the attested set lags.
 		if (unknown !== undefined)
 			throw new CaptureError(
 				`Unknown or unattested selected variant; ${describeCaptureFault('selection.variants', unknown, 'an attested registry variant', variants)}`,
-				{ code: 'USAGE' },
+				{ code: 'REGISTRY', context: { variant: unknown } },
 			)
 		const selected = scoped.filter(
 			(entry) =>
