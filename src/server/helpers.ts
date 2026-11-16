@@ -1651,8 +1651,8 @@ export function sumCaptureRow(pixels: Uint8Array, start: number, columns: number
  * `rows × columns` samples, inside the bytes or not, so a row count that is not above 0 sums nothing
  * and a fractional row count reads its ceiling. For whole-number arguments, the sum equals the
  * direct sum of those samples where every number the call computes from its arguments is a safe
- * integer: each row number `row + k`, each row start `(top + row + k) * picture.width * 3 + left`,
- * and each sample index.
+ * integer, each row number, each intermediate sum and product of a row start, and each sample index
+ * among them.
  *
  * @param picture - The source RGB picture
  * @param top - The block's first source row
