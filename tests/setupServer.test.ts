@@ -1,7 +1,8 @@
 import type { CapturePicture } from '@src/server'
+import type { CaptureClosureTrace } from './setupServer.js'
 import * as core from '@src/core'
 import * as server from '@src/server'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import {
 	existsSync,
 	mkdirSync,
@@ -19,6 +20,7 @@ import {
 	captureError,
 	createHostileValues,
 	createRecorder,
+	requireValue,
 	waitForCondition,
 	waitForAbort,
 	waitForDelay,
@@ -33,6 +35,7 @@ import {
 	readCaptureProject,
 	readCaptureRequest,
 	readCaptureViewport,
+	renderCaptureCommand,
 } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { CONSUMER_DIRECTORY, CONSUMER_SOURCES } from './fixtures/capture/consumer/constants.js'
@@ -66,6 +69,12 @@ import {
 	launchCaptureProducer,
 	readCaptureWrapperProjects,
 	IntegrityFixture,
+	ComposedFixture,
+	CAPTURE_CLOSURE_REFUSALS,
+	CaptureClosureWorkspaces,
+	buildCaptureClosureMatrix,
+	executeCaptureClosure,
+	extractCaptureNextCommand,
 	readConsumerReport,
 	CaptureConsumer,
 	CAPTURE_WORKSPACE_ROOT,
@@ -724,6 +733,229 @@ describe('the runner fixtures', () => {
 
 	it('reads a group signal as deliverable only off Windows', () => {
 		expect(SUPPORTS_GROUP_SIGNAL).toBe(process.platform !== 'win32')
+	})
+})
+
+describe('the recovery closure fixtures', { timeout: FIXTURE_TIMEOUT }, () => {
+	const config = "--config 'fixture with spaces.config.ts'"
+	const matrix = buildCaptureClosureMatrix()
+
+	it('copies a workspace whole, Git history included, and rewrites a composed wrapper for its own root', async () => {
+		const original = new ComposedFixture({ core, server })
+		try {
+			original.seed()
+			const composed = new ComposedFixture({ core, server }, { source: original.root })
+			const plain = new IntegrityFixture({ core, server }, undefined, original.root)
+			try {
+				const registry = `${COMPOSED_DIRECTORY}/registry.json`
+				expect(
+					[composed, plain].map((copy) => ({
+						root: copy.root === original.root,
+						registry: copy.read(registry).equals(original.read(registry)),
+						head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: copy.root, encoding: 'utf8' }),
+					})),
+				).toEqual(
+					[composed, plain].map(() => ({
+						root: false,
+						registry: true,
+						head: execFileSync('git', ['rev-parse', 'HEAD'], {
+							cwd: original.root,
+							encoding: 'utf8',
+						}),
+					})),
+				)
+				expect(composed.read(composed.config).toString('utf8')).toContain(
+					JSON.stringify(resolve(composed.root, COMPOSED_DIRECTORY)),
+				)
+				expect(plain.read(original.config).equals(original.read(original.config))).toBe(true)
+				expect((await plain.engine.read({ selector: 'all' })).entries.length).toBeGreaterThan(0)
+				composed.write('src/mail/view.ts', '// copy edit\n')
+				expect(original.read('src/mail/view.ts').toString('utf8')).toBe('// src/mail/view.ts\n')
+			} finally {
+				composed.destroy()
+				plain.destroy()
+			}
+		} finally {
+			original.destroy()
+		}
+	})
+
+	it('refuses in a copy the stamped evidence its source workspace reads as current', async () => {
+		const original = new ComposedFixture({ core, server })
+		try {
+			original.seed()
+			expect((await original.run('capture', ['pages:mail'])).code).toBe(0)
+			const copy = new ComposedFixture({ core, server }, { source: original.root })
+			try {
+				const [current, copied] = [
+					await original.run('stale', ['pages:mail']),
+					await copy.run('stale', ['pages:mail']),
+				]
+				expect({ current: current.code, copied: copied.code }).toEqual({ current: 0, copied: 1 })
+				expect(copied.stderr).toContain('Invalid serialized path')
+			} finally {
+				copy.destroy()
+			}
+		} finally {
+			original.destroy()
+		}
+	})
+
+	it('classifies each terminal refusal under one declared code, an unfinished one under STAGE alone', () => {
+		const texts = CAPTURE_CLOSURE_REFUSALS.map((entry) => entry.text)
+		expect(new Set(texts).size).toBe(texts.length)
+		expect(
+			texts.filter((text) => texts.some((other) => other !== text && other.includes(text))),
+		).toEqual([])
+		expect(
+			CAPTURE_CLOSURE_REFUSALS.filter(
+				(entry) => !core.CAPTURE_ERROR_CODES.some((code) => code === entry.code),
+			),
+		).toEqual([])
+		expect(
+			CAPTURE_CLOSURE_REFUSALS.filter((entry) => entry.unfinished).map((entry) => entry.text),
+		).toEqual(['Runner interrupted', FIXTURE_FAULT_MESSAGES['failed-child']])
+		expect(
+			CAPTURE_CLOSURE_REFUSALS.filter((entry) => entry.unfinished).every(
+				(entry) => entry.code === 'STAGE',
+			),
+		).toBe(true)
+	})
+
+	it('reads a rendered NEXT command back into its command and arguments, quoting undone', () => {
+		const base = { config: resolve(CAPTURE_WORKSPACE_ROOT, READER_CONFIG), variants: [] }
+		const lines = [
+			renderCaptureCommand(
+				'capture',
+				{ ...base, variants: [COMPOSED_FIRST], mode: 'vue', case: QUOTED, state: 'mail-screen' },
+				'pages:mail',
+				CAPTURE_WORKSPACE_ROOT,
+			),
+			renderCaptureCommand('journey', { ...base, bail: false }, 'all', CAPTURE_WORKSPACE_ROOT),
+			renderCaptureCommand('stale', { ...base, portfolio: 'vue' }, 'vue', CAPTURE_WORKSPACE_ROOT),
+			renderCaptureCommand('registry', base, undefined, CAPTURE_WORKSPACE_ROOT),
+		]
+		expect(lines.map((line) => extractCaptureNextCommand(line))).toEqual([
+			{
+				command: 'capture',
+				argv: [
+					'pages:mail',
+					'--variant',
+					COMPOSED_FIRST,
+					'--mode',
+					'vue',
+					'--case',
+					QUOTED,
+					'--state',
+					'mail-screen',
+					'--config',
+					READER_CONFIG,
+				],
+			},
+			{ command: 'journey', argv: ['all', '--no-bail', '--config', READER_CONFIG] },
+			{ command: 'stale', argv: ['vue', '--portfolio', 'vue', '--config', READER_CONFIG] },
+			{ command: 'registry', argv: ['--config', READER_CONFIG] },
+		])
+		for (const line of ['npm test', 'capture sheets all', ''])
+			expect(() => extractCaptureNextCommand(line)).toThrow(
+				'The NEXT line names no capture command',
+			)
+	})
+
+	it('ends a cell at its first passing run, and follows each NEXT line until a run prints none', async () => {
+		const workspaces = new CaptureClosureWorkspaces({ core, server })
+		try {
+			const traces: CaptureClosureTrace[] = []
+			for (const title of [
+				'stale lookup, primary root: journey pages:mail',
+				'absent registry, primary root: stale pages:mail',
+			]) {
+				const cell = requireValue(
+					matrix.cells.find((entry) => entry.title === title),
+					title,
+				)
+				const workspace = await workspaces.open(cell)
+				try {
+					traces.push(await executeCaptureClosure(workspace, cell))
+				} finally {
+					workspace.destroy()
+				}
+			}
+			expect(
+				traces.map((trace) => ({
+					repeated: trace.repeated,
+					steps: trace.steps.map((step) => ({
+						code: step.code,
+						next: step.next,
+						follows: step.follows.map((follow) => follow.code),
+					})),
+				})),
+			).toEqual([
+				{
+					repeated: false,
+					steps: [{ code: 0, next: [`capture journey all ${config}`], follows: [] }],
+				},
+				{
+					repeated: false,
+					steps: [
+						{ code: 1, next: [`capture registry ${config}`], follows: [0] },
+						{ code: 1, next: [`capture frames pages:mail ${config}`], follows: [0] },
+						{ code: 0, next: [], follows: [] },
+					],
+				},
+			])
+		} finally {
+			workspaces.destroy()
+		}
+	})
+
+	it('reads a repeated outcome when a followed command leaves the condition, and applies a cell event to its first run alone', async () => {
+		const workspaces = new CaptureClosureWorkspaces({ core, server })
+		try {
+			const absent = requireValue(
+				matrix.cells.find(
+					(entry) => entry.title === 'absent registry, primary root: stale pages:mail',
+				),
+				'the absent registry cell',
+			)
+			const interrupted = requireValue(
+				matrix.cells.find(
+					(entry) => entry.title === 'interrupt in discovery, primary root: stale pages:mail',
+				),
+				'the interrupted cell',
+			)
+			const failing = await workspaces.open(absent)
+			const pending = await workspaces.open(interrupted)
+			try {
+				// A failing child fails the registry refresh, so the refusal it prints repeats.
+				const repeated = await withEnvironment({ CAPTURE_PRODUCER_MODE: 'failed-child' }, () =>
+					executeCaptureClosure(failing, absent),
+				)
+				const once = await executeCaptureClosure(pending, interrupted)
+				expect({
+					repeated: repeated.repeated,
+					steps: repeated.steps.map((step) => step.follows.map((follow) => follow.code)),
+				}).toEqual({ repeated: true, steps: [[1], []] })
+				const [first, ...later] = once.steps
+				expect({
+					repeated: once.repeated,
+					first: first?.refusal.includes('Runner interrupted'),
+					next: first?.next,
+					later: later.map((step) => step.refusal.includes('Runner interrupted')),
+				}).toEqual({
+					repeated: false,
+					first: true,
+					next: [`capture stale pages:mail ${config}`],
+					later: expect.arrayContaining([false]),
+				})
+				expect(later.some((step) => step.refusal.includes('Runner interrupted'))).toBe(false)
+			} finally {
+				failing.destroy()
+				pending.destroy()
+			}
+		} finally {
+			workspaces.destroy()
+		}
 	})
 })
 

@@ -120,6 +120,7 @@ import {
 	readCaptureSeparator,
 	readCaptureTitles,
 	readCaptureVariants,
+	resolveCaptureStandalone,
 	describeCaptureMembers,
 	describeCaptureOutput,
 	requireCaptureSelection,
@@ -2646,6 +2647,20 @@ describe('resolveCaptureVariants', () => {
 		expect(() =>
 			requireCaptureSelection('app', ['focused-output'], [project], ['focused-output']),
 		).not.toThrow()
+	})
+	it('picks the standalone root a selector or a portfolio names, and none for a primary selection', () => {
+		const vue = { portfolio: 'vue', directory: 'tmp/captures/vue', scoped: false }
+		expect(
+			[
+				['vue', undefined],
+				['vue:home', undefined],
+				['pages:mail', 'vue'],
+				['pages:mail', undefined],
+				['vuex', undefined],
+				['vuex:home', undefined],
+			].map(([selector, portfolio]) => resolveCaptureStandalone([vue], selector ?? '', portfolio)),
+		).toEqual([vue, vue, vue, undefined, undefined, undefined])
+		expect(resolveCaptureStandalone([], 'vue')).toBeUndefined()
 	})
 	it('H1s reads only contained schema-valid output variant candidate hints', () => {
 		const scratch = createScratch({ prefix: 'capture-variant-hints-' })

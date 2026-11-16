@@ -5049,6 +5049,13 @@ export interface CaptureClosureTrace {
 export const CAPTURE_CLOSURE_LIMIT = 4
 
 /**
+ * Bounds, in milliseconds, one closure cell under full-suite contention.
+ * Two `test:src` runs on a 4-core Linux host (2026-11-16) measured the slowest cell at 4.57 s and
+ * 5.30 s. The required 2.5× budget is 13.26 s; rounding up to 15 s retains 2.83× headroom.
+ */
+export const CAPTURE_CLOSURE_TIMEOUT = 15_000
+
+/**
  * Runs a closure cell, follows every `NEXT` line it prints in order, and reruns it until it prints none.
  *
  * @param fixture - The cell's own workspace

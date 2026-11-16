@@ -63,6 +63,7 @@ import {
 	readCaptureImage,
 	readCaptureManifest,
 	requireCaptureSelection,
+	resolveCaptureStandalone,
 	readCaptureVariants,
 	shrinkCapturePicture,
 	requireCaptureArgument,
@@ -149,12 +150,10 @@ export class CapturePreflight implements CapturePreflightInterface {
 				selection.portfolio,
 			)
 			const primary = requireCaptureProjects(loaded.map((entry) => entry.project))
-			// A standalone root has no stamping route and is read only when a selection names it.
-			const standalone = primary.standalone.find(
-				(entry) =>
-					selection.portfolio === entry.portfolio ||
-					selection.selector === entry.portfolio ||
-					selection.selector.startsWith(`${entry.portfolio}:`),
+			const standalone = resolveCaptureStandalone(
+				primary.standalone,
+				selection.selector,
+				selection.portfolio,
 			)
 			const options = buildCaptureIntegrityOptions(root, primary, standalone)
 			requireCaptureSelection(

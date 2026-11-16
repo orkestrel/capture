@@ -5,8 +5,18 @@ import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
 import { requireValue } from '@orkestrel/test'
 import { isCaptureLookupJournal } from '@src/core'
+import { CAPTURE_RECOVERIES, CAPTURE_STATUS_RECOVERIES } from '@src/server'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
+	CAPTURE_CLOSURE_COMMANDS,
+	CAPTURE_CLOSURE_CONDITIONS,
+	CAPTURE_CLOSURE_FLAGS,
+	CAPTURE_CLOSURE_REFUSALS,
+	CAPTURE_CLOSURE_ROOTS,
+	CAPTURE_CLOSURE_TIMEOUT,
+	CaptureClosureWorkspaces,
+	buildCaptureClosureMatrix,
+	executeCaptureClosure,
 	readCaptureIntegrityReports,
 	readCaptureIntegrationStatuses,
 	ComposedFixture,
@@ -210,5 +220,94 @@ describe('a journeys-only workspace capture 0.0.9 wrote', { timeout: FIXTURE_TIM
 		} finally {
 			earlier.destroy()
 		}
+	})
+})
+
+// Each cell runs its command, follows every NEXT line it prints in order, and reruns it until it
+// prints none. A cell with no first-run event shares no process state, so those cells run concurrently.
+// An event cell sets the process environment and emits SIGINT to every attached runner, so those run
+// one at a time.
+describe('CaptureRunner recovery closure', { timeout: CAPTURE_CLOSURE_TIMEOUT }, () => {
+	const matrix = buildCaptureClosureMatrix()
+	const workspaces = new CaptureClosureWorkspaces({ core, server })
+
+	afterAll(() => workspaces.destroy())
+
+	it('runs every cell the fixture reaches, the findings cells included, and names why it skips each other cell', () => {
+		const titles = matrix.cells.map((cell) => cell.title)
+		const product =
+			CAPTURE_CLOSURE_CONDITIONS.length *
+			CAPTURE_CLOSURE_ROOTS.length *
+			CAPTURE_CLOSURE_FLAGS.length *
+			CAPTURE_CLOSURE_COMMANDS.length
+		expect({
+			cells: new Set([...titles, ...matrix.skipped.map((skip) => skip.title)]).size,
+			reasons: [...new Set(matrix.skipped.map((skip) => skip.reason))].toSorted(),
+		}).toEqual({
+			cells: product,
+			reasons: [
+				'a standalone root has no stamping route, so it holds no stamp or lookup to go stale',
+				'a standalone selection starts no stage child',
+				'journey refuses --state while it reads its arguments, before any child starts',
+				'stale starts no stage child',
+			],
+		})
+		expect(titles.length + matrix.skipped.length).toBe(product)
+		expect(titles).toEqual(
+			expect.arrayContaining([
+				'interrupt in discovery, primary root: journey pages:mail',
+				'interrupt in discovery, primary root: frames pages:mail',
+				'absent registry, standalone root: stale vue',
+				'lagging registry, standalone root: stale vue',
+				'unattested variant, primary root: stale pages:mail --variant light-1280',
+				'unattested variant, primary root: frames pages:mail --variant light-1280 --state mail-screen',
+				'stale-own, primary root: stale pages:mail --state mail-screen',
+				'stale-shared, primary root: stale pages:mail --state mail-screen',
+			]),
+		)
+	})
+
+	describe.each([
+		{ group: 'cells without a first-run event', concurrent: true },
+		{ group: 'cells with a first-run event', concurrent: false },
+	])('$group', ({ concurrent }) => {
+		it.each(matrix.cells.filter((entry) => (entry.execution === undefined) === concurrent))(
+			'$title',
+			{ concurrent },
+			async (cell) => {
+				const workspace = await workspaces.open(cell)
+				try {
+					const trace = await executeCaptureClosure(workspace, cell)
+					const last = requireValue(trace.steps.at(-1), 'The closure ran no step')
+					const refusal = CAPTURE_CLOSURE_REFUSALS.find((entry) =>
+						last.refusal.includes(entry.text),
+					)
+					// A standalone stale reading has no refresh route, so its registry refusal and its
+					// classifications name no command.
+					const standalone = cell.root === 'standalone' && cell.command === 'stale'
+					// The last run passes, or prints no NEXT line because its condition maps to no command.
+					const settled =
+						last.code === 0 ||
+						(last.next.length === 0 &&
+							(last.refusal === ''
+								? last.statuses.every(
+										(status) => standalone || CAPTURE_STATUS_RECOVERIES[status] === undefined,
+									)
+								: refusal !== undefined &&
+									!refusal.unfinished &&
+									(last.code === 64) === (refusal.code === 'USAGE') &&
+									(CAPTURE_RECOVERIES[refusal.code] === undefined ||
+										(standalone && refusal.code === 'REGISTRY'))))
+					// The trace rides along as text, so a red cell's diff shows every run it made.
+					expect({ repeated: trace.repeated, settled, trace: JSON.stringify(trace) }).toEqual({
+						repeated: false,
+						settled: true,
+						trace: expect.any(String),
+					})
+				} finally {
+					workspace.destroy()
+				}
+			},
+		)
 	})
 })
