@@ -4660,6 +4660,8 @@ export function readCaptureRunnerStatuses(stdout: string): readonly unknown[] {
 /** Lists the conditions of the recovery closure matrix: a shared workspace state, or an event of the first run. */
 export const CAPTURE_CLOSURE_CONDITIONS = Object.freeze([
 	'absent registry',
+	'unauthenticated registry',
+	'unparsable registry',
 	'lagging registry',
 	'unattested variant',
 	'stale lookup',
@@ -4682,18 +4684,39 @@ export const CAPTURE_CLOSURE_FLAGS = Object.freeze([
 	'--case',
 	'--variant',
 	'--mode',
+	'--no-bail',
+	'--portfolio',
 ] as const)
 
 /** Lists the runner commands a closure cell invokes. */
 export const CAPTURE_CLOSURE_COMMANDS = Object.freeze(['journey', 'capture', 'stale'] as const)
 
+/** Lists, per command, the selection flags its argument reader refuses as unknown, before any child starts. */
+export const CAPTURE_CLOSURE_UNREAD: Readonly<
+	Record<(typeof CAPTURE_CLOSURE_COMMANDS)[number], readonly string[]>
+> = Object.freeze({
+	journey: Object.freeze(['--state', '--portfolio']),
+	capture: Object.freeze(['--portfolio']),
+	stale: Object.freeze(['--no-bail']),
+})
+
 /** Names the declared producing variant the lagging registry never attested. */
 export const CAPTURE_CLOSURE_UNATTESTED = 'light-1280'
 
-/** Supplies each closure root's selector and the state and case its selection flags name. */
+/** Supplies each closure root's selector and the state, case, and portfolio its selection flags name. */
 export const CAPTURE_CLOSURE_SELECTIONS = Object.freeze({
-	primary: Object.freeze({ selector: 'pages:mail', state: 'mail-screen', case: MAIL }),
-	standalone: Object.freeze({ selector: 'vue', state: 'vue-home', case: 'vue fixture home' }),
+	primary: Object.freeze({
+		selector: 'pages:mail',
+		state: 'mail-screen',
+		case: MAIL,
+		portfolio: 'states',
+	}),
+	standalone: Object.freeze({
+		selector: 'vue',
+		state: 'vue-home',
+		case: 'vue fixture home',
+		portfolio: 'vue',
+	}),
 })
 
 /** Supplies the environment and the interrupt of the first run under each condition that is an event. */
@@ -4716,8 +4739,12 @@ export const CAPTURE_CLOSURE_EXECUTIONS: Readonly<
  */
 export const CAPTURE_CLOSURE_STATES = Object.freeze([
 	'empty',
+	'unauthenticated',
+	'unparsable',
 	'lagging',
 	'seeded',
+	'standalone unauthenticated',
+	'standalone unparsable',
 	'standalone lagging',
 	'standalone seeded',
 	'standalone missing',
@@ -4780,11 +4807,10 @@ export function describeCaptureClosureSkip(
 	if (cell.root === 'standalone' && staged) return 'a standalone selection starts no stage child'
 	if (cell.command === 'stale' && staged) return 'stale starts no stage child'
 	if (
-		cell.command === 'journey' &&
-		cell.flag === '--state' &&
+		CAPTURE_CLOSURE_UNREAD[cell.command].includes(cell.flag) &&
 		(staged || cell.condition === 'interrupt in discovery')
 	)
-		return 'journey refuses --state while it reads its arguments, before any child starts'
+		return 'the command refuses the flag while it reads its arguments, before any child starts'
 	return undefined
 }
 
@@ -4800,6 +4826,10 @@ export function resolveCaptureClosureState(
 	switch (condition) {
 		case 'absent registry':
 			return 'empty'
+		case 'unauthenticated registry':
+			return root === 'primary' ? 'unauthenticated' : 'standalone unauthenticated'
+		case 'unparsable registry':
+			return root === 'primary' ? 'unparsable' : 'standalone unparsable'
 		case 'lagging registry':
 		case 'unattested variant':
 			return root === 'primary' ? 'lagging' : 'standalone lagging'
@@ -4860,6 +4890,8 @@ export function buildCaptureClosureMatrix(): CaptureClosureMatrix {
 							'--case': ['--case', selection.case],
 							'--variant': ['--variant', COMPOSED_FIRST],
 							'--mode': ['--mode', 'vue'],
+							'--no-bail': ['--no-bail'],
+							'--portfolio': ['--portfolio', selection.portfolio],
 						}[flag],
 					]
 					const execution = CAPTURE_CLOSURE_EXECUTIONS[condition]
@@ -4904,13 +4936,27 @@ export function prepareCaptureClosureState(
 	state: CaptureClosureState,
 ): ComposedFixture {
 	const lagging = VARIANTS.filter((variant) => variant !== CAPTURE_CLOSURE_UNATTESTED)
+	const standalone = state.startsWith('standalone ')
+	const registry = `tmp/captures/${standalone ? 'vue' : 'states'}/registry.json`
 	try {
-		if (state === 'seeded') fixture.seed()
+		if (state === 'seeded' || state === 'unauthenticated') fixture.seed()
 		if (state === 'lagging') fixture.seed({ variants: lagging })
 		if (state === 'standalone lagging') fixture.seed({ vue: true, variants: lagging })
-		if (state === 'standalone seeded' || state === 'standalone missing') fixture.seed({ vue: true })
+		if (
+			state === 'standalone seeded' ||
+			state === 'standalone missing' ||
+			state === 'standalone unauthenticated'
+		)
+			fixture.seed({ vue: true })
 		if (state === 'standalone missing')
 			removeCaptureFixtureFile(fixture, `tmp/captures/vue/vue-home--${COMPOSED_FIRST}.png`)
+		// A registry whose stated digest names other bytes fails authentication, whatever it holds.
+		if (state === 'unauthenticated' || state === 'standalone unauthenticated') {
+			const document: unknown = parseJSON(fixture.read(registry).toString('utf8'))
+			if (!isRecord(document)) throw new Error('The seeded registry is not a record')
+			fixture.write(registry, JSON.stringify({ ...document, digest: '0'.repeat(64) }))
+		}
+		if (state === 'unparsable' || state === 'standalone unparsable') fixture.write(registry, '{')
 		return fixture
 	} catch (error) {
 		fixture.destroy()
@@ -5024,19 +5070,84 @@ export function extractCaptureNextCommand(line: string): CaptureNextCommand {
 	return { command, argv }
 }
 
-/** Records one followed `NEXT` command and the exit it returned. */
-export interface CaptureClosureFollow {
-	readonly line: string
-	readonly code: number
-}
-
-/** Records one run of a closure cell's invocation: its outcome, and the `NEXT` commands followed after it. */
-export interface CaptureClosureStep {
+/** Records what one run printed: its exit, its `NEXT` commands, its refusal text, and its freshness classes. */
+export interface CaptureClosureOutcome {
 	readonly code: number
 	readonly next: readonly string[]
 	readonly refusal: string
 	readonly statuses: readonly CaptureStatus[]
+}
+
+/** Records one followed `NEXT` command, its outcome, and how many followed commands led to it. */
+export interface CaptureClosureFollow extends CaptureClosureOutcome {
+	readonly line: string
+	readonly depth: number
+}
+
+/** Records one run of a closure cell's invocation: its outcome, and the `NEXT` commands followed after it. */
+export interface CaptureClosureStep extends CaptureClosureOutcome {
 	readonly follows: readonly CaptureClosureFollow[]
+}
+
+/** Bounds how deep the walk follows the `NEXT` lines that a followed command prints. */
+export const CAPTURE_CLOSURE_DEPTH = 2
+
+/**
+ * Reads what one run printed into the outcome the closure walk compares.
+ *
+ * @param modules - The modules whose freshness classes narrow the report
+ * @param run - The exit and what the run printed
+ * @returns The exit, the `NEXT` commands on both streams, the refusal text, and the freshness classes
+ */
+export function readCaptureClosureOutcome(
+	modules: CaptureFixtureModules,
+	run: ComposedRun,
+): CaptureClosureOutcome {
+	const recoveries = readCaptureRecoveries(run)
+	return {
+		code: run.code,
+		next: [...recoveries.stdout, ...recoveries.stderr].map((line) => line.slice('NEXT '.length)),
+		refusal: run.stderr
+			.split(/\r\n|\n/u)
+			.filter((line) => line !== '' && !line.startsWith('NEXT '))
+			.join('\n'),
+		statuses: readCaptureRunnerStatuses(run.stdout).filter(
+			(status): status is CaptureStatus =>
+				status === 'current' ||
+				modules.core.CAPTURE_STATUS_PRECEDENCE.some((entry) => entry === status),
+		),
+	}
+}
+
+/**
+ * Runs each `NEXT` command in order, then the lines a followed command prints when it did not pass.
+ *
+ * @remarks A passing command prints the complete journey, a next step rather than a recovery, so
+ * the walk follows the lines of a followed command that did not pass, to `CAPTURE_CLOSURE_DEPTH`.
+ * @param fixture - The cell's own workspace
+ * @param lines - The commands to follow
+ * @param depth - How many followed commands led to these lines
+ * @returns Every followed command with its outcome, in the order it ran
+ */
+export async function followCaptureClosure(
+	fixture: ComposedFixture,
+	lines: readonly string[],
+	depth: number,
+): Promise<readonly CaptureClosureFollow[]> {
+	const follows: CaptureClosureFollow[] = []
+	for (const line of lines) {
+		const next = extractCaptureNextCommand(line)
+		const outcome = readCaptureClosureOutcome(
+			fixture.modules,
+			next.command === 'registry'
+				? await fixture.refresh(next.argv)
+				: await fixture.run(next.command, next.argv),
+		)
+		follows.push({ ...outcome, line, depth })
+		if (outcome.code !== 0 && outcome.next.length > 0 && depth < CAPTURE_CLOSURE_DEPTH)
+			follows.push(...(await followCaptureClosure(fixture, outcome.next, depth + 1)))
+	}
+	return follows
 }
 
 /** Records every run of a closure cell, and whether a run repeated an earlier outcome after its commands ran. */
@@ -5050,8 +5161,9 @@ export const CAPTURE_CLOSURE_LIMIT = 4
 
 /**
  * Bounds, in milliseconds, one closure cell under full-suite contention.
- * Two `test:src` runs on a 4-core Linux host (2026-11-16) measured the slowest cell at 4.57 s and
- * 5.30 s. The required 2.5× budget is 13.26 s; rounding up to 15 s retains 2.83× headroom.
+ * Three `test:src` runs on a 4-core Linux host (2026-11-16) measured the slowest cell at 4.57 s,
+ * 5.30 s, and, over the 413-cell matrix, 5.30 s. The required 2.5× budget is 13.26 s; rounding up
+ * to 15 s retains 2.83× headroom.
  */
 export const CAPTURE_CLOSURE_TIMEOUT = 15_000
 
@@ -5084,21 +5196,10 @@ export async function continueCaptureClosure(
 	steps: readonly CaptureClosureStep[],
 	execution: ComposedExecution,
 ): Promise<CaptureClosureTrace> {
-	const run = await fixture.run(cell.command, cell.argv, execution)
-	const recoveries = readCaptureRecoveries(run)
-	const outcome = {
-		code: run.code,
-		next: [...recoveries.stdout, ...recoveries.stderr].map((line) => line.slice('NEXT '.length)),
-		refusal: run.stderr
-			.split(/\r\n|\n/u)
-			.filter((line) => line !== '' && !line.startsWith('NEXT '))
-			.join('\n'),
-		statuses: readCaptureRunnerStatuses(run.stdout).filter(
-			(status): status is CaptureStatus =>
-				status === 'current' ||
-				fixture.modules.core.CAPTURE_STATUS_PRECEDENCE.some((entry) => entry === status),
-		),
-	}
+	const outcome = readCaptureClosureOutcome(
+		fixture.modules,
+		await fixture.run(cell.command, cell.argv, execution),
+	)
 	const repeated = steps.some(
 		(step) =>
 			step.code === outcome.code &&
@@ -5112,43 +5213,141 @@ export async function continueCaptureClosure(
 		steps.length === CAPTURE_CLOSURE_LIMIT
 	)
 		return { steps: [...steps, { ...outcome, follows: [] }], repeated }
-	const follows: CaptureClosureFollow[] = []
-	for (const line of outcome.next) {
-		const next = extractCaptureNextCommand(line)
-		const followed =
-			next.command === 'registry'
-				? await fixture.refresh(next.argv)
-				: await fixture.run(next.command, next.argv)
-		follows.push({ line, code: followed.code })
-	}
+	const follows = await followCaptureClosure(fixture, outcome.next, 0)
 	return await continueCaptureClosure(fixture, cell, [...steps, { ...outcome, follows }], {})
 }
 
-/** Pairs a terminal refusal's text with the condition code the ruling gives it, and whether it left work unfinished. */
+/** Names the command the recovery ruling gives a condition: a recovery, or the run's own command. */
+export type CaptureClosureCommand = 'registry' | 'journey' | 'frames' | 'own'
+
+/** Pairs a refusal's text with the code and the command the recovery ruling gives its condition. */
 export interface CaptureClosureRefusal {
 	readonly text: string
 	readonly code: CaptureErrorCode
-	readonly unfinished: boolean
+	readonly command?: CaptureClosureCommand
 }
 
 /**
- * Lists the refusals a closure run can end at, each with the code the recovery ruling gives its
- * condition, independently of the code the runner carries.
+ * Lists the refusals a closure run can meet, each with the code and the command the recovery
+ * ruling gives its condition, independently of the runner's own code and recovery tables.
  *
- * @remarks An interrupted run and a failed stage child leave their selection unfinished, which the
- * run's own command clears whatever the code.
+ * @remarks The ruling maps a registry condition to the registry refresh and a lookup condition to
+ * the owner's journey. An interrupted run and a failed stage child leave their selection
+ * unfinished, so the run's own command clears them, whatever the code.
  */
 export const CAPTURE_CLOSURE_REFUSALS: readonly CaptureClosureRefusal[] = Object.freeze([
-	{ text: "Unknown option '--state'", code: 'USAGE', unfinished: false },
-	{ text: 'Unknown scope:', code: 'USAGE', unfinished: false },
-	{ text: 'Unknown case;', code: 'USAGE', unfinished: false },
-	{ text: 'Missing accepted registry', code: 'REGISTRY', unfinished: false },
-	{ text: 'Unattested declared variant', code: 'REGISTRY', unfinished: false },
-	{ text: 'Unknown or unattested selected variant', code: 'REGISTRY', unfinished: false },
-	{ text: 'Missing or stale state lookup', code: 'LOOKUP', unfinished: false },
-	{ text: 'Runner interrupted', code: 'STAGE', unfinished: true },
-	{ text: FIXTURE_FAULT_MESSAGES['failed-child'], code: 'STAGE', unfinished: true },
+	{ text: "Unknown option '", code: 'USAGE' },
+	{ text: 'Unknown scope:', code: 'USAGE' },
+	{ text: 'Unknown case;', code: 'USAGE' },
+	{ text: 'Usage: capture ', code: 'USAGE' },
+	{ text: 'Missing accepted registry', code: 'REGISTRY', command: 'registry' },
+	{ text: 'Invalid accepted registry schema or digest', code: 'REGISTRY', command: 'registry' },
+	{ text: 'Invalid accepted registry for case titles', code: 'REGISTRY', command: 'registry' },
+	{
+		text: `Invalid JSON document: ${COMPOSED_DIRECTORY}/registry.json`,
+		code: 'REGISTRY',
+		command: 'registry',
+	},
+	{
+		text: `Invalid JSON document: ${READER_STANDALONE.directory}/registry.json`,
+		code: 'REGISTRY',
+		command: 'registry',
+	},
+	{ text: 'Unattested producing variant', code: 'REGISTRY', command: 'registry' },
+	{ text: 'Unattested declared variant', code: 'REGISTRY', command: 'registry' },
+	{ text: 'Unknown or unattested selected variant', code: 'REGISTRY', command: 'registry' },
+	{ text: 'Missing or stale state lookup', code: 'LOOKUP', command: 'journey' },
+	{ text: 'Runner interrupted', code: 'STAGE', command: 'own' },
+	{ text: FIXTURE_FAULT_MESSAGES['failed-child'], code: 'STAGE', command: 'own' },
 ])
+
+/** Holds the line a runner prints after a refusal once an execution child has launched. */
+export const CAPTURE_CLOSURE_LAUNCHED = 'Execution stopped after stages:'
+
+/**
+ * Names the command the stale recovery ruling gives each freshness class: a frames run over the
+ * selector for a frame a frames run restamps, and none for one it leaves as it is.
+ */
+export const CAPTURE_CLOSURE_STATUSES: Readonly<
+	Record<CaptureStatus, CaptureClosureCommand | undefined>
+> = Object.freeze({
+	current: undefined,
+	duplicate: undefined,
+	orphan: undefined,
+	missing: 'frames',
+	unstamped: 'frames',
+	'stale-shared': 'frames',
+	'stale-own': 'frames',
+})
+
+/**
+ * Pairs each flag of a command line with its value, so two renderings compare whatever their order.
+ *
+ * @param argv - The arguments after the subcommand
+ * @returns The positionals and `--flag=value` pairs, `--no-bail` alone, sorted
+ */
+export function extractCaptureClosurePairs(argv: readonly string[]): readonly string[] {
+	const [first, ...rest] = argv
+	if (first === undefined) return []
+	if (!first.startsWith('--') || first === '--no-bail' || first.includes('='))
+		return [first, ...extractCaptureClosurePairs(rest)].toSorted()
+	const [value, ...after] = rest
+	return [`${first}=${value ?? ''}`, ...extractCaptureClosurePairs(after)].toSorted()
+}
+
+/**
+ * Names the command a printed `NEXT` line is, against the cell that printed it.
+ *
+ * @remarks The cell's own command carries each of the run's flags and the wrapper the fixture runs.
+ * @returns `own` for the cell's own command with its flags, else the command the line names
+ */
+export function classifyCaptureClosureLine(
+	line: string,
+	cell: Pick<CaptureClosureCell, 'command' | 'argv'>,
+): CaptureClosureCommand | 'other' {
+	const next = extractCaptureNextCommand(line)
+	if (
+		next.command === cell.command &&
+		JSON.stringify(extractCaptureClosurePairs(next.argv)) ===
+			JSON.stringify(extractCaptureClosurePairs([...cell.argv, '--config', READER_CONFIG]))
+	)
+		return 'own'
+	if (next.command === 'registry' || next.command === 'journey') return next.command
+	return next.command === 'capture' && cell.command === 'stale' ? 'frames' : 'other'
+}
+
+/**
+ * Resolves the commands the recovery ruling expects an outcome to print, from the fixture's own
+ * expectations.
+ *
+ * @remarks The registry refresh writes the primary registry alone, so a `stale` reading of a
+ * standalone root expects no registry refresh and no frames run.
+ * @returns The expected commands, sorted, or `unclassified` for a refusal text the fixture does not
+ * name, or `exit` for an exit that disagrees with the refusal's code
+ */
+export function resolveCaptureClosureCommands(
+	outcome: CaptureClosureOutcome,
+	cell: Pick<CaptureClosureCell, 'command' | 'root'>,
+): readonly string[] {
+	const standalone = cell.root === 'standalone' && cell.command === 'stale'
+	if (outcome.refusal === '')
+		return standalone ||
+			!outcome.statuses.some((status) => CAPTURE_CLOSURE_STATUSES[status] === 'frames')
+			? []
+			: ['frames']
+	const refusal = CAPTURE_CLOSURE_REFUSALS.find((entry) => outcome.refusal.includes(entry.text))
+	if (refusal === undefined) return ['unclassified']
+	if ((outcome.code === 64) !== (refusal.code === 'USAGE')) return ['exit']
+	return [
+		...new Set([
+			...(refusal.command === undefined || (standalone && refusal.command === 'registry')
+				? []
+				: [refusal.command]),
+			// An execution child that launched and did not pass leaves the run's own command to rerun.
+			...(outcome.refusal.includes(CAPTURE_CLOSURE_LAUNCHED) ? ['own'] : []),
+		]),
+	].toSorted()
+}
 
 /** Names the structured integrity report line a runner prints. */
 export const CAPTURE_INTEGRITY_PREFIX = 'INTEGRITY '

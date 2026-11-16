@@ -2176,6 +2176,22 @@ export function resolveCaptureVariants(
 }
 
 /**
+ * Collects the owner selectors the projects' owner tags declare, once each, in tag order.
+ *
+ * @param projects - The discovered host projects
+ * @returns Each tagged owner selector, ancestors included where the wrapper tags them
+ * @example
+ * ```ts
+ * collectCaptureOwners(projects) // ['pages', 'pages:mail'] for owner:pages and owner:pages:mail tags
+ * ```
+ */
+export function collectCaptureOwners(projects: readonly CaptureProject[]): readonly string[] {
+	return [...new Set(projects.flatMap((project) => project.tags))]
+		.filter((tag) => tag.startsWith(CAPTURE_OWNER_PREFIX))
+		.map((tag) => tag.slice(CAPTURE_OWNER_PREFIX.length))
+}
+
+/**
  * Refuses unknown command selections from the wrapper before authenticating disk evidence.
  * @example
  * ```ts
@@ -2192,9 +2208,7 @@ export function requireCaptureSelection(
 	const selectors = [
 		...new Set(
 			projects.flatMap((project) => [
-				...project.tags
-					.filter((tag) => tag.startsWith(CAPTURE_OWNER_PREFIX))
-					.map((tag) => tag.slice(CAPTURE_OWNER_PREFIX.length)),
+				...collectCaptureOwners([project]),
 				...project.standalone.map((entry) => entry.portfolio),
 			]),
 		),

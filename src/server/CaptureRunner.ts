@@ -21,7 +21,6 @@ import { attempt, failure, isFailure, isSuccess, success } from '@orkestrel/cont
 import {
 	CAPTURE_LOOKUPS_FILE,
 	CAPTURE_MANIFEST_FILE,
-	CAPTURE_OWNER_PREFIX,
 	CAPTURE_REGISTRY_FILE,
 	CAPTURE_VERSION,
 	CaptureError,
@@ -45,6 +44,7 @@ import {
 import {
 	buildCaptureArguments,
 	buildCaptureFilter,
+	collectCaptureOwners,
 	describeCaptureSelectorFault,
 	readCaptureArguments,
 	renderCaptureCommand,
@@ -188,6 +188,9 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		}
 		if (command !== 'stale' && parsed.variants.length > 0)
 			resolveCaptureVariants(parsed.variants, projects)
+		// An unknown or missing owner refuses before --case reads the registry, so it is never a registry condition.
+		if (command !== 'stale' && parsed.changed === undefined)
+			this.#scope(parsed.selector, collectCaptureOwners(projects))
 		if (command !== 'stale' && parsed.case !== undefined) {
 			this.#case(requireCaptureProjects(projects), parsed.case, parsed.selector)
 		}
@@ -268,9 +271,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			reports.push(complete)
 			return parsed.plan ? CAPTURE_EXIT.passed : CAPTURE_EXIT.failed
 		}
-		const selectors = [...new Set(projects.flatMap((project) => project.tags))]
-			.filter((tag) => tag.startsWith(CAPTURE_OWNER_PREFIX))
-			.map((tag) => tag.slice(CAPTURE_OWNER_PREFIX.length))
+		const selectors = collectCaptureOwners(projects)
 		for (const owner of plan.owners) {
 			const fault = describeCaptureSelectorFault(owner, selectors)
 			if (fault !== undefined) throw new CaptureError(fault, { code: 'HOST' })
@@ -363,6 +364,14 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		return failed.at(0)?.code ?? (discovery.interrupted ? CAPTURE_EXIT.failed : CAPTURE_EXIT.passed)
 	}
 
+	// Returns the run's selector, or refuses a missing or unknown one as usage.
+	#scope(selector: string | undefined, selectors: readonly string[]): string {
+		if (selector === undefined) throw new CaptureError(this.#usage(selectors), { code: 'USAGE' })
+		const fault = describeCaptureSelectorFault(selector, selectors)
+		if (fault !== undefined) throw new CaptureError(fault, { code: 'USAGE', context: { selector } })
+		return selector
+	}
+
 	#case(primary: CaptureProject, name: string, selector?: string): void {
 		const { root } = this.#options
 		const titles = readCaptureTitles(
@@ -400,13 +409,8 @@ export class CaptureRunner implements CaptureRunnerInterface {
 	): Promise<number> {
 		const { root } = this.#options
 		const primary = requireCaptureProjects(projects)
-		const selectors = [...new Set(projects.flatMap((project) => project.tags))]
-			.filter((tag) => tag.startsWith(CAPTURE_OWNER_PREFIX))
-			.map((tag) => tag.slice(CAPTURE_OWNER_PREFIX.length))
-		const selector = parsed.selector
-		if (selector === undefined) throw new CaptureError(this.#usage(selectors), { code: 'USAGE' })
-		const fault = describeCaptureSelectorFault(selector, selectors)
-		if (fault !== undefined) throw new CaptureError(fault, { code: 'USAGE', context: { selector } })
+		const selectors = collectCaptureOwners(projects)
+		const selector = this.#scope(parsed.selector, selectors)
 		const variants = resolveCaptureVariants(parsed.variants, projects)
 		const integrity = this.#integrity(primary)
 		const selected = await this.#resolve(integrity, parsed, selector, variants)

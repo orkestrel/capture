@@ -45,6 +45,7 @@ import {
 	requireCaptureVersion,
 	matchesCaptureVersionRefusal,
 	resolveCaptureRegistryFault,
+	collectCaptureOwners,
 	collectCaptureProducers,
 	requireCaptureProducer,
 	buildCaptureDiscoveryConfig,
@@ -2647,6 +2648,20 @@ describe('resolveCaptureVariants', () => {
 		expect(() =>
 			requireCaptureSelection('app', ['focused-output'], [project], ['focused-output']),
 		).not.toThrow()
+	})
+	it('collects each tagged owner once, in tag order, and ignores a tag without the owner prefix', () => {
+		const project = readCaptureProject(
+			createProjectFixture({
+				tags: [
+					{ name: 'owner:pages' },
+					{ name: 'app' },
+					{ name: 'owner:pages:mail' },
+					{ name: 'owner:pages' },
+				],
+			}),
+		)
+		expect(collectCaptureOwners([project, project])).toEqual(['pages', 'pages:mail'])
+		expect(collectCaptureOwners([])).toEqual([])
 	})
 	it('picks the standalone root a selector or a portfolio names, and none for a primary selection', () => {
 		const vue = { portfolio: 'vue', directory: 'tmp/captures/vue', scoped: false }

@@ -5,18 +5,19 @@ import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
 import { requireValue } from '@orkestrel/test'
 import { isCaptureLookupJournal } from '@src/core'
-import { CAPTURE_RECOVERIES, CAPTURE_STATUS_RECOVERIES } from '@src/server'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
 	CAPTURE_CLOSURE_COMMANDS,
 	CAPTURE_CLOSURE_CONDITIONS,
+	CAPTURE_CLOSURE_DEPTH,
 	CAPTURE_CLOSURE_FLAGS,
-	CAPTURE_CLOSURE_REFUSALS,
 	CAPTURE_CLOSURE_ROOTS,
 	CAPTURE_CLOSURE_TIMEOUT,
 	CaptureClosureWorkspaces,
 	buildCaptureClosureMatrix,
+	classifyCaptureClosureLine,
 	executeCaptureClosure,
+	resolveCaptureClosureCommands,
 	readCaptureIntegrityReports,
 	readCaptureIntegrationStatuses,
 	ComposedFixture,
@@ -248,8 +249,8 @@ describe('CaptureRunner recovery closure', { timeout: CAPTURE_CLOSURE_TIMEOUT },
 			reasons: [
 				'a standalone root has no stamping route, so it holds no stamp or lookup to go stale',
 				'a standalone selection starts no stage child',
-				'journey refuses --state while it reads its arguments, before any child starts',
 				'stale starts no stage child',
+				'the command refuses the flag while it reads its arguments, before any child starts',
 			],
 		})
 		expect(titles.length + matrix.skipped.length).toBe(product)
@@ -263,6 +264,10 @@ describe('CaptureRunner recovery closure', { timeout: CAPTURE_CLOSURE_TIMEOUT },
 				'unattested variant, primary root: frames pages:mail --variant light-1280 --state mail-screen',
 				'stale-own, primary root: stale pages:mail --state mail-screen',
 				'stale-shared, primary root: stale pages:mail --state mail-screen',
+				'absent registry, standalone root: journey vue --case vue fixture home',
+				'unauthenticated registry, primary root: frames pages:mail --no-bail',
+				'unparsable registry, primary root: stale pages:mail --portfolio states',
+				'failed child, primary root: frames pages:mail --no-bail',
 			]),
 		)
 	})
@@ -279,29 +284,39 @@ describe('CaptureRunner recovery closure', { timeout: CAPTURE_CLOSURE_TIMEOUT },
 				try {
 					const trace = await executeCaptureClosure(workspace, cell)
 					const last = requireValue(trace.steps.at(-1), 'The closure ran no step')
-					const refusal = CAPTURE_CLOSURE_REFUSALS.find((entry) =>
-						last.refusal.includes(entry.text),
-					)
-					// A standalone stale reading has no refresh route, so its registry refusal and its
-					// classifications name no command.
-					const standalone = cell.root === 'standalone' && cell.command === 'stale'
-					// The last run passes, or prints no NEXT line because its condition maps to no command.
-					const settled =
-						last.code === 0 ||
-						(last.next.length === 0 &&
-							(last.refusal === ''
-								? last.statuses.every(
-										(status) => standalone || CAPTURE_STATUS_RECOVERIES[status] === undefined,
-									)
-								: refusal !== undefined &&
-									!refusal.unfinished &&
-									(last.code === 64) === (refusal.code === 'USAGE') &&
-									(CAPTURE_RECOVERIES[refusal.code] === undefined ||
-										(standalone && refusal.code === 'REGISTRY'))))
 					// The trace rides along as text, so a red cell's diff shows every run it made.
-					expect({ repeated: trace.repeated, settled, trace: JSON.stringify(trace) }).toEqual({
+					expect({
+						repeated: trace.repeated,
+						converged: last.code === 0 || last.next.length === 0,
+						// Each run that did not pass prints exactly the commands the ruling gives its
+						// condition, its own command with every flag after an interrupt or a failed child.
+						commands: trace.steps
+							.filter((step) => step.code !== 0)
+							.filter(
+								(step) =>
+									JSON.stringify(
+										step.next.map((line) => classifyCaptureClosureLine(line, cell)).toSorted(),
+									) !== JSON.stringify(resolveCaptureClosureCommands(step, cell)),
+							)
+							.map((step) => ({ next: step.next, refusal: step.refusal })),
+						// Each followed command passes, prints lines the walk follows, or refuses with a
+						// condition the ruling gives no command.
+						follows: trace.steps
+							.flatMap((step) => step.follows)
+							.filter(
+								(follow) =>
+									follow.code !== 0 &&
+									(follow.next.length > 0
+										? follow.depth === CAPTURE_CLOSURE_DEPTH
+										: resolveCaptureClosureCommands(follow, cell).length > 0),
+							)
+							.map((follow) => follow.line),
+						trace: JSON.stringify(trace),
+					}).toEqual({
 						repeated: false,
-						settled: true,
+						converged: true,
+						commands: [],
+						follows: [],
 						trace: expect.any(String),
 					})
 				} finally {

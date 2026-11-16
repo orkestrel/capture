@@ -1,3 +1,4 @@
+import type { CaptureStatus } from '@src/core'
 import type { CapturePicture } from '@src/server'
 import type { CaptureClosureTrace } from './setupServer.js'
 import * as core from '@src/core'
@@ -70,7 +71,12 @@ import {
 	readCaptureWrapperProjects,
 	IntegrityFixture,
 	ComposedFixture,
+	CAPTURE_CLOSURE_LAUNCHED,
 	CAPTURE_CLOSURE_REFUSALS,
+	CAPTURE_CLOSURE_STATUSES,
+	classifyCaptureClosureLine,
+	extractCaptureClosurePairs,
+	resolveCaptureClosureCommands,
 	CaptureClosureWorkspaces,
 	buildCaptureClosureMatrix,
 	executeCaptureClosure,
@@ -801,7 +807,7 @@ describe('the recovery closure fixtures', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 
-	it('classifies each terminal refusal under one declared code, an unfinished one under STAGE alone', () => {
+	it('gives each refusal one declared code and the command the recovery ruling gives that code', () => {
 		const texts = CAPTURE_CLOSURE_REFUSALS.map((entry) => entry.text)
 		expect(new Set(texts).size).toBe(texts.length)
 		expect(
@@ -812,14 +818,119 @@ describe('the recovery closure fixtures', { timeout: FIXTURE_TIMEOUT }, () => {
 				(entry) => !core.CAPTURE_ERROR_CODES.some((code) => code === entry.code),
 			),
 		).toEqual([])
+		// The ruling: a registry condition names the refresh, a lookup the owner's journey, an
+		// unfinished stage the run's own command, and a usage refusal nothing.
 		expect(
-			CAPTURE_CLOSURE_REFUSALS.filter((entry) => entry.unfinished).map((entry) => entry.text),
+			Object.fromEntries(
+				['USAGE', 'REGISTRY', 'LOOKUP', 'STAGE'].map((code) => [
+					code,
+					[
+						...new Set(
+							CAPTURE_CLOSURE_REFUSALS.filter((entry) => entry.code === code).map(
+								(entry) => entry.command ?? 'none',
+							),
+						),
+					],
+				]),
+			),
+		).toEqual({ USAGE: ['none'], REGISTRY: ['registry'], LOOKUP: ['journey'], STAGE: ['own'] })
+		expect(
+			CAPTURE_CLOSURE_REFUSALS.filter((entry) => entry.command === 'own').map(
+				(entry) => entry.text,
+			),
 		).toEqual(['Runner interrupted', FIXTURE_FAULT_MESSAGES['failed-child']])
 		expect(
-			CAPTURE_CLOSURE_REFUSALS.filter((entry) => entry.unfinished).every(
-				(entry) => entry.code === 'STAGE',
+			Object.entries(CAPTURE_CLOSURE_STATUSES)
+				.filter(([, command]) => command === 'frames')
+				.map(([status]) => status)
+				.toSorted(),
+		).toEqual(['missing', 'stale-own', 'stale-shared', 'unstamped'])
+	})
+
+	it('pairs each flag with its value, so two renderings in any order compare equal', () => {
+		expect(
+			[
+				['pages:mail', '--mode', 'vue', '--no-bail', '--case', 'a b'],
+				['pages:mail', '--case=a b', '--no-bail', '--mode', 'vue'],
+				['pages:mail', '--case', 'a b', '--mode', 'vue'],
+				[],
+			].map((argv) => extractCaptureClosurePairs(argv)),
+		).toEqual([
+			['--case=a b', '--mode=vue', '--no-bail', 'pages:mail'],
+			['--case=a b', '--mode=vue', '--no-bail', 'pages:mail'],
+			['--case=a b', '--mode=vue', 'pages:mail'],
+			[],
+		])
+	})
+
+	it('names a printed line as the cell own command only when it carries every flag of the run', () => {
+		const frames = {
+			command: 'capture',
+			argv: ['pages:mail', '--mode', 'vue', '--no-bail'],
+		} as const
+		const stale = { command: 'stale', argv: ['pages:mail', '--state', 'mail-screen'] } as const
+		const wrapper = "--config 'fixture with spaces.config.ts'"
+		expect([
+			classifyCaptureClosureLine(
+				`capture frames pages:mail --no-bail --mode vue ${wrapper}`,
+				frames,
 			),
-		).toBe(true)
+			classifyCaptureClosureLine(`capture frames pages:mail --mode vue ${wrapper}`, frames),
+			classifyCaptureClosureLine(`capture registry ${wrapper}`, frames),
+			classifyCaptureClosureLine(`capture journey pages:mail ${wrapper}`, frames),
+			classifyCaptureClosureLine(`capture frames pages:mail ${wrapper}`, stale),
+			classifyCaptureClosureLine(`capture stale pages:mail --state mail-screen ${wrapper}`, stale),
+		]).toEqual(['own', 'other', 'registry', 'journey', 'frames', 'own'])
+	})
+
+	it('expects the commands the ruling gives an outcome, and names an unknown refusal or a disagreeing exit', () => {
+		const primary = { command: 'stale', root: 'primary' } as const
+		const standalone = { command: 'stale', root: 'standalone' } as const
+		const journey = { command: 'journey', root: 'standalone' } as const
+		const missing = 'Missing accepted registry'
+		const rows: ReadonlyArray<{
+			readonly code: number
+			readonly refusal: string
+			readonly statuses: readonly CaptureStatus[]
+			readonly cell: Parameters<typeof resolveCaptureClosureCommands>[1]
+		}> = [
+			{ code: 1, refusal: missing, statuses: [], cell: primary },
+			{ code: 1, refusal: missing, statuses: [], cell: standalone },
+			{ code: 1, refusal: missing, statuses: [], cell: journey },
+			{ code: 64, refusal: missing, statuses: [], cell: primary },
+			{ code: 64, refusal: 'Unknown scope: "vue"', statuses: [], cell: journey },
+			{ code: 1, refusal: 'Runner interrupted', statuses: [], cell: standalone },
+			{
+				code: 1,
+				refusal: `Unattested producing variant\n${CAPTURE_CLOSURE_LAUNCHED} selected; no later stage ran.`,
+				statuses: [],
+				cell: primary,
+			},
+			{ code: 1, refusal: 'No such condition', statuses: [], cell: primary },
+			{ code: 1, refusal: '', statuses: ['missing', 'current'], cell: primary },
+			{ code: 1, refusal: '', statuses: ['orphan', 'current'], cell: primary },
+			{ code: 1, refusal: '', statuses: ['missing'], cell: standalone },
+		]
+		expect(
+			rows.map((row) =>
+				resolveCaptureClosureCommands(
+					{ code: row.code, next: [], refusal: row.refusal, statuses: row.statuses },
+					row.cell,
+				),
+			),
+		).toEqual([
+			['registry'],
+			[],
+			['registry'],
+			['exit'],
+			[],
+			['own'],
+			['own', 'registry'],
+			['unclassified'],
+			['frames'],
+			[],
+			[],
+		])
 	})
 
 	it('reads a rendered NEXT command back into its command and arguments, quoting undone', () => {

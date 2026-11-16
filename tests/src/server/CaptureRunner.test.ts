@@ -1750,6 +1750,30 @@ describe('CaptureRunner recoveries', { timeout: FIXTURE_TIMEOUT }, () => {
 		}
 	})
 
+	it('refuses an unknown or missing selector as usage before --case reads an absent registry, with no NEXT line', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			const runs = [
+				await fixture.run('journey', ['vue', '--case', 'vue fixture home']),
+				await fixture.run('capture', ['vue', '--case', 'vue fixture home']),
+				await fixture.run('journey', ['--case', MAIL]),
+			]
+			expect(runs.map((run) => readCaptureRecoveries(run))).toEqual([
+				{ code: 64, stdout: [], stderr: [] },
+				{ code: 64, stdout: [], stderr: [] },
+				{ code: 64, stdout: [], stderr: [] },
+			])
+			expect(runs.map((run) => run.stderr.split('\n')[0]?.slice(0, 14))).toEqual([
+				'Unknown scope:',
+				'Unknown scope:',
+				'Usage: capture',
+			])
+			expect(fixture.stages).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
 	it('keeps an undeclared variant a usage refusal with no NEXT line', async () => {
 		const runs = [
 			await base.run('stale', ['pages:mail', '--variant', 'light-1440']),
