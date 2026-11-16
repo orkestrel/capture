@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/capture",
-	"version": "0.0.9",
+	"version": "0.0.10",
 	"description": "Evidence protocol, integrity engine, and runner that stamp browser journey frames with source provenance and classify their freshness.",
 	"keywords": [
 		"browser",
@@ -102,7 +102,7 @@
 		"@orkestrel/guide": "^0.0.32",
 		"@orkestrel/probe": "^0.0.31",
 		"@orkestrel/scaffold": "^0.0.137",
-		"@orkestrel/test": "^0.0.41",
+		"@orkestrel/test": "^0.0.42",
 		"@types/node": "^24.19.2",
 		"@vitest/browser-playwright": "^5.0.5",
 		"oxfmt": "^0.78.0",
