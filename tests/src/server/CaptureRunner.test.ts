@@ -2,7 +2,7 @@ import * as core from '@src/core'
 import * as server from '@src/server'
 import { mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { parseJSON } from '@orkestrel/contract'
+import { isRecord, parseJSON } from '@orkestrel/contract'
 import { isRunning } from '@orkestrel/test/server'
 import { isCaptureRun } from '@src/core'
 import { CAPTURE_OWNER_FILE, CAPTURE_REFUSAL_LIMIT, createCaptureRunner } from '@src/server'
@@ -33,6 +33,7 @@ import {
 	SUPPORTS_GROUP_SIGNAL,
 	VARIANTS,
 	readFixtureManifest,
+	downgradeCaptureFixture,
 } from '../../setupServer.js'
 // A stage line is printed only when an execution child is about to start; discovery prints none.
 const STAGE_LINE = /^(?:journey|capture) (?:selected|narrow|rest):/mu
@@ -1074,6 +1075,94 @@ describe('CaptureRunner stale command', { timeout: FIXTURE_TIMEOUT }, () => {
 				)
 				expect(vue.stdout).not.toContain('tmp/captures/states')
 			}
+		} finally {
+			fixture.destroy()
+		}
+	})
+})
+
+describe('CaptureRunner version refusals', { timeout: FIXTURE_TIMEOUT }, () => {
+	const registry = `${COMPOSED_DIRECTORY}/registry.json`
+	const manifest = `${COMPOSED_DIRECTORY}/manifest.json`
+	const lookups = `${COMPOSED_DIRECTORY}/lookups.json`
+	const version = `is not version ${String(core.CAPTURE_VERSION)}, and no other version is converted`
+	const refresh = 'then refresh explicitly with: capture registry, then capture frames all'
+	const refused = 'No execution child ran; the command was refused before execution.\n'
+
+	it('passes a version refusal through a changed selection with its own recovery alone', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			expect((await fixture.refresh()).code).toBe(0)
+			expect((await fixture.run('journey', ['all'])).code).toBe(0)
+			downgradeCaptureFixture(fixture.root, COMPOSED_DIRECTORY)
+			fixture.write('src/mail/view.ts', '// changed mail source\n')
+			const before = fixture.stages.length
+			for (const flags of [[], ['--plan']]) {
+				const run = await fixture.run('journey', ['--changed', 'HEAD', ...flags])
+				expect({ code: run.code, stderr: run.stderr }).toEqual({
+					code: 1,
+					stderr: `Registry version 1 at ${registry} ${version}. Remove ${registry}, ${manifest}, and ${lookups}, ${refresh}\n${refused}`,
+				})
+				expect(run.stdout).not.toContain('NEXT ')
+			}
+			expect(fixture.stages).toHaveLength(before)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints a version refusal with no NEXT line on stale, a case-scoped journey, and an owner run', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			expect((await fixture.refresh()).code).toBe(0)
+			expect((await fixture.run('journey', ['all'])).code).toBe(0)
+			downgradeCaptureFixture(fixture.root, COMPOSED_DIRECTORY)
+			const before = fixture.stages.length
+			const stale = await fixture.run('stale', ['all'])
+			expect({ code: stale.code, stderr: stale.stderr }).toEqual({
+				code: 1,
+				stderr: `Registry version 1 at ${registry} ${version}. Remove ${registry}, ${manifest}, and ${lookups}, ${refresh}\n${refused}`,
+			})
+			const [absolute, held, journal] = [registry, manifest, lookups].map((file) =>
+				resolve(fixture.root, file),
+			)
+			const scoped = await fixture.run('journey', ['pages:mail', '--case', MAIL])
+			expect({ code: scoped.code, stderr: scoped.stderr }).toEqual({
+				code: 1,
+				stderr: `Registry version 1 at ${String(absolute)} ${version}. Remove ${String(absolute)}, ${String(held)}, and ${String(journal)}, ${refresh}\n${refused}`,
+			})
+			const owner = await fixture.run('journey', ['pages:mail'])
+			expect({ code: owner.code, stderr: owner.stderr }).toEqual({
+				code: 1,
+				stderr: `Registry version 1 at ${registry} ${version}. Remove ${registry}, ${manifest}, and ${lookups}, ${refresh}\n${refused}`,
+			})
+			expect(owner.stdout).toContain('"reason":"refused before execution"')
+			for (const run of [stale, scoped, owner]) expect(run.stdout).not.toContain('NEXT ')
+			expect(fixture.stages).toHaveLength(before)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('ends a changed run at the version refusal an owner run meets, with no NEXT line', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			expect((await fixture.refresh()).code).toBe(0)
+			expect((await fixture.run('capture', ['all'])).code).toBe(0)
+			const document: unknown = parseJSON(readFixtureManifest(fixture.root) ?? '')
+			const written = isRecord(document) ? document : {}
+			expect(written).toMatchObject({ version: core.CAPTURE_VERSION })
+			fixture.write(manifest, JSON.stringify({ ...written, version: 1 }))
+			fixture.write('src/mail/view.ts', '// changed mail source\n')
+			const before = fixture.stages.length
+			const run = await fixture.run('journey', ['--changed', 'HEAD'])
+			expect({ code: run.code, stderr: run.stderr }).toEqual({
+				code: 1,
+				stderr: `Manifest version 1 at ${manifest} ${version}. Remove ${manifest} and its lookup journal, ${refresh}\n${refused}`,
+			})
+			expect(run.stdout).toContain('COMMAND capture journey pages:mail')
+			expect(run.stdout).not.toContain('NEXT ')
+			expect(fixture.stages).toHaveLength(before)
 		} finally {
 			fixture.destroy()
 		}

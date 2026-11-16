@@ -1790,6 +1790,66 @@ describe('sumCaptureBlock', () => {
 			sumCaptureBlock({ width: 0, height: 0, pixels: new Uint8Array(0) }, 0, 0, 0, Infinity, 2),
 		).toBe(0)
 	})
+
+	// Every row starts above the bytes and covers them, so a row-by-row sum misses the budget.
+	it(
+		'sums 2 ** 40 rows whose runs each cover the bytes without reading each row',
+		{ timeout: 1000 },
+		() => {
+			const single = { width: 1, height: 1, pixels: Uint8Array.of(1, 0, 0) }
+			expect(sumCaptureBlock(single, -(2 ** 40), 0, 0, 2 ** 40, Infinity)).toBe(2 ** 40)
+			expect(sumCaptureBlock(single, -(2 ** 40), 0, 0, 2 ** 40 + 5, Infinity)).toBe(2 ** 40 + 1)
+			expect(sumCaptureBlock(single, -(2 ** 40), 1, 0, 2 ** 40, Infinity)).toBe(0)
+		},
+	)
+
+	it('returns Infinity when infinitely many rows each read a nonzero sum, a negative width included', () => {
+		const backward = { width: -1, height: 1, pixels: Uint8Array.of(0, 7, 0) }
+		expect(sumCaptureBlock(backward, 0, 1, 0, Infinity, Infinity)).toBe(Infinity)
+		// Every row reads the first channel, which holds only 0.
+		expect(sumCaptureBlock(backward, 0, 0, 0, Infinity, Infinity)).toBe(0)
+		expect(
+			sumCaptureBlock({ ...backward, pixels: new Uint8Array(0) }, 0, 1, 0, Infinity, Infinity),
+		).toBe(0)
+		// A run of two samples reaches the bytes from the first two rows only.
+		expect(sumCaptureBlock(backward, 0, 1, 0, Infinity, 2)).toBe(14)
+	})
+
+	it('sums more than 16 rows that start outside the bytes against a direct sum', () => {
+		const cases = [13, -13, 1, -1, 2.5, -2.5].flatMap((width) =>
+			[-50, -4, 0, 5].flatMap((top) =>
+				[17, 40.5].flatMap((rows) =>
+					[1, 12, 40, Infinity].map((columns) => ({
+						picture: { ...picture, width },
+						top,
+						rows,
+						columns,
+					})),
+				),
+			),
+		)
+		expect(
+			cases.map(({ picture: source, top, rows, columns }) =>
+				sumCaptureBlock(source, top, 1, 0, rows, columns),
+			),
+		).toEqual(
+			cases.map(({ picture: source, top, rows, columns }) =>
+				Array.from(
+					{ length: Math.ceil(rows) },
+					(_, row) => (top + row) * (source.width * 3) + 1,
+				).reduce(
+					(total, start) =>
+						Array.from(source.pixels.keys())
+							.filter(
+								(index) =>
+									index >= start && (index - start) % 3 === 0 && (index - start) / 3 < columns,
+							)
+							.reduce((sum, index) => sum + (source.pixels[index] ?? 0), total),
+					0,
+				),
+			),
+		)
+	})
 })
 
 describe('sumCaptureSpan', () => {
@@ -1848,6 +1908,68 @@ describe('sumCaptureBand', () => {
 		expect(sumCaptureBand(flat, 0, 0, 0, 3, 2)).toBe(27)
 		expect(sumCaptureBand(flat, 0, 0, 0, Infinity, 2)).toBe(Infinity)
 		expect(sumCaptureBand({ ...flat, pixels: new Uint8Array(0) }, 0, 0, 0, Infinity, 2)).toBe(0)
+		expect([-1, 0, Number.NaN].map((rows) => sumCaptureBand(flat, 0, 0, 0, rows, 2))).toEqual([
+			0, 0, 0,
+		])
+	})
+
+	it('returns Infinity for infinitely many rows of a fractional width unless every byte is 0', () => {
+		const fractional = { width: -2.5, height: 1, pixels: Uint8Array.of(6, 0, 0) }
+		expect(sumCaptureBand(fractional, 0, 0, 0, Infinity, Infinity)).toBe(Infinity)
+		expect(
+			sumCaptureBand({ ...fractional, pixels: new Uint8Array(3) }, 0, 0, 0, Infinity, Infinity),
+		).toBe(0)
+		// Even rows start on a whole byte and read 6; odd rows start between bytes and read 0.
+		expect(sumCaptureBand(fractional, 0, 0, 0, 40, Infinity)).toBe(6 * 20)
+	})
+
+	it('reads the same sum as sumCaptureBlock and a direct sum over the edge inputs', () => {
+		const cases = [
+			{ width: 0, height: 0, pixels: Uint8Array.of(4, 0, 0, 5) },
+			{ width: 2, height: 3, pixels: Uint8Array.from({ length: 18 }, (_, index) => index + 1) },
+			{ width: -2, height: 3, pixels: Uint8Array.from({ length: 18 }, (_, index) => index + 1) },
+			{ width: 2.5, height: 2, pixels: Uint8Array.from({ length: 15 }, (_, index) => index + 1) },
+			{ width: 2, height: 0, pixels: new Uint8Array(0) },
+		].flatMap((source) =>
+			[0, -4, 0.5, 3, Number.NaN].flatMap((top) =>
+				[0, 1].flatMap((left) =>
+					[-1, 0, Number.NaN, 0.5, 1, 2.5, 3, 16].flatMap((rows) =>
+						[-1, 0, Number.NaN, 1, 2.5, 12, Infinity].map((columns) => ({
+							source,
+							top,
+							left,
+							rows,
+							columns,
+						})),
+					),
+				),
+			),
+		)
+		const direct = cases.map(({ source, top, left, rows, columns }) =>
+			Array.from(
+				{ length: rows > 0 ? Math.ceil(rows) : 0 },
+				(_, row) => (top + row) * (source.width * 3) + left,
+			).reduce(
+				(total, start) =>
+					Array.from(source.pixels.keys())
+						.filter(
+							(index) =>
+								index >= start && (index - start) % 3 === 0 && (index - start) / 3 < columns,
+						)
+						.reduce((sum, index) => sum + (source.pixels[index] ?? 0), total),
+				0,
+			),
+		)
+		expect(
+			cases.map(({ source, top, left, rows, columns }) =>
+				sumCaptureBand(source, top, left, 0, rows, columns),
+			),
+		).toEqual(direct)
+		expect(
+			cases.map(({ source, top, left, rows, columns }) =>
+				sumCaptureBlock(source, top, left, 0, rows, columns),
+			),
+		).toEqual(direct)
 	})
 
 	it('sums nothing for a NaN row count, start, or width', () => {

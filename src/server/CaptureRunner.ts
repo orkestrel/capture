@@ -16,7 +16,7 @@ import type {
 } from './types.js'
 import { rmSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { attempt } from '@orkestrel/contract'
+import { attempt, failure, isFailure, isSuccess, success } from '@orkestrel/contract'
 import {
 	CAPTURE_LOOKUPS_FILE,
 	CAPTURE_MANIFEST_FILE,
@@ -55,6 +55,7 @@ import {
 	describeCaptureFault,
 	requireCaptureSelection,
 	readCaptureVariants,
+	matchesCaptureVersionRefusal,
 } from './helpers.js'
 
 /**
@@ -153,8 +154,9 @@ export class CaptureRunner implements CaptureRunnerInterface {
 				'all',
 				root,
 			)
+			// A version refusal names its own recovery, and every command fails until that recovery runs.
 			this.#stderr(
-				`${describeCaptureError(error)}\n${ran.length === 0 ? 'No execution child ran; the command was refused before execution.' : `Execution stopped after stages: ${ran.join(', ')}; no later stage ran.`}\nNEXT ${next}\n`,
+				`${describeCaptureError(error)}\n${ran.length === 0 ? 'No execution child ran; the command was refused before execution.' : `Execution stopped after stages: ${ran.join(', ')}; no later stage ran.`}\n${matchesCaptureVersionRefusal(error) ? '' : `NEXT ${next}\n`}`,
 			)
 			return resolveCaptureExit(error)
 		} finally {
@@ -241,6 +243,8 @@ export class CaptureRunner implements CaptureRunnerInterface {
 					{ ...parsed, selector: owner },
 					projects,
 				).catch((error: unknown) => {
+					// A version refusal holds for every owner, so it ends the changed run.
+					if (matchesCaptureVersionRefusal(error)) throw error
 					this.#stderr(`${describeCaptureError(error)}\n`)
 					return resolveCaptureExit(error)
 				})
@@ -305,6 +309,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 				throw new CaptureError('Missing value: --changed', { code: 'USAGE' })
 			return this.#integrity(primary).changed(parsed.changed)
 		} catch (error) {
+			if (matchesCaptureVersionRefusal(error)) throw error
 			const command = renderCaptureCommand(
 				'journey',
 				{ config: parsed.config, variants: [] },
@@ -358,51 +363,71 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		const outcomes: CaptureOutcome[] = []
 		const stages = resolveCaptureStages(variants, primary.first, command)
 		const completed: CaptureStagePlan[] = []
-		try {
-			for (const stage of stages) {
-				if (invocation.interrupted) return CAPTURE_EXIT.failed
-				outcomes.push(...(await this.#stage(invocation, integrity, plan, stage)))
-				completed.push(stage)
-			}
-			for (const outcome of outcomes) {
-				this.#stdout(`${outcome.project}: ${String(outcome.count)} owner-bearing passed cases\n`)
-			}
-			if (outcomes.every((outcome) => outcome.count === 0))
-				throw new CaptureError(
-					'Empty selected workload: no requested project held applicable work',
-					{ code: 'STAGE' },
-				)
-			return CAPTURE_EXIT.passed
-		} finally {
-			const ran = stages.filter((stage) =>
-				invocation.launched(resolve(invocation.directory, `${command}-${stage.name}.log`)),
-			)
-			const notrun = stages.filter((stage) => !ran.includes(stage))
-			const failed = ran.filter((stage) => !completed.includes(stage))
-			const passed =
-				completed.length === stages.length && outcomes.some((outcome) => outcome.count > 0)
-			this.#stdout(
-				`STAGES ${JSON.stringify({
-					selector,
-					run: ran.map((stage) => stage.name),
-					passed: completed.map((stage) => stage.name),
-					failed: failed.map((stage) => stage.name),
-					notrun: notrun.map((stage) => stage.name),
-					reason: invocation.interrupted
-						? 'interrupted; no later stage ran'
-						: passed
-							? 'selected workload passed'
-							: failed.length > 0
-								? 'stage failed; no later stage ran'
-								: notrun.length > 0
-									? 'refused before execution'
-									: 'empty selected workload',
-				})}\n`,
-			)
+		const result = await this.#stages(
+			invocation,
+			integrity,
+			plan,
+			stages,
+			outcomes,
+			completed,
+		).then(
+			(code) => success(code),
+			(error: unknown) => failure(error),
+		)
+		const ran = stages.filter((stage) =>
+			invocation.launched(resolve(invocation.directory, `${command}-${stage.name}.log`)),
+		)
+		const notrun = stages.filter((stage) => !ran.includes(stage))
+		const failed = ran.filter((stage) => !completed.includes(stage))
+		const passed =
+			completed.length === stages.length && outcomes.some((outcome) => outcome.count > 0)
+		this.#stdout(
+			`STAGES ${JSON.stringify({
+				selector,
+				run: ran.map((stage) => stage.name),
+				passed: completed.map((stage) => stage.name),
+				failed: failed.map((stage) => stage.name),
+				notrun: notrun.map((stage) => stage.name),
+				reason: invocation.interrupted
+					? 'interrupted; no later stage ran'
+					: passed
+						? 'selected workload passed'
+						: failed.length > 0
+							? 'stage failed; no later stage ran'
+							: notrun.length > 0
+								? 'refused before execution'
+								: 'empty selected workload',
+			})}\n`,
+		)
+		if (isSuccess(result) || !matchesCaptureVersionRefusal(result.error))
 			this.#stdout(
 				`NEXT ${renderCaptureCommand(passed ? 'journey' : command, passed ? { config: parsed.config, variants: [] } : parsed, passed ? 'all' : selector, root)}\n`,
 			)
+		if (isFailure(result)) throw result.error
+		return result.value
+	}
+
+	async #stages(
+		invocation: CaptureInvocationInterface,
+		integrity: CaptureIntegrityInterface,
+		plan: CaptureRunPlan,
+		stages: readonly CaptureStagePlan[],
+		outcomes: CaptureOutcome[],
+		completed: CaptureStagePlan[],
+	): Promise<number> {
+		for (const stage of stages) {
+			if (invocation.interrupted) return CAPTURE_EXIT.failed
+			outcomes.push(...(await this.#stage(invocation, integrity, plan, stage)))
+			completed.push(stage)
 		}
+		for (const outcome of outcomes) {
+			this.#stdout(`${outcome.project}: ${String(outcome.count)} owner-bearing passed cases\n`)
+		}
+		if (outcomes.every((outcome) => outcome.count === 0))
+			throw new CaptureError('Empty selected workload: no requested project held applicable work', {
+				code: 'STAGE',
+			})
+		return CAPTURE_EXIT.passed
 	}
 
 	async #stage(

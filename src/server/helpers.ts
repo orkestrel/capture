@@ -1566,8 +1566,9 @@ export function sumCaptureSpan(pixels: Uint8Array, start: number, columns: numbe
  * @remarks
  * Source row `top + row` starts its block at `(top + row) * picture.width * 3 + left`, and each row
  * contributes `columns` samples through `sumCaptureRow`. A block of more than 16 rows that can start
- * outside the bytes narrows through `sumCaptureBand`, so an infinite or very large row count sums to
- * the last row that reaches the bytes.
+ * outside the bytes sums through `sumCaptureBand`, so for a whole-number width a row count of any
+ * size costs work bounded by the bytes, and infinitely many rows that each read a nonzero sum return
+ * `Infinity`.
  *
  * @param picture - The source RGB picture
  * @param top - The block's first source row
@@ -1620,9 +1621,15 @@ export function sumCaptureBlock(
  *
  * @remarks
  * A row whose run starts past the bytes or ends before them reads 0, so the block first narrows to
- * the rows between, and a row count of any size, `Infinity` included, costs at most those rows.
- * Every row of a zero-width picture reads the same run, so that block is the run's sum times the row
- * count. It reads the same sum as `sumCaptureBlock`.
+ * the rows between. For a whole-number width, every row whose run reads every sample of its channel
+ * reads one sum, so the band reads that sum once and multiplies it by those rows, and reads row by
+ * row only the rows whose run covers part of the bytes. A row count of any size, `Infinity`
+ * included, then costs work bounded by the bytes, and infinitely many rows that each read a nonzero
+ * sum return `Infinity`. For a width that is not a whole number, rows read different channels, so
+ * the band reads every row that reaches the bytes, and infinitely many such rows return `Infinity`
+ * unless every byte is 0. Every row of a zero-width picture reads the same run, so that block is the
+ * run's sum times a positive row count, and 0 for any other count. It reads the same sum as
+ * `sumCaptureBlock`.
  *
  * @param picture - The source RGB picture
  * @param top - The block's first source row
@@ -1647,22 +1654,54 @@ export function sumCaptureBand(
 ): number {
 	const stride = picture.width * 3
 	const start = (top + row) * stride + left
+	const count = rows > 0 ? Math.ceil(rows) : 0
 	if (stride === 0) {
 		const sum = sumCaptureRow(picture.pixels, start, columns)
-		return sum === 0 ? 0 : sum * Math.ceil(rows)
+		return sum === 0 || count === 0 ? 0 : sum * count
 	}
-	// Row `j` starts at `start + j * stride`; past one bound a run starts past the bytes, and past the
-	// other it ends before them. A row of margin on each side absorbs division rounding.
-	const past = (picture.pixels.length - start) / stride
-	const before = (3 - 3 * Math.ceil(columns) - start) / stride
-	const first = Math.max(0, Math.floor(Math.min(past, before)) - 1)
-	const last = Math.min(Math.ceil(rows), Math.ceil(Math.max(past, before)) + 1)
-	if (!(last > first)) return 0
-	const half = Math.ceil((last - first) / 2)
-	return (
-		sumCaptureBlock(picture, top, left, row + first, half, columns) +
-		sumCaptureBlock(picture, top, left, row + first + half, last - first - half, columns)
+	const samples = columns > 0 ? Math.ceil(columns) : 0
+	const length = picture.pixels.length
+	if (
+		!(count > 0 && samples > 0 && length > 0 && Number.isFinite(stride) && Number.isFinite(start))
 	)
+		return 0
+	// By start, runs miss, cover part, cover the channel, cover part, then miss; margins absorb rounding.
+	const reach = 3 - 3 * samples
+	const bounds = [reach, Math.max(reach, Math.min(length - 3 * samples, 3)), 3, Math.max(3, length)]
+	const [lower = 0, from = 0, to = 0, upper = 0] = (stride > 0 ? bounds : bounds.toReversed()).map(
+		(bound, index) =>
+			Math.min(
+				Math.max(
+					(stride > 0
+						? Math.ceil((bound - start) / stride)
+						: Math.floor((bound - start) / stride) + 1) + (index % 2 === 0 ? -1 : 1),
+					0,
+				),
+				count,
+			),
+	)
+	// Only a stride of whole pixels keeps every covering row on one channel, so they read one sum.
+	const covered = Number.isInteger(stride / 3) ? to - from : 0
+	if (!(covered > 0) && upper - lower === Infinity)
+		return picture.pixels.some((value) => value > 0) ? Infinity : 0
+	const cover = covered > 0 ? sumCaptureBlock(picture, top, left, row + from, 1, columns) : 0
+	return (
+		covered > 0
+			? [
+					[lower, from],
+					[to, upper],
+				]
+			: [[lower, upper]]
+	)
+		.map(([first = 0, last = 0]) => {
+			if (!(last > first)) return 0
+			const half = Math.ceil((last - first) / 2)
+			return (
+				sumCaptureBlock(picture, top, left, row + first, half, columns) +
+				sumCaptureBlock(picture, top, left, row + first + half, last - first - half, columns)
+			)
+		})
+		.reduce((sum, value) => sum + value, cover === 0 ? 0 : cover * covered)
 }
 
 /**
