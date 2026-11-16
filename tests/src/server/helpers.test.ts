@@ -51,7 +51,9 @@ import {
 	buildCaptureIntegrityOptions,
 	buildCaptureRegistry,
 	buildCaptureRequestRefusal,
+	buildCaptureReaderReport,
 	collectCaptureErrors,
+	scanCaptureChunks,
 	scanCaptureFrames,
 	collectCaptureIdentical,
 	composeCapturePictures,
@@ -91,8 +93,10 @@ import {
 	resolveCaptureVariants,
 	renderCaptureCommand,
 	shrinkCapturePicture,
+	sumCaptureBand,
 	sumCaptureBlock,
 	sumCaptureRow,
+	sumCaptureSpan,
 	unfilterCaptureRow,
 	writeCaptureDocument,
 	resolveCaptureSheetIdentity,
@@ -1268,6 +1272,79 @@ describe('readCaptureChunks', () => {
 			'Invalid capture PNG closing chunk',
 		)
 	})
+
+	it('reads a chain of more chunks than a call stack holds frames', () => {
+		const payload = Buffer.from([7, 8, 9])
+		const bytes = Buffer.concat([
+			Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+			encodeCaptureChunk('IHDR', Buffer.alloc(13)),
+			...Array.from({ length: 100_000 }, (_, index) =>
+				encodeCaptureChunk(
+					index % 2 === 0 ? 'tEXt' : 'IDAT',
+					index % 2 === 0 ? Buffer.alloc(0) : payload,
+				),
+			),
+			encodeCaptureChunk('IEND', Buffer.alloc(0)),
+		])
+		const chunks = readCaptureChunks(bytes)
+		expect(chunks).toHaveLength(50_000)
+		expect(chunks.every((chunk) => chunk.equals(payload))).toBe(true)
+	})
+})
+
+describe('scanCaptureChunks', () => {
+	// The header offsets follow from the chunk lengths: 8, then 8 + 12 + 13, then 33 + 12 + 5, then 50 + 12.
+	const bytes = Buffer.concat([
+		Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+		encodeCaptureChunk('IHDR', Buffer.alloc(13)),
+		encodeCaptureChunk('tEXt', Buffer.alloc(5)),
+		encodeCaptureChunk('IDAT', Buffer.alloc(0)),
+		encodeCaptureChunk('IEND', Buffer.alloc(0)),
+	])
+
+	it('returns each checked header offset in order and stops after the closing chunk', () => {
+		expect(scanCaptureChunks(bytes, 8, 4)).toEqual([8, 33, 50, 62])
+		expect(scanCaptureChunks(bytes, 33, 4)).toEqual([33, 50, 62])
+		// The encoder writes a 13-byte header chunk and a 12-byte compressed stream for one pixel.
+		expect(
+			scanCaptureChunks(
+				encodeCapturePicture({ width: 1, height: 1, pixels: Uint8Array.from([1, 2, 3]) }),
+				8,
+				Infinity,
+			),
+		).toEqual([8, 33, 57])
+	})
+
+	it('reads at most the count it is given', () => {
+		expect(scanCaptureChunks(bytes, 8, 2)).toEqual([8, 33])
+		expect(scanCaptureChunks(bytes, 8, 3.5)).toEqual([8, 33, 50])
+		expect([0, -1, Number.NaN].map((count) => scanCaptureChunks(bytes, 8, count))).toEqual([
+			[],
+			[],
+			[],
+		])
+	})
+
+	it('ends an infinite or a very large count at the closing chunk', () => {
+		expect(scanCaptureChunks(bytes, 8, Infinity)).toEqual([8, 33, 50, 62])
+		expect(scanCaptureChunks(bytes, 8, 2 ** 40)).toEqual([8, 33, 50, 62])
+	})
+
+	it('refuses a chain that runs past its bytes, a bad checksum, and a bad closing chunk', () => {
+		expect(() => scanCaptureChunks(bytes.subarray(0, 62), 8, Infinity)).toThrow(
+			/^Truncated capture PNG$/u,
+		)
+		expect(() => scanCaptureChunks(bytes, Number.NaN, 1)).toThrow(/^Truncated capture PNG$/u)
+		expect(() => scanCaptureChunks(bytes.subarray(0, 48), 8, Infinity)).toThrow(
+			'Truncated capture PNG chunk',
+		)
+		const corrupt = Buffer.from(bytes)
+		corrupt[40] = (corrupt[40] ?? 0) ^ 1
+		expect(() => scanCaptureChunks(corrupt, 8, Infinity)).toThrow('Capture PNG checksum differs')
+		expect(() => scanCaptureChunks(Buffer.concat([bytes, Buffer.from([0])]), 8, Infinity)).toThrow(
+			'Invalid capture PNG closing chunk',
+		)
+	})
 })
 
 describe('decodeCapturePicture', () => {
@@ -1590,6 +1667,23 @@ describe('sumCaptureRow', () => {
 			0, 0, 0,
 		])
 	})
+
+	it('sums an infinite count to the end of the bytes', () => {
+		expect(sumCaptureRow(Uint8Array.of(1), 0, Infinity)).toBe(1)
+		expect(sumCaptureRow(pixels, 0, Infinity)).toBe(820)
+		expect(sumCaptureRow(pixels, 3, Infinity)).toBe(819)
+		expect(sumCaptureRow(Uint8Array.of(5, 0, 0, 7), -3, Infinity)).toBe(12)
+		expect(sumCaptureRow(Uint8Array.of(5, 0, 0, 7), -Infinity, Infinity)).toBe(0)
+		expect(
+			[0.5, Number.NaN, Infinity].map((start) => sumCaptureRow(pixels, start, Infinity)),
+		).toEqual([0, 0, 0])
+	})
+
+	it('sums a count of 2 ** 40 to the end of the bytes', () => {
+		expect(sumCaptureRow(Uint8Array.of(1), 0, 2 ** 40)).toBe(1)
+		expect(sumCaptureRow(pixels, 3, 2 ** 40)).toBe(819)
+		expect(sumCaptureRow(Uint8Array.of(5, 0, 0, 7), -3 * 2 ** 39, 2 ** 40)).toBe(12)
+	})
 })
 
 describe('sumCaptureBlock', () => {
@@ -1644,6 +1738,124 @@ describe('sumCaptureBlock', () => {
 	it('reads rows past the picture as 0 and a fractional row start as 0', () => {
 		expect(sumCaptureBlock(picture, 10, 0, 0, 4, 1)).toBe(picture.pixels[10 * 13 * 3] ?? -1)
 		expect(sumCaptureBlock(picture, 0.5, 0, 0, 2, 4)).toBe(0)
+	})
+
+	it('sums an infinite row count to the last row the bytes hold', () => {
+		// Each of the 11 rows contributes its first two samples, and every row after them reads 0.
+		const expected = Array.from({ length: 11 }, (_, row) => row).reduce(
+			(sum, row) => sum + (picture.pixels[row * 39 + 6] ?? 0) + (picture.pixels[row * 39 + 9] ?? 0),
+			0,
+		)
+		expect(sumCaptureBlock(picture, 0, 6, 0, Infinity, 2)).toBe(expected)
+		// Rows above the picture read 0 when their run ends before the bytes.
+		expect(sumCaptureBlock(picture, -4, 6, 1, Infinity, 2)).toBe(expected)
+		expect(sumCaptureBlock(picture, 0, 6, 0, Number.NaN, 2)).toBe(0)
+		expect(sumCaptureBlock(picture, Number.NaN, 6, 0, Infinity, 2)).toBe(0)
+	})
+
+	it('sums a row count of 2 ** 40 to the last row the bytes hold', () => {
+		const expected = Array.from({ length: 11 }, (_, row) => picture.pixels[row * 39 + 1] ?? 0)
+		expect(sumCaptureBlock(picture, 0, 1, 0, 2 ** 40, 1)).toBe(
+			expected.reduce((sum, value) => sum + value, 0),
+		)
+		expect(sumCaptureBlock(picture, 0, 1, 3, 2 ** 40, 1)).toBe(
+			expected.slice(3).reduce((sum, value) => sum + value, 0),
+		)
+		const flat = { width: 0, height: 0, pixels: Uint8Array.of(4, 0, 0, 5) }
+		expect(sumCaptureBlock(flat, 0, 0, 0, 2 ** 40, 2)).toBe(9 * 2 ** 40)
+	})
+
+	it('runs an infinite sample count across the following rows to the end of the bytes', () => {
+		// Row `r` starts at byte `r * 39` and reads every third byte from there to the end.
+		const suffixes = Array.from(new Array(11).keys(), (row) =>
+			picture.pixels
+				.subarray(row * 39)
+				.filter((_, index) => index % 3 === 0)
+				.reduce((sum, value) => sum + value, 0),
+		)
+		const [whole = -1] = suffixes
+		expect(sumCaptureBlock(picture, 0, 0, 0, 1, Infinity)).toBe(whole)
+		expect(sumCaptureBlock(picture, 0, 0, 0, Infinity, Infinity)).toBe(
+			suffixes.reduce((sum, value) => sum + value),
+		)
+		// A row above the picture whose run reaches the bytes still counts what it reaches.
+		expect(sumCaptureBlock(picture, -2, 0, 0, 3, Infinity)).toBe(whole * 3)
+	})
+
+	it('counts the one run of a zero-width picture once per row', () => {
+		const flat = { width: 0, height: 0, pixels: Uint8Array.of(4, 0, 0, 5) }
+		expect(sumCaptureBlock(flat, 0, 0, 0, 5, 2)).toBe(45)
+		expect(sumCaptureBlock(flat, 0, 0, 0, Infinity, 2)).toBe(Infinity)
+		expect(
+			sumCaptureBlock({ width: 0, height: 0, pixels: new Uint8Array(0) }, 0, 0, 0, Infinity, 2),
+		).toBe(0)
+	})
+})
+
+describe('sumCaptureSpan', () => {
+	// Sample `n` holds `n + 1`, and the bytes between samples hold 200, so a stray read shows.
+	const pixels = Uint8Array.from({ length: 3 * 40 }, (_, index) =>
+		index % 3 === 0 ? index / 3 + 1 : 200,
+	)
+
+	it('narrows a run to the samples the bytes hold and sums them', () => {
+		expect(sumCaptureSpan(pixels, 0, 12)).toBe(78)
+		expect(sumCaptureSpan(pixels, 0, Infinity)).toBe(820)
+		expect(sumCaptureSpan(pixels, 3, 2 ** 40)).toBe(819)
+		// Samples -6 and -3 read 0, then samples 0, 3, and 6 read 1, 2, and 3.
+		expect(sumCaptureSpan(pixels, -6, 5)).toBe(6)
+	})
+
+	it('sums nothing for a start no sample reaches or a count of zero or NaN', () => {
+		expect(
+			[
+				[Number.NaN, Infinity],
+				[Infinity, 5],
+				[-Infinity, Infinity],
+				[0.5, 20],
+				[0, Number.NaN],
+				[0, 0],
+				[-30, 5],
+			].map(([start = 0, columns = 0]) => sumCaptureSpan(pixels, start, columns)),
+		).toEqual([0, 0, 0, 0, 0, 0, 0])
+	})
+})
+
+describe('sumCaptureBand', () => {
+	// A 13 × 11 picture of varied bytes; each row starts 39 bytes after the one above.
+	const picture = {
+		width: 13,
+		height: 11,
+		pixels: Uint8Array.from({ length: 13 * 11 * 3 }, (_, index) => (index * 7 + 3) % 251),
+	}
+	const firsts = Array.from(new Array(11).keys(), (row) => picture.pixels[row * 39 + 1] ?? 0)
+
+	it('narrows a block to the rows that reach the bytes and sums them', () => {
+		expect(sumCaptureBand(picture, 0, 1, 0, 5, 1)).toBe(
+			firsts.slice(0, 5).reduce((sum, value) => sum + value, 0),
+		)
+		expect(sumCaptureBand(picture, 0, 1, 0, Infinity, 1)).toBe(
+			firsts.reduce((sum, value) => sum + value, 0),
+		)
+		// Rows -3 through -1 end before the bytes, so only the 11 rows of the picture count.
+		expect(sumCaptureBand(picture, -4, 1, 1, 2 ** 40, 1)).toBe(
+			firsts.reduce((sum, value) => sum + value, 0),
+		)
+	})
+
+	it('counts the one run of a zero-width picture once per row', () => {
+		const flat = { width: 0, height: 0, pixels: Uint8Array.of(4, 0, 0, 5) }
+		expect(sumCaptureBand(flat, 0, 0, 0, 3, 2)).toBe(27)
+		expect(sumCaptureBand(flat, 0, 0, 0, Infinity, 2)).toBe(Infinity)
+		expect(sumCaptureBand({ ...flat, pixels: new Uint8Array(0) }, 0, 0, 0, Infinity, 2)).toBe(0)
+	})
+
+	it('sums nothing for a NaN row count, start, or width', () => {
+		expect([
+			sumCaptureBand(picture, 0, 1, 0, Number.NaN, 1),
+			sumCaptureBand(picture, Number.NaN, 1, 0, Infinity, 1),
+			sumCaptureBand({ ...picture, width: Number.NaN }, 0, 1, 0, Infinity, 1),
+		]).toEqual([0, 0, 0])
 	})
 })
 
@@ -3707,6 +3919,64 @@ describe('collectCaptureIdentical', () => {
 			]),
 		).toEqual([])
 		expect(collectCaptureIdentical([])).toEqual([])
+	})
+})
+
+describe('buildCaptureReaderReport', () => {
+	it('carries every preflight member, the identical groups, and each size in report order', () => {
+		const selection = { registry: 'registry-digest', entries: [] }
+		const freshness = { required: [], entries: [], warnings: [], duration: 12.5 }
+		const report = buildCaptureReaderReport({
+			selection,
+			freshness,
+			variants: [],
+			directory: 'tmp/captures',
+			mixed: ['Mixed framing: states/pages:mail@390: page, viewport'],
+			issues: ['Image under 4 KB: tmp/captures/c.png'],
+			images: [
+				{
+					...createCaptureDigestImageFixture('a.png', 'one'),
+					picture: { width: 390, height: 844 },
+				},
+				{ ...createCaptureDigestImageFixture('b.png', 'two'), size: 5120 },
+				createCaptureDigestImageFixture('c.png', 'one'),
+			],
+		})
+		expect(Object.keys(report)).toEqual([
+			'selection',
+			'freshness',
+			'mixed',
+			'issues',
+			'identical',
+			'sizes',
+			'acceptance',
+		])
+		expect(report).toEqual({
+			selection,
+			freshness,
+			mixed: ['Mixed framing: states/pages:mail@390: page, viewport'],
+			issues: ['Image under 4 KB: tmp/captures/c.png'],
+			identical: [['a.png', 'c.png']],
+			sizes: [
+				{ file: 'a.png', width: 390, height: 844, bytes: 4096 },
+				{ file: 'b.png', width: 1, height: 1, bytes: 5120 },
+				{ file: 'c.png', width: 1, height: 1, bytes: 4096 },
+			],
+			acceptance: false,
+		})
+	})
+
+	it('reports no identical groups and no sizes for a selection with no readable image', () => {
+		const report = buildCaptureReaderReport({
+			selection: { registry: 'registry-digest', entries: [] },
+			freshness: { required: [], entries: [], warnings: [], duration: 0 },
+			variants: [],
+			directory: 'tmp/captures',
+			mixed: [],
+			issues: [],
+			images: [],
+		})
+		expect([report.identical, report.sizes, report.acceptance]).toEqual([[], [], false])
 	})
 })
 

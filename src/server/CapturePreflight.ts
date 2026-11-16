@@ -51,9 +51,9 @@ import { CaptureIntegrity } from './CaptureIntegrity.js'
 import { CaptureInvocation } from './CaptureInvocation.js'
 import {
 	buildCaptureIntegrityOptions,
+	buildCaptureReaderReport,
 	collectCaptureErrors,
 	scanCaptureFrames,
-	collectCaptureIdentical,
 	computeCaptureHash,
 	decodeCapturePicture,
 	requireCaptureProjects,
@@ -275,24 +275,10 @@ export class CapturePreflight implements CapturePreflightInterface {
 	async execute(): Promise<number> {
 		try {
 			const result = await this.check()
-			const issues = result.issues
 			this.#stdout(
-				`${CAPTURE_REPORT_LINES.preflight} ${JSON.stringify({
-					selection: result.selection,
-					freshness: result.freshness,
-					mixed: result.mixed,
-					issues,
-					identical: collectCaptureIdentical(result.images),
-					sizes: result.images.map(({ entry, picture, size }) => ({
-						file: entry.file,
-						width: picture.width,
-						height: picture.height,
-						bytes: size,
-					})),
-					acceptance: false,
-				})}\n`,
+				`${CAPTURE_REPORT_LINES.preflight} ${JSON.stringify(buildCaptureReaderReport(result))}\n`,
 			)
-			return issues.length > 0 ||
+			return result.issues.length > 0 ||
 				result.freshness.entries.some((entry) => entry.status !== 'current')
 				? CAPTURE_EXIT.failed
 				: CAPTURE_EXIT.passed
