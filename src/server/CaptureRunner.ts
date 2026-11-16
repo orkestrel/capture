@@ -108,6 +108,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			stderr: this.#stderr,
 		})
 		invocation.attach()
+		const invocations: CaptureInvocationInterface[] = [invocation]
 		const argumentsResult = attempt(() => readCaptureArguments(argv, command, root, config))
 		try {
 			invocation.prepare()
@@ -132,7 +133,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			if (command !== 'stale' && parsed.changed !== undefined) {
 				await invocation.release()
 				invocation.attach()
-				const code = await this.#changed(invocation, command, parsed, projects)
+				const code = await this.#changed(invocation, invocations, command, parsed, projects)
 				if (code === 64) rmSync(invocation.directory, { recursive: true, force: true })
 				return code
 			}
@@ -143,7 +144,9 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			if (resolveCaptureExit(error) === 64)
 				rmSync(invocation.directory, { recursive: true, force: true })
 			const ran = Object.values(CAPTURE_STAGES).filter((stage) =>
-				invocation.launched(resolve(invocation.directory, `${command}-${stage}.log`)),
+				invocations.some((entry) =>
+					entry.launched(resolve(entry.directory, `${command}-${stage}.log`)),
+				),
 			)
 			const next = renderCaptureCommand(
 				command,
@@ -170,6 +173,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 
 	async #changed(
 		discovery: CaptureInvocationInterface,
+		invocations: CaptureInvocationInterface[],
 		command: CaptureRequest['command'],
 		parsed: CaptureRunnerArguments,
 		projects: readonly CaptureProject[],
@@ -234,6 +238,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 				stdout: this.#stdout,
 				stderr: this.#stderr,
 			})
+			invocations.push(invocation)
 			invocation.attach()
 			try {
 				invocation.prepare()

@@ -5,7 +5,13 @@ import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
 import { isRunning } from '@orkestrel/test/server'
 import { isCaptureRun } from '@src/core'
-import { CAPTURE_OWNER_FILE, CAPTURE_REFUSAL_LIMIT, createCaptureRunner } from '@src/server'
+import {
+	CAPTURE_COMMAND_NAMES,
+	CAPTURE_OWNER_FILE,
+	CAPTURE_REFUSAL_LIMIT,
+	CAPTURE_RUNS_DIRECTORY,
+	createCaptureRunner,
+} from '@src/server'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
 	readCaptureChildModes,
@@ -312,6 +318,40 @@ describe.each(RUNNER_COMMANDS)(
 			expect(run.stdout).toContain(`${command} ${stage}:`)
 			expect(run.stdout).not.toContain(`${command} rest:`)
 			expect(readCaptureHeld(base.root, base.requests)).toEqual([])
+		})
+
+		it('prints the failed stage status and the owner command after a failed child', async () => {
+			const run = await base.run(command, ['pages:mail'], {
+				environment: { CAPTURE_PRODUCER_MODE: 'failed-child' },
+			})
+			const id = readCaptureInvocationId(run.stdout)
+			const name = CAPTURE_COMMAND_NAMES[command]
+			const report = resolve(base.root, base.requests, CAPTURE_RUNS_DIRECTORY, id)
+			const status = {
+				selector: 'pages:mail',
+				run: [stage],
+				passed: [],
+				failed: [stage],
+				notrun: command === 'journey' ? [] : ['rest'],
+				reason: 'stage failed; no later stage ran',
+			}
+			// Each child prints its own process id, so only the line's position is fixed.
+			expect({
+				code: run.code,
+				stdout: run.stdout.replaceAll(/^pid=\d+$/gmu, 'pid=CHILD'),
+				stderr: run.stderr,
+			}).toEqual({
+				code: 1,
+				stdout: [
+					'pid=CHILD',
+					`${command} ${stage}: ${command === 'journey' ? VARIANTS.join(', ') : COMPOSED_FIRST}; pages:mail; report=${resolve(report, `${command}-${stage}.json`)}; records=${COMPOSED_DIRECTORY}/${CAPTURE_RUNS_DIRECTORY}/${id}/${stage}/<variant>.json`,
+					'pid=CHILD',
+					`STAGES ${JSON.stringify(status)}`,
+					`NEXT capture ${name} pages:mail --config '${base.config}'`,
+					'',
+				].join('\n'),
+				stderr: `Capture stage child did not exit successfully\nExecution stopped after stages: ${stage}; no later stage ran.\nNEXT capture ${name} all --config '${base.config}'\n`,
+			})
 		})
 
 		it('exits 1 when no requested project held applicable work', async () => {
@@ -1163,6 +1203,42 @@ describe('CaptureRunner version refusals', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(run.stdout).toContain('COMMAND capture journey pages:mail')
 			expect(run.stdout).not.toContain('NEXT ')
 			expect(fixture.stages).toHaveLength(before)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('names the stages an earlier owner ran when a later owner of a changed run meets a version refusal', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			fixture.seed({ variants: ['light-1280'] })
+			fixture.write('src/board/view.ts', '// board\n')
+			fixture.write('src/mail/view.ts', '// mail\n')
+			const stdout: string[] = []
+			const stderr: string[] = []
+			const code = await createCaptureRunner({
+				command: 'journey',
+				root: fixture.root,
+				config: fixture.config,
+				requests: fixture.requests,
+				argv: ['--changed', 'HEAD', '--variant', 'light-1280'],
+				stdout: (text) => {
+					stdout.push(text)
+					// The first owner's stage status arrives after it passed and before the next owner starts.
+					if (text.startsWith('STAGES ') && text.includes('"selector":"examples:board"'))
+						downgradeCaptureFixture(fixture.root, COMPOSED_DIRECTORY)
+				},
+				stderr: (text) => stderr.push(text),
+			}).execute()
+			expect({ code, stderr: stderr.join('') }).toEqual({
+				code: 1,
+				stderr: `Registry version 1 at ${registry} ${version}. Remove ${registry}, ${manifest}, and ${lookups}, ${refresh}\nExecution stopped after stages: selected; no later stage ran.\n`,
+			})
+			expect(fixture.stages.map((request) => request.selector)).toEqual(['examples:board'])
+			expect(stdout.join('')).toContain(
+				'STAGES {"selector":"pages:mail","run":[],"passed":[],"failed":[],"notrun":["selected"],"reason":"refused before execution"}\n',
+			)
+			expect(stdout.join('')).not.toContain('SUMMARY ')
 		} finally {
 			fixture.destroy()
 		}
