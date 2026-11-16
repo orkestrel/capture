@@ -93,10 +93,8 @@ import {
 	resolveCaptureVariants,
 	renderCaptureCommand,
 	shrinkCapturePicture,
-	sumCaptureBand,
 	sumCaptureBlock,
 	sumCaptureRow,
-	sumCaptureSpan,
 	unfilterCaptureRow,
 	writeCaptureDocument,
 	resolveCaptureSheetIdentity,
@@ -1660,6 +1658,9 @@ describe('sumCaptureRow', () => {
 		expect(sumCaptureRow(Uint8Array.of(5, 0, 0, 7), -3, 2)).toBe(5)
 		expect(sumCaptureRow(pixels, 0.5, 12)).toBe(0)
 		expect(sumCaptureRow(pixels, Number.NaN, 12)).toBe(0)
+		// A count that passes both ends of the bytes reads every sample between them.
+		expect(sumCaptureRow(Uint8Array.of(5, 0, 0, 7), -6, 9)).toBe(12)
+		expect([Infinity, -Infinity].map((start) => sumCaptureRow(pixels, start, 12))).toEqual([0, 0])
 	})
 
 	it('sums nothing for a count of zero, a negative count, or NaN', () => {
@@ -1668,21 +1669,21 @@ describe('sumCaptureRow', () => {
 		])
 	})
 
-	it('sums an infinite count to the end of the bytes', () => {
-		expect(sumCaptureRow(Uint8Array.of(1), 0, Infinity)).toBe(1)
-		expect(sumCaptureRow(pixels, 0, Infinity)).toBe(820)
-		expect(sumCaptureRow(pixels, 3, Infinity)).toBe(819)
-		expect(sumCaptureRow(Uint8Array.of(5, 0, 0, 7), -3, Infinity)).toBe(12)
-		expect(sumCaptureRow(Uint8Array.of(5, 0, 0, 7), -Infinity, Infinity)).toBe(0)
-		expect(
-			[0.5, Number.NaN, Infinity].map((start) => sumCaptureRow(pixels, start, Infinity)),
-		).toEqual([0, 0, 0])
-	})
-
-	it('sums a count of 2 ** 40 to the end of the bytes', () => {
-		expect(sumCaptureRow(Uint8Array.of(1), 0, 2 ** 40)).toBe(1)
-		expect(sumCaptureRow(pixels, 3, 2 ** 40)).toBe(819)
-		expect(sumCaptureRow(Uint8Array.of(5, 0, 0, 7), -3 * 2 ** 39, 2 ** 40)).toBe(12)
+	it('refuses an infinite count at any start', () => {
+		const starts = [0, 3, -3, 0.5, Number.NaN, Infinity, -Infinity]
+		const outcomes = [Uint8Array.of(1), pixels, Uint8Array.of(5, 0, 0, 7)].flatMap((bytes) =>
+			starts.map((start) => {
+				const error = captureError(() => sumCaptureRow(bytes, start, Infinity))
+				return isCaptureError(error) ? [error.code, error.message] : error
+			}),
+		)
+		expect(outcomes).toEqual(
+			outcomes.map(() => [
+				'EVIDENCE',
+				'Capture sum columns must be a finite sample count, not Infinity',
+			]),
+		)
+		expect(outcomes).toHaveLength(starts.length * 3)
 	})
 })
 
@@ -1740,32 +1741,11 @@ describe('sumCaptureBlock', () => {
 		expect(sumCaptureBlock(picture, 0.5, 0, 0, 2, 4)).toBe(0)
 	})
 
-	it('sums an infinite row count to the last row the bytes hold', () => {
-		// Each of the 11 rows contributes its first two samples, and every row after them reads 0.
-		const expected = Array.from({ length: 11 }, (_, row) => row).reduce(
-			(sum, row) => sum + (picture.pixels[row * 39 + 6] ?? 0) + (picture.pixels[row * 39 + 9] ?? 0),
-			0,
-		)
-		expect(sumCaptureBlock(picture, 0, 6, 0, Infinity, 2)).toBe(expected)
-		// Rows above the picture read 0 when their run ends before the bytes.
-		expect(sumCaptureBlock(picture, -4, 6, 1, Infinity, 2)).toBe(expected)
+	it('sums nothing for a NaN row count', () => {
 		expect(sumCaptureBlock(picture, 0, 6, 0, Number.NaN, 2)).toBe(0)
-		expect(sumCaptureBlock(picture, Number.NaN, 6, 0, Infinity, 2)).toBe(0)
 	})
 
-	it('sums a row count of 2 ** 40 to the last row the bytes hold', () => {
-		const expected = Array.from({ length: 11 }, (_, row) => picture.pixels[row * 39 + 1] ?? 0)
-		expect(sumCaptureBlock(picture, 0, 1, 0, 2 ** 40, 1)).toBe(
-			expected.reduce((sum, value) => sum + value, 0),
-		)
-		expect(sumCaptureBlock(picture, 0, 1, 3, 2 ** 40, 1)).toBe(
-			expected.slice(3).reduce((sum, value) => sum + value, 0),
-		)
-		const flat = { width: 0, height: 0, pixels: Uint8Array.of(4, 0, 0, 5) }
-		expect(sumCaptureBlock(flat, 0, 0, 0, 2 ** 40, 2)).toBe(9 * 2 ** 40)
-	})
-
-	it('runs an infinite sample count across the following rows to the end of the bytes', () => {
+	it('runs a sample count past the row across the following rows to the end of the bytes', () => {
 		// Row `r` starts at byte `r * 39` and reads every third byte from there to the end.
 		const suffixes = Array.from(new Array(11).keys(), (row) =>
 			picture.pixels
@@ -1774,52 +1754,26 @@ describe('sumCaptureBlock', () => {
 				.reduce((sum, value) => sum + value, 0),
 		)
 		const [whole = -1] = suffixes
-		expect(sumCaptureBlock(picture, 0, 0, 0, 1, Infinity)).toBe(whole)
-		expect(sumCaptureBlock(picture, 0, 0, 0, Infinity, Infinity)).toBe(
+		// The picture holds 143 samples of each channel, so 200 samples pass the end of the bytes.
+		expect(sumCaptureBlock(picture, 0, 0, 0, 1, 200)).toBe(whole)
+		expect(sumCaptureBlock(picture, 0, 0, 0, 20, 200)).toBe(
 			suffixes.reduce((sum, value) => sum + value),
 		)
 		// A row above the picture whose run reaches the bytes still counts what it reaches.
-		expect(sumCaptureBlock(picture, -2, 0, 0, 3, Infinity)).toBe(whole * 3)
+		expect(sumCaptureBlock(picture, -2, 0, 0, 3, 200)).toBe(whole * 3)
 	})
 
 	it('counts the one run of a zero-width picture once per row', () => {
 		const flat = { width: 0, height: 0, pixels: Uint8Array.of(4, 0, 0, 5) }
 		expect(sumCaptureBlock(flat, 0, 0, 0, 5, 2)).toBe(45)
-		expect(sumCaptureBlock(flat, 0, 0, 0, Infinity, 2)).toBe(Infinity)
-		expect(
-			sumCaptureBlock({ width: 0, height: 0, pixels: new Uint8Array(0) }, 0, 0, 0, Infinity, 2),
-		).toBe(0)
-	})
-
-	// Every row starts above the bytes and covers them, so a row-by-row sum misses the budget.
-	it(
-		'sums 2 ** 40 rows whose runs each cover the bytes without reading each row',
-		{ timeout: 1000 },
-		() => {
-			const single = { width: 1, height: 1, pixels: Uint8Array.of(1, 0, 0) }
-			expect(sumCaptureBlock(single, -(2 ** 40), 0, 0, 2 ** 40, Infinity)).toBe(2 ** 40)
-			expect(sumCaptureBlock(single, -(2 ** 40), 0, 0, 2 ** 40 + 5, Infinity)).toBe(2 ** 40 + 1)
-			expect(sumCaptureBlock(single, -(2 ** 40), 1, 0, 2 ** 40, Infinity)).toBe(0)
-		},
-	)
-
-	it('returns Infinity when infinitely many rows each read a nonzero sum, a negative width included', () => {
-		const backward = { width: -1, height: 1, pixels: Uint8Array.of(0, 7, 0) }
-		expect(sumCaptureBlock(backward, 0, 1, 0, Infinity, Infinity)).toBe(Infinity)
-		// Every row reads the first channel, which holds only 0.
-		expect(sumCaptureBlock(backward, 0, 0, 0, Infinity, Infinity)).toBe(0)
-		expect(
-			sumCaptureBlock({ ...backward, pixels: new Uint8Array(0) }, 0, 1, 0, Infinity, Infinity),
-		).toBe(0)
-		// A run of two samples reaches the bytes from the first two rows only.
-		expect(sumCaptureBlock(backward, 0, 1, 0, Infinity, 2)).toBe(14)
 	})
 
 	it('sums more than 16 rows that start outside the bytes against a direct sum', () => {
+		// A run of 1000 samples passes the end of the bytes from the lowest start, row -50 of width 13.
 		const cases = [13, -13, 1, -1, 2.5, -2.5].flatMap((width) =>
 			[-50, -4, 0, 5].flatMap((top) =>
 				[17, 40.5].flatMap((rows) =>
-					[1, 12, 40, Infinity].map((columns) => ({
+					[1, 12, 40, 1000].map((columns) => ({
 						picture: { ...picture, width },
 						top,
 						rows,
@@ -1850,91 +1804,81 @@ describe('sumCaptureBlock', () => {
 			),
 		)
 	})
-})
 
-describe('sumCaptureSpan', () => {
-	// Sample `n` holds `n + 1`, and the bytes between samples hold 200, so a stray read shows.
-	const pixels = Uint8Array.from({ length: 3 * 40 }, (_, index) =>
-		index % 3 === 0 ? index / 3 + 1 : 200,
-	)
-
-	it('narrows a run to the samples the bytes hold and sums them', () => {
-		expect(sumCaptureSpan(pixels, 0, 12)).toBe(78)
-		expect(sumCaptureSpan(pixels, 0, Infinity)).toBe(820)
-		expect(sumCaptureSpan(pixels, 3, 2 ** 40)).toBe(819)
-		// Samples -6 and -3 read 0, then samples 0, 3, and 6 read 1, 2, and 3.
-		expect(sumCaptureSpan(pixels, -6, 5)).toBe(6)
-	})
-
-	it('sums nothing for a start no sample reaches or a count of zero or NaN', () => {
-		expect(
-			[
-				[Number.NaN, Infinity],
-				[Infinity, 5],
-				[-Infinity, Infinity],
-				[0.5, 20],
-				[0, Number.NaN],
-				[0, 0],
-				[-30, 5],
-			].map(([start = 0, columns = 0]) => sumCaptureSpan(pixels, start, columns)),
-		).toEqual([0, 0, 0, 0, 0, 0, 0])
-	})
-})
-
-describe('sumCaptureBand', () => {
-	// A 13 × 11 picture of varied bytes; each row starts 39 bytes after the one above.
-	const picture = {
-		width: 13,
-		height: 11,
-		pixels: Uint8Array.from({ length: 13 * 11 * 3 }, (_, index) => (index * 7 + 3) % 251),
-	}
-	const firsts = Array.from(new Array(11).keys(), (row) => picture.pixels[row * 39 + 1] ?? 0)
-
-	it('narrows a block to the rows that reach the bytes and sums them', () => {
-		expect(sumCaptureBand(picture, 0, 1, 0, 5, 1)).toBe(
-			firsts.slice(0, 5).reduce((sum, value) => sum + value, 0),
-		)
-		expect(sumCaptureBand(picture, 0, 1, 0, Infinity, 1)).toBe(
-			firsts.reduce((sum, value) => sum + value, 0),
-		)
-		// Rows -3 through -1 end before the bytes, so only the 11 rows of the picture count.
-		expect(sumCaptureBand(picture, -4, 1, 1, 2 ** 40, 1)).toBe(
-			firsts.reduce((sum, value) => sum + value, 0),
-		)
-	})
-
-	it('counts the one run of a zero-width picture once per row', () => {
+	it('refuses an infinite row count', () => {
 		const flat = { width: 0, height: 0, pixels: Uint8Array.of(4, 0, 0, 5) }
-		expect(sumCaptureBand(flat, 0, 0, 0, 3, 2)).toBe(27)
-		expect(sumCaptureBand(flat, 0, 0, 0, Infinity, 2)).toBe(Infinity)
-		expect(sumCaptureBand({ ...flat, pixels: new Uint8Array(0) }, 0, 0, 0, Infinity, 2)).toBe(0)
-		expect([-1, 0, Number.NaN].map((rows) => sumCaptureBand(flat, 0, 0, 0, rows, 2))).toEqual([
-			0, 0, 0,
-		])
-	})
-
-	it('returns Infinity for infinitely many rows of a fractional width unless every byte is 0', () => {
-		const fractional = { width: -2.5, height: 1, pixels: Uint8Array.of(6, 0, 0) }
-		expect(sumCaptureBand(fractional, 0, 0, 0, Infinity, Infinity)).toBe(Infinity)
+		const cases = [
+			{ source: picture, top: 0, left: 6, row: 0, columns: 2 },
+			{ source: picture, top: -4, left: 6, row: 1, columns: 2 },
+			{ source: picture, top: Number.NaN, left: 6, row: 0, columns: 2 },
+			{ source: picture, top: 0, left: 0, row: 0, columns: Infinity },
+			{ source: flat, top: 0, left: 0, row: 0, columns: 2 },
+			{ source: { ...flat, pixels: new Uint8Array(0) }, top: 0, left: 0, row: 0, columns: 2 },
+			{
+				source: { width: -2.5, height: 1, pixels: Uint8Array.of(0, 6, 0) },
+				top: 0,
+				left: 0,
+				row: 0,
+				columns: Infinity,
+			},
+		]
 		expect(
-			sumCaptureBand({ ...fractional, pixels: new Uint8Array(3) }, 0, 0, 0, Infinity, Infinity),
-		).toBe(0)
-		// Even rows start on a whole byte and read 6; odd rows start between bytes and read 0.
-		expect(sumCaptureBand(fractional, 0, 0, 0, 40, Infinity)).toBe(6 * 20)
+			cases.map(({ source, top, left, row, columns }) => {
+				const error = captureError(() => sumCaptureBlock(source, top, left, row, Infinity, columns))
+				return isCaptureError(error) ? [error.code, error.message] : error
+			}),
+		).toEqual(
+			cases.map(() => ['EVIDENCE', 'Capture sum rows must be a finite row count, not Infinity']),
+		)
 	})
 
-	it('reads the same sum as sumCaptureBlock and a direct sum over the edge inputs', () => {
+	it('refuses an infinite sample count in a block of rows', () => {
+		const top = -1501199875790166
+		const fractional = { width: 1, height: 1, pixels: Uint8Array.of(7, 0, 0) }
+		const negative = { width: -2.5, height: 1, pixels: Uint8Array.of(0, 6, 0) }
+		const cases = [
+			{ source: picture, top: 0, left: 0, row: 0, rows: 1 },
+			{ source: picture, top: -2, left: 0, row: 0, rows: 3 },
+			{
+				source: { ...fractional, pixels: Uint8Array.of(1, 0, 0) },
+				top: -(2 ** 40),
+				left: 0,
+				row: 0,
+				rows: 2 ** 40,
+			},
+			...[0, 1, 2, 3].map((row) => ({ source: fractional, top, left: 0.5, row, rows: 1 })),
+			{ source: fractional, top, left: 0.5, row: 0, rows: 4 },
+			...[1, 2, 10, 1000].map((rows) => ({ source: negative, top: 0, left: 0, row: 0, rows })),
+		]
+		expect(
+			cases.map(({ source, top: first, left, row, rows }) => {
+				const error = captureError(() => sumCaptureBlock(source, first, left, row, rows, Infinity))
+				return isCaptureError(error) ? [error.code, error.message] : error
+			}),
+		).toEqual(
+			cases.map(() => [
+				'EVIDENCE',
+				'Capture sum columns must be a finite sample count, not Infinity',
+			]),
+		)
+	})
+
+	it('reads the same sum as a direct sum over the edge inputs', () => {
+		// Width -2.5 is F2's picture. A run of 60 samples passes the end of the bytes from the lowest
+		// start, row 18 of width -2.5.
 		const cases = [
 			{ width: 0, height: 0, pixels: Uint8Array.of(4, 0, 0, 5) },
 			{ width: 2, height: 3, pixels: Uint8Array.from({ length: 18 }, (_, index) => index + 1) },
 			{ width: -2, height: 3, pixels: Uint8Array.from({ length: 18 }, (_, index) => index + 1) },
 			{ width: 2.5, height: 2, pixels: Uint8Array.from({ length: 15 }, (_, index) => index + 1) },
+			{ width: -2.5, height: 1, pixels: Uint8Array.of(0, 6, 0) },
+			{ width: Number.NaN, height: 1, pixels: Uint8Array.of(1, 2, 3, 4, 5, 6) },
 			{ width: 2, height: 0, pixels: new Uint8Array(0) },
 		].flatMap((source) =>
 			[0, -4, 0.5, 3, Number.NaN].flatMap((top) =>
 				[0, 1].flatMap((left) =>
 					[-1, 0, Number.NaN, 0.5, 1, 2.5, 3, 16].flatMap((rows) =>
-						[-1, 0, Number.NaN, 1, 2.5, 12, Infinity].map((columns) => ({
+						[-1, 0, Number.NaN, 1, 2.5, 12, 60].map((columns) => ({
 							source,
 							top,
 							left,
@@ -1962,22 +1906,9 @@ describe('sumCaptureBand', () => {
 		)
 		expect(
 			cases.map(({ source, top, left, rows, columns }) =>
-				sumCaptureBand(source, top, left, 0, rows, columns),
-			),
-		).toEqual(direct)
-		expect(
-			cases.map(({ source, top, left, rows, columns }) =>
 				sumCaptureBlock(source, top, left, 0, rows, columns),
 			),
 		).toEqual(direct)
-	})
-
-	it('sums nothing for a NaN row count, start, or width', () => {
-		expect([
-			sumCaptureBand(picture, 0, 1, 0, Number.NaN, 1),
-			sumCaptureBand(picture, Number.NaN, 1, 0, Infinity, 1),
-			sumCaptureBand({ ...picture, width: Number.NaN }, 0, 1, 0, Infinity, 1),
-		]).toEqual([0, 0, 0])
 	})
 })
 
