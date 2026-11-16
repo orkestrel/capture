@@ -20,6 +20,7 @@ import {
 	readCaptureTagFilter,
 	removeCaptureFixtureFile,
 	readCaptureChildReceipt,
+	readCaptureRecoveries,
 	readCaptureRunnerStatuses,
 	ComposedFixture,
 	readExitedPid,
@@ -1126,6 +1127,236 @@ describe('CaptureRunner stale command', { timeout: FIXTURE_TIMEOUT }, () => {
 	})
 })
 
+// Each row reads every NEXT line of one runner outcome on both streams; the version refusals are
+// read in the following describe block.
+describe('CaptureRunner NEXT lines', { timeout: FIXTURE_TIMEOUT }, () => {
+	const config = `--config '${base.config}'`
+	const flags = `--variant light-1280 ${config}`
+
+	it('prints the complete journey on stderr after a usage refusal', async () => {
+		expect(readCaptureRecoveries(await base.run('journey', ['missing']))).toEqual({
+			code: 64,
+			stdout: [],
+			stderr: [`NEXT capture journey all ${config}`],
+		})
+	})
+
+	it('prints the complete journey on stderr after an evidence refusal before any stage', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			const run = await fixture.run('journey', ['pages:mail', '--case', 'no such case'])
+			expect(run.stderr).toContain('Missing accepted registry')
+			expect(readCaptureRecoveries(run)).toEqual({
+				code: 1,
+				stdout: [],
+				stderr: [`NEXT capture journey all ${config}`],
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints the registry refresh then the complete journey on stderr after a refused changed selection under EVIDENCE', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			expect(readCaptureRecoveries(await fixture.run('journey', ['--changed', 'HEAD']))).toEqual({
+				code: 1,
+				stdout: [],
+				stderr: [`NEXT capture registry ${config}`, `NEXT capture journey all ${config}`],
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints the complete journey on stderr after a refused changed selection under HOST', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			fixture.seed()
+			const run = await fixture.run('journey', ['--changed', 'missing-ref'])
+			expect(run.stderr).toContain('Git read failed')
+			expect(readCaptureRecoveries(run)).toEqual({
+				code: 1,
+				stdout: [],
+				stderr: [`NEXT capture journey all ${config}`],
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints the owner command on stdout after a failed stage in a single run', async () => {
+		const run = await base.run('capture', ['pages:mail'], {
+			environment: { CAPTURE_PRODUCER_MODE: 'failed-child' },
+		})
+		expect(readCaptureRecoveries(run)).toEqual({
+			code: 1,
+			stdout: [`NEXT capture frames pages:mail ${config}`],
+			stderr: [],
+		})
+	})
+
+	it('prints the complete journey on stdout after a passing single run', async () => {
+		const run = await base.run('journey', ['pages:mail', '--variant', COMPOSED_FIRST])
+		expect(readCaptureRecoveries(run)).toEqual({
+			code: 0,
+			stdout: [`NEXT capture journey all ${config}`],
+			stderr: [],
+		})
+	})
+
+	it('prints a failed owner command once on stdout after a changed run with one failed owner', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			fixture.seed({ variants: ['light-1280'] })
+			fixture.write('src/mail/view.ts', '// mail\n')
+			const run = await fixture.run('journey', ['--changed', 'HEAD', '--variant', 'light-1280'], {
+				environment: { CAPTURE_PRODUCER_MODE: 'failed-child' },
+			})
+			expect(readCaptureRecoveries(run)).toEqual({
+				code: 1,
+				stdout: [`NEXT capture journey pages:mail ${flags}`],
+				stderr: [],
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints the failed then the unrun owner command once each on stdout after a changed run with two owners', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			fixture.seed({ variants: ['light-1280'] })
+			fixture.write('src/board/view.ts', '// board\n')
+			fixture.write('src/mail/view.ts', '// mail\n')
+			const run = await fixture.run('journey', ['--changed', 'HEAD', '--variant', 'light-1280'], {
+				environment: { CAPTURE_PRODUCER_MODE: 'failed-child' },
+			})
+			expect(readCaptureRecoveries(run)).toEqual({
+				code: 1,
+				stdout: [
+					`NEXT capture journey examples:board ${flags}`,
+					`NEXT capture journey pages:mail ${flags}`,
+				],
+				stderr: [],
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints only the failed owner command on stdout when an earlier owner of a changed run passed', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			fixture.seed({ variants: ['light-1280'] })
+			fixture.write('src/board/view.ts', '// board\n')
+			fixture.write('src/mail/view.ts', '// mail\n')
+			const stdout: string[] = []
+			const stderr: string[] = []
+			const code = await createCaptureRunner({
+				command: 'journey',
+				root: fixture.root,
+				config: fixture.config,
+				requests: fixture.requests,
+				argv: ['--changed', 'HEAD', '--variant', 'light-1280'],
+				stdout: (text) => {
+					stdout.push(text)
+					// The first owner has passed; an unreadable manifest refuses the next owner's stage.
+					if (text.startsWith('STAGES ') && text.includes('"selector":"examples:board"'))
+						fixture.write(`${COMPOSED_DIRECTORY}/manifest.json`, '{')
+				},
+				stderr: (text) => stderr.push(text),
+			}).execute()
+			expect(stdout.join('')).toContain('"passed":["examples:board"],"failed":["pages:mail"]')
+			expect(
+				readCaptureRecoveries({ code, stdout: stdout.join(''), stderr: stderr.join('') }),
+			).toEqual({
+				code: 1,
+				stdout: [`NEXT capture journey pages:mail ${flags}`],
+				stderr: [],
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints the complete journey with the run flags once on stdout after a passing changed run', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			fixture.seed({ variants: ['light-1280'] })
+			fixture.write('src/board/view.ts', '// board\n')
+			fixture.write('src/mail/view.ts', '// mail\n')
+			const run = await fixture.run('journey', ['--changed', 'HEAD', '--variant', 'light-1280'])
+			expect(readCaptureRecoveries(run)).toEqual({
+				code: 0,
+				stdout: [`NEXT capture journey all ${flags}`],
+				stderr: [],
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints the complete journey on stdout when no journey input changed', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			fixture.seed()
+			const run = await fixture.run('journey', ['--changed', 'HEAD'])
+			expect(run.stdout).toContain('No journey input changed')
+			expect(readCaptureRecoveries(run)).toEqual({
+				code: 1,
+				stdout: [`NEXT capture journey all ${config}`],
+				stderr: [],
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints each owner command once on stdout for a changed plan', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			fixture.seed({ variants: ['light-1280'] })
+			fixture.write('src/board/view.ts', '// board\n')
+			fixture.write('src/mail/view.ts', '// mail\n')
+			const run = await fixture.run('journey', [
+				'--changed',
+				'HEAD',
+				'--plan',
+				'--variant',
+				'light-1280',
+			])
+			expect(readCaptureRecoveries(run)).toEqual({
+				code: 0,
+				stdout: [
+					`NEXT capture journey examples:board ${flags}`,
+					`NEXT capture journey pages:mail ${flags}`,
+				],
+				stderr: [],
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints each owner command then the complete journey on stdout after a shared-input refusal', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			fixture.seed()
+			fixture.write('src/mail/view.ts', '// own\n')
+			fixture.write('src/shared/theme.ts', '// shared\n')
+			const run = await fixture.run('journey', ['--changed', 'HEAD', '--variant', 'light-1280'])
+			expect(readCaptureRecoveries(run)).toEqual({
+				code: 64,
+				stdout: [`NEXT capture journey pages:mail ${flags}`, `NEXT capture journey all ${flags}`],
+				stderr: [],
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+})
+
 describe('CaptureRunner version refusals', { timeout: FIXTURE_TIMEOUT }, () => {
 	const registry = `${COMPOSED_DIRECTORY}/registry.json`
 	const manifest = `${COMPOSED_DIRECTORY}/manifest.json`
@@ -1244,6 +1475,10 @@ describe('CaptureRunner version refusals', { timeout: FIXTURE_TIMEOUT }, () => {
 				'STAGES {"selector":"pages:mail","run":[],"passed":[],"failed":[],"notrun":["selected"],"reason":"refused before execution"}\n',
 			)
 			expect(stdout.join('')).not.toContain('SUMMARY ')
+			// The earlier owner passed, and the refusal still carries its own recovery alone.
+			expect(
+				readCaptureRecoveries({ code, stdout: stdout.join(''), stderr: stderr.join('') }),
+			).toEqual({ code: 1, stdout: [], stderr: [] })
 		} finally {
 			fixture.destroy()
 		}

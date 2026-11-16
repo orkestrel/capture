@@ -4575,6 +4575,20 @@ export function readCaptureChildReceipt(fixture: ComposedFixture): unknown {
 	return parseJSON(fixture.read('receipt.json').toString('utf8'))
 }
 
+/**
+ * Reads the exit and the `NEXT` lines a runner printed on each stream, in printed order.
+ *
+ * @param run - The exit and what the runner printed
+ * @returns The exit and each stream's `NEXT` lines
+ */
+export function readCaptureRecoveries(run: ComposedRun) {
+	return {
+		code: run.code,
+		stdout: run.stdout.split(/\r\n|\n/u).filter((line) => line.startsWith('NEXT ')),
+		stderr: run.stderr.split(/\r\n|\n/u).filter((line) => line.startsWith('NEXT ')),
+	}
+}
+
 export function readCaptureRunnerStatuses(stdout: string): readonly unknown[] {
 	const line = stdout.split(/\r\n|\n/u).find((entry) => entry.startsWith('INTEGRITY '))
 	const result: unknown = parseJSON(line?.slice('INTEGRITY '.length) ?? '')
