@@ -53,55 +53,48 @@ Raise `@orkestrel/process`, then `@orkestrel/capture`, then `@orkestrel/test` to
     - `Process.lines` beside `readline`;
     - about 0.2 ms per spawn.
 
+- **Round two, the user, 2026-11-15 and 2026-11-16:**
+  - `capture frames` keeps one stage per variant.
+  - At veneer's adoption, its gate and one `capture -- all` run on a veneer host, and their reports are kept.
+  - Capture navigation runs under reduced motion, and one declared journey per transition kind stays under default motion.
+  - Test 0.0.42 ships without the clip route when a probe or its review shows the route writing other bytes than the element path.
+  - Capture 0.0.10 ships with the faster shrink, after as many rounds as its review needs, with no fallback to 0.0.9's shrink.
+  - When a fix keeps finding the next incremental issue, zoom out and fix the cause upstream.
+- **Round two, the consultant, 2026-11-16:**
+  - The pixel sums read caller-bounded flat samples, refuse an infinite count, and promise exactness only where every computed number is a safe integer (`baa5ce3`, `cbc5c24`).
+  - The runner maps each refusal's condition, carried in `CaptureError.code`, to the command that clears it, through `CAPTURE_RECOVERIES` and `CAPTURE_STATUS_RECOVERIES`, and prints no fallback command (`3cc67ce`).
+
 ## State
 
-- **process `72a61b6`.** U1 to U5 land:
-  - the environment merge folds names by case on every host;
-  - the stderr tail walk drops from 2.81 ms to 0.004 ms at 64 KiB;
-  - a zombie reads as ended through two `/proc` readings;
-  - an aborted signal spawns nothing and carries its reason;
-  - POSIX stop and timeout end the child's own group after the root exits, and a 300 ms timeout with a pipe-holding grandchild settles in 320 ms, against 5,329 ms before.
-
-  Ten readers and constants join the server surface; capture is their first consumer. Under review.
-- **capture `9fbb96b`, `0fac494`.** The integrity check memoizes each pattern list's matched subset through `path.matchesGlob`. A stage at veneer's population reads 611 ms against 2,320 ms (−73.65%, bar 5.45%).
-- **In flight:**
-  - capture: the record helpers, the scale instrument, and the pixel loops;
-  - test: the progress plugin with the subpath removal, the progress-path and count fixes with the guide command's build dependency, and the portfolio additions with the one-walk `measureContent` and the `verifyFrame` boundary.
-- **Next:** accept each in-flight unit, then dispatch the capture progress wiring and the wrapper factory, the whole-suite registry stage, the process follow-ups in capture, and the frame-wait design round.
+- **Released:**
+  - process 0.0.21 (`bd6da48`);
+  - test 0.0.41 (`69103f2`) and test 0.0.42 (`374c39e`), without the clip route;
+  - capture 0.0.9 (`681daf1`) and capture 0.0.10 (`7a9c90f`).
+- **Capture 0.0.10 holds:**
+  - the manifest table and document version 2 (`cdd08ac`, `5b339d0`, `2c54c5e`);
+  - the producer map (`d23beb0`);
+  - the shrink and decode loops (`1f2a376`);
+  - the `SHEETS` line that carries every `READER` member (`4a827c3`, `97a71a1`);
+  - the pixel-sum contract (`baa5ce3`);
+  - the family audit's root causes (`29e2a11`, `5a05489`);
+  - the recovery model, proven by a generated closure test of 546 cells (`3cc67ce`, `270c710`, `d98093e`, `560e470`).
+- **On main, unpublished:**
+  - the process advisories (`194ca8f`, `43b7066`);
+  - scaffold's born journey (`d489681`) and the round-two skill guidance (`7b69063`, `d99779b`).
+- **Next:** release scaffold 0.0.138, pinned to capture `^0.0.10` and test `^0.0.42`.
 
 ## Sequence
 
-1. **Process.** Review `72a61b6`, then release.
-2. **Test:**
-   - the progress plugin and the subpath removal;
-   - the progress path, the progress counts, and the guide command;
-   - the portfolio additions, the measure walk, and the frame boundary;
-   - a design round on the frame waits (66.7 ms per frame, byte-identical without them in 9 of 9 probes), the bare-name resolver, mutation-woken waits, and a DevTools screenshot path;
-   - the viewport-frame option.
+1. **Scaffold 0.0.138.** Pin capture `^0.0.10` and test `^0.0.42`, refresh the capture, process, and test guide mirrors, and release.
+2. **Capture closure cost.** The 56 interrupt and failed-child cells of `CaptureRunner recovery closure` run serially, because an emitted interrupt reaches every runner in one test process. Split them across test files, so separate Vitest workers isolate their signals and environment, and read the closure's contended time before and after.
+3. **Veneer adoption.** In order:
+   - the one Tab walk per census row;
+   - reduced-motion capture navigation;
+   - dropping the explicit pointer park before each placement.
 
-   Then release.
-3. **Capture:**
-   - the record helpers;
-   - the scale instrument, which reproduces the 63.4 s six-command pass at veneer's population;
-   - the pixel loops as typed-array row loops, byte-identical;
-   - the process follow-ups: drop the environment scrub, and replace `readCaptureRunning` with process's reader;
-   - the progress wiring, `capture progress`, and the peer on test;
-   - the wrapper factory and the frame enumerator;
-   - the whole-suite registry stage;
-   - the single-stage `frames` measurement;
-   - the ownership findings the 0.0.1 acceptance round (X7) left below its bar:
-     - O2: the `finally` removal of the claim temporary is unguarded against a host fault;
-     - O3: the shutdown message names the record path when no record was written;
-     - O4: the record path is built from the marker's unchecked id, and the record's child list is uncapped;
-     - O5: exhaustion from marker churn reads `(contention)` in place of an error code;
-     - O6: the request-file sweep is unguarded against a directory that carries a request file's name.
+   It deletes its duplicated capture and journey machinery, and its journey configuration shrinks to the factory call. Its gate and one `capture -- all` run on a veneer host, per the user's round-two ruling.
 
-   Then release, at the fleet's Node range.
-4. **Scaffold:**
-   - constants, the born journey template that calls the factory, and the journey skill (the gate drops `test:journey` and accepts stale-current portfolios);
-   - `ROADMAP.md` items 168 and 169;
-   - the bindings line;
-   - the guide mirrors.
+## Deferred
 
-   Then release.
-5. **Veneer adoption.** It deletes its duplicated capture and journey machinery, and its journey configuration shrinks to the factory call.
+- **The chunk walk's cost on a PNG split into one-byte IDAT chunks.** Owner: capture. Reopen it when a frame a consumer writes carries more than one IDAT chunk per row.
+- **A review of the closure's selector and flags beyond the command name.** Owner: capture. Reopen it when a rendering defect escapes the row tests.
