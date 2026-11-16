@@ -1138,7 +1138,9 @@ export function predictCaptureByte(left: number, up: number, corner: number): nu
  * @param bytes - The complete PNG
  * @param offset - The next chunk header. Default: 8.
  * @returns Ordered compressed-data chunks
- * @throws Thrown for truncated chunks, bad checksums, or a missing closing chunk.
+ * @throws Thrown for truncated chunks, bad checksums, a missing closing chunk, an IHDR chunk
+ * anywhere but offset 8, a critical chunk other than IHDR, PLTE, IDAT, and IEND, or IDAT chunks
+ * that are not consecutive.
  *
  * @example
  * ```ts
@@ -1148,9 +1150,42 @@ export function predictCaptureByte(left: number, up: number, corner: number): nu
 export function readCaptureChunks(bytes: Buffer, offset = 8): readonly Buffer[] {
 	requireCaptureImageSize(bytes.length)
 	const positions = scanCaptureChunks(bytes, offset, Infinity)
+	const types = positions.map((position) => bytes.toString('latin1', position + 4, position + 8))
 	const last = positions.at(-1)
-	if (last === undefined || bytes.toString('latin1', last + 4, last + 8) !== 'IEND')
-		throw new CaptureError('Missing capture PNG closing chunk', { code: 'EVIDENCE' })
+	// The walk ends at the closing chunk or refuses, so this guard narrows `last` and never throws.
+	if (last === undefined || types.at(-1) !== 'IEND')
+		throw new CaptureError(
+			`Missing capture PNG closing chunk: ${last === undefined ? `no chunk follows offset ${preview(offset)}` : `the last chunk is ${preview(types.at(-1))} at offset ${String(last)}`}; expected an empty IEND chunk that ends the file`,
+			{ code: 'EVIDENCE' },
+		)
+	const first = types.indexOf('IDAT')
+	const final = types.lastIndexOf('IDAT')
+	const placed = positions.find((position, index) => types[index] === 'IHDR' && position !== 8)
+	if (placed !== undefined)
+		throw new CaptureError(
+			`Invalid capture PNG chunk order: ${describeCaptureChunk(bytes, placed)}; expected one IHDR chunk, at offset 8`,
+			{ code: 'EVIDENCE' },
+		)
+	// Bit 5 of a type's first byte is clear for a critical chunk.
+	const unknown = positions.find(
+		(position, index) =>
+			((bytes[position + 4] ?? 0) & 32) === 0 &&
+			!['IHDR', 'PLTE', 'IDAT', 'IEND'].includes(types[index] ?? ''),
+	)
+	if (unknown !== undefined)
+		throw new CaptureError(
+			`Unsupported capture PNG chunk: critical ${describeCaptureChunk(bytes, unknown)}; expected a critical chunk to be IHDR, PLTE, IDAT, or IEND`,
+			{ code: 'EVIDENCE' },
+		)
+	const gap = types.findIndex((type, index) => index > first && index < final && type !== 'IDAT')
+	const resume = gap === -1 ? -1 : types.indexOf('IDAT', gap)
+	const resumed = positions[resume]
+	const before = positions[resume - 1]
+	if (resumed !== undefined && before !== undefined)
+		throw new CaptureError(
+			`Invalid capture PNG chunk order: ${describeCaptureChunk(bytes, resumed)} follows ${preview(bytes.toString('latin1', before + 4, before + 8))} at offset ${String(before)}; expected every IDAT chunk in one consecutive run`,
+			{ code: 'EVIDENCE' },
+		)
 	return positions.flatMap((position) => {
 		const length = bytes.readUInt32BE(position)
 		return bytes.toString('latin1', position + 4, position + 8) === 'IDAT' && length > 0
@@ -1197,18 +1232,51 @@ export function scanCaptureChunks(
 	}
 	if (!(limit >= 1)) return []
 	if (!Number.isSafeInteger(position) || position < 8 || position + 12 > bytes.length)
-		throw new CaptureError('Truncated capture PNG', { code: 'EVIDENCE' })
+		throw new CaptureError(
+			`Truncated capture PNG: no 12-byte chunk frame fits at offset ${preview(position)} in ${String(bytes.length)} bytes; expected a whole offset from 8 with 12 bytes after it`,
+			{ code: 'EVIDENCE' },
+		)
 	const end = position + 12 + bytes.readUInt32BE(position)
+	const chunk = describeCaptureChunk(bytes, position)
 	if (end > bytes.length)
-		throw new CaptureError('Truncated capture PNG chunk', { code: 'EVIDENCE' })
-	if (crc32(bytes.subarray(position + 4, end - 4)) >>> 0 !== bytes.readUInt32BE(end - 4))
-		throw new CaptureError('Capture PNG checksum differs', { code: 'EVIDENCE' })
+		throw new CaptureError(
+			`Truncated capture PNG chunk: ${chunk} ends at byte ${String(end)}; expected it to end within the file's ${String(bytes.length)} bytes`,
+			{ code: 'EVIDENCE' },
+		)
+	const stored = bytes.readUInt32BE(end - 4)
+	const computed = crc32(bytes.subarray(position + 4, end - 4)) >>> 0
+	if (computed !== stored)
+		throw new CaptureError(
+			`Capture PNG checksum differs: ${chunk} stores ${stored.toString(16).padStart(8, '0')}; expected ${computed.toString(16).padStart(8, '0')}`,
+			{ code: 'EVIDENCE' },
+		)
 	if (
 		bytes.toString('latin1', position + 4, position + 8) === 'IEND' &&
 		(end !== position + 12 || end !== bytes.length)
 	)
-		throw new CaptureError('Invalid capture PNG closing chunk', { code: 'EVIDENCE' })
+		throw new CaptureError(
+			`Invalid capture PNG closing chunk: ${chunk} ends at byte ${String(end)} of ${String(bytes.length)}; expected an empty IEND chunk that ends the file`,
+			{ code: 'EVIDENCE' },
+		)
 	return [position]
+}
+
+/**
+ * Describes the PNG chunk whose header sits at an offset by its type, offset, and length.
+ *
+ * @remarks The type is untrusted file bytes, so it is JSON-encoded and length-capped.
+ *
+ * @param bytes - The complete PNG
+ * @param position - The offset of the chunk header, with its 8 header bytes inside `bytes`
+ * @returns The chunk's description for a refusal
+ *
+ * @example
+ * ```ts
+ * describeCaptureChunk(encodeCapturePicture(picture), 8) // '"IHDR" at offset 8 with length 13'
+ * ```
+ */
+export function describeCaptureChunk(bytes: Buffer, position: number): string {
+	return `${preview(bytes.toString('latin1', position + 4, position + 8))} at offset ${String(position)} with length ${String(bytes.readUInt32BE(position))}`
 }
 
 /**
@@ -1247,7 +1315,10 @@ export function readCaptureImage(file: string): Buffer {
  */
 export function requireCaptureImageSize(size: number): void {
 	if (!Number.isSafeInteger(size) || size < 0 || size > CAPTURE_PNG_LIMITS.bytes)
-		throw new CaptureError('Capture PNG exceeds the file budget', { code: 'EVIDENCE' })
+		throw new CaptureError(
+			`Capture PNG size is outside the file budget: ${preview(size)} bytes; expected a whole number of bytes from 0 to ${String(CAPTURE_PNG_LIMITS.bytes)}`,
+			{ code: 'EVIDENCE' },
+		)
 }
 
 /**
@@ -1318,10 +1389,10 @@ export function inflateCaptureStream(data: Buffer, length: number): Buffer {
 	try {
 		return inflateSync(data, { maxOutputLength: length })
 	} catch (error) {
-		throw new CaptureError('Capture PNG stream is corrupt or longer than declared', {
-			code: 'EVIDENCE',
-			cause: error,
-		})
+		throw new CaptureError(
+			`Capture PNG stream is corrupt or longer than declared: ${preview(isError(error) ? error.message : error)} in ${String(data.length)} compressed bytes; expected a zlib stream that inflates to at most ${preview(length)} bytes`,
+			{ code: 'EVIDENCE', cause: error },
+		)
 	}
 }
 
@@ -1350,43 +1421,70 @@ export function decodeCapturePicture(bytes: Buffer): CapturePicture {
 		bytes.toString('latin1', 12, 16) !== 'IHDR' ||
 		bytes.readUInt32BE(8) !== 13
 	)
-		throw new CaptureError('Invalid capture PNG header', { code: 'EVIDENCE' })
+		throw new CaptureError(
+			`Invalid capture PNG header: ${
+				bytes.length < 33
+					? `the file is ${String(bytes.length)} bytes`
+					: !matchesCaptureSignature(bytes)
+						? `the signature is ${bytes.toString('hex', 0, 8)}`
+						: `the first chunk is ${preview(bytes.toString('latin1', 12, 16))} with length ${String(bytes.readUInt32BE(8))}`
+			}; expected at least 33 bytes that open with the signature ${Buffer.from(CAPTURE_PNG_SIGNATURE).toString('hex')} and an IHDR chunk with length 13`,
+			{ code: 'EVIDENCE' },
+		)
+	// The header's checksum is checked before any of its fields is judged.
+	scanCaptureChunks(bytes, 8, 1)
 	const width = bytes.readUInt32BE(16)
 	const height = bytes.readUInt32BE(20)
 	const channels =
 		bytes[25] === 6 ? 4 : bytes[25] === 2 ? 3 : bytes[25] === 4 ? 2 : bytes[25] === 0 ? 1 : 0
 	const gray = bytes[25] === 0 || bytes[25] === 4
-	if (
-		width === 0 ||
-		height === 0 ||
-		channels === 0 ||
-		bytes[24] !== 8 ||
-		bytes[26] !== 0 ||
-		bytes[27] !== 0 ||
-		bytes[28] !== 0
-	)
-		throw new CaptureError('Unsupported capture PNG encoding', { code: 'EVIDENCE' })
+	if (channels === 0 || bytes[24] !== 8 || bytes[26] !== 0 || bytes[27] !== 0 || bytes[28] !== 0)
+		throw new CaptureError(
+			`Unsupported capture PNG encoding: bit depth ${String(bytes[24])}, colour type ${String(bytes[25])}, compression ${String(bytes[26])}, filter ${String(bytes[27])}, interlace ${String(bytes[28])}; expected bit depth 8, colour type 0, 2, 4, or 6, compression 0, filter 0, and interlace 0`,
+			{ code: 'EVIDENCE' },
+		)
+	const size = `${String(width)} × ${String(height)}`
+	if (width === 0 || height === 0)
+		throw new CaptureError(
+			`Invalid capture PNG dimensions: ${size}; expected a width and a height of at least 1`,
+			{ code: 'EVIDENCE' },
+		)
 	const stride = width * channels
 	const length = (stride + 1) * height
 	if (!Number.isSafeInteger(length))
-		throw new CaptureError('Invalid capture PNG dimensions', { code: 'EVIDENCE' })
+		throw new CaptureError(
+			`Invalid capture PNG dimensions: ${size} at ${String(channels)} bytes per pixel; expected scanlines of at most ${String(Number.MAX_SAFE_INTEGER)} bytes in all`,
+			{ code: 'EVIDENCE' },
+		)
 	if (width * height > CAPTURE_PNG_LIMITS.pixels)
-		throw new CaptureError('Capture PNG exceeds the pixel budget', { code: 'EVIDENCE' })
+		throw new CaptureError(
+			`Capture PNG exceeds the pixel budget: ${size} is ${String(width * height)} pixels; expected at most ${String(CAPTURE_PNG_LIMITS.pixels)} pixels`,
+			{ code: 'EVIDENCE' },
+		)
 	if (width > CAPTURE_PNG_LIMITS.side || height > CAPTURE_PNG_LIMITS.side)
-		throw new CaptureError('Capture PNG exceeds the dimension budget', { code: 'EVIDENCE' })
+		throw new CaptureError(
+			`Capture PNG exceeds the dimension budget: ${size}; expected at most ${String(CAPTURE_PNG_LIMITS.side)} pixels per side`,
+			{ code: 'EVIDENCE' },
+		)
 	const chunks = readCaptureChunks(bytes)
 	const raw = inflateCaptureStream(
 		chunks.length === 1 && chunks[0] !== undefined ? chunks[0] : Buffer.concat(chunks),
 		length,
 	)
 	if (raw.length !== length)
-		throw new CaptureError('Capture PNG scanline length differs', { code: 'EVIDENCE' })
+		throw new CaptureError(
+			`Capture PNG scanline length differs: the stream inflates to ${String(raw.length)} bytes; expected ${String(length)} bytes for ${size} at ${String(channels)} bytes per pixel and one filter byte per row`,
+			{ code: 'EVIDENCE' },
+		)
 	// Each row is written once, in order, and an unfiltered row reads the reconstructed slice above it.
 	const rows = new Uint8Array(stride * height)
 	for (const row of new Array(height).keys()) {
 		const filter = raw[row * (stride + 1)]
 		if (filter === undefined || filter > 4)
-			throw new CaptureError('Unsupported capture PNG filter', { code: 'EVIDENCE' })
+			throw new CaptureError(
+				`Unsupported capture PNG filter: type ${String(filter)} on row ${String(row)}; expected a type from 0 to 4`,
+				{ code: 'EVIDENCE' },
+			)
 		const line = raw.subarray(row * (stride + 1) + 1, (row + 1) * (stride + 1))
 		rows.set(
 			filter === 0
@@ -1708,8 +1806,10 @@ export function sumCaptureBand(
  * Scales a picture with an exact area average and clips its displayed height.
  *
  * @param picture - The source RGB picture
- * @param factor - The integer reduction factor
- * @param limit - The maximum displayed height
+ * @param factor - The reduction factor, a whole number of at least 1; any other value gives an
+ * unspecified picture
+ * @param limit - The maximum displayed height, a whole number of at least 1; any other value gives
+ * an unspecified picture
  * @returns A separately owned scaled picture
  *
  * @example
@@ -1793,13 +1893,8 @@ export function composeCapturePictures(
 		),
 		...(Number.isSafeInteger(gap) && gap >= 0 && gap <= side ? [] : [`gap is ${preview(gap)}`]),
 	]
-	const width = vertical
-		? pictures.reduce((widest, entry) => Math.max(widest, entry.width), -Infinity)
-		: pictures.reduce((sum, entry) => sum + entry.width, 0) + gap * (pictures.length - 1)
-	const height = vertical
-		? pictures.reduce((sum, entry) => sum + entry.height, 0) + gap * (pictures.length - 1)
-		: pictures.reduce((tallest, entry) => Math.max(tallest, entry.height), -Infinity)
-	if (faults.length > 0 || width > side || height > side || width * height > budget)
+	const { width, height } = computeCaptureComposite(pictures, vertical, gap)
+	if (faults.length > 0 || !matchesCaptureLimits({ width, height }))
 		throw new CaptureError(
 			`Contact-sheet geometry is out of range: ${
 				faults.length === 0
@@ -1813,19 +1908,20 @@ export function composeCapturePictures(
 			}; expected whole numbers from 0 to ${String(side)} for every width, height, and gap, and a composite of at most ${String(side)} per side and ${String(budget)} pixels`,
 			{ code: 'EVIDENCE' },
 		)
-	const offsets = pictures.map((_picture, position) =>
-		pictures
-			.slice(0, position)
-			.reduce((sum, entry) => sum + (vertical ? entry.height : entry.width) + gap, 0),
-	)
-	// Each picture owns the span from its offset to the next one; inside it, the picture's row is
-	// copied and the rest is the gray gap. Spans are written once each, in index order.
+	// Each picture's span runs from the end before it to its own: the picture's row, then gray gap.
+	const ends: number[] = []
+	for (const picture of pictures)
+		ends.push((ends.at(-1) ?? 0) + (vertical ? picture.height : picture.width) + gap)
+	// An empty span writes nothing, so dropping it bounds the row loop by the composite's width.
+	const spans = pictures
+		.map((picture, position) => ({
+			picture,
+			start: ends[position - 1] ?? 0,
+			end: Math.min(ends[position] ?? 0, vertical ? height : width),
+		}))
+		.filter((span) => span.end > span.start)
+	// Spans are written once each, in index order.
 	const pixels = new Uint8Array(width * height * 3)
-	const spans = pictures.map((picture, position) => ({
-		picture,
-		start: offsets[position] ?? 0,
-		end: Math.min(offsets[position + 1] ?? Infinity, vertical ? height : width),
-	}))
 	if (vertical) {
 		for (const { picture, start, end } of spans) {
 			for (const row of new Array(Math.max(0, end - start)).keys()) {
@@ -1852,6 +1948,108 @@ export function composeCapturePictures(
 		}
 	}
 	return { width, height, pixels }
+}
+
+/**
+ * Computes the width and height of the composite that `composeCapturePictures` builds from
+ * pictures of these sizes.
+ *
+ * @param pictures - The ordered source sizes
+ * @param vertical - If `true`, stacks them; if `false`, places them side by side
+ * @param gap - The space between source pictures. Default: 6.
+ * @returns The composite's width and height, each 0 for no pictures
+ *
+ * @example
+ * ```ts
+ * computeCaptureComposite([{ width: 4, height: 2 }, { width: 3, height: 5 }], false) // { width: 13, height: 5 }
+ * ```
+ */
+export function computeCaptureComposite(
+	pictures: ReadonlyArray<Pick<CapturePicture, 'width' | 'height'>>,
+	vertical: boolean,
+	gap = 6,
+): Pick<CapturePicture, 'width' | 'height'> {
+	const span = gap * Math.max(0, pictures.length - 1)
+	return vertical
+		? {
+				width: pictures.reduce((widest, entry) => Math.max(widest, entry.width), 0),
+				height: pictures.reduce((sum, entry) => sum + entry.height, 0) + span,
+			}
+		: {
+				width: pictures.reduce((sum, entry) => sum + entry.width, 0) + span,
+				height: pictures.reduce((tallest, entry) => Math.max(tallest, entry.height), 0),
+			}
+}
+
+/**
+ * Checks whether a picture size fits `CAPTURE_PNG_LIMITS`, per side and in pixels.
+ *
+ * @param picture - The size to check
+ * @returns True if neither side passes `CAPTURE_PNG_LIMITS.side` and the area does not pass
+ * `CAPTURE_PNG_LIMITS.pixels`; false otherwise
+ *
+ * @example
+ * ```ts
+ * matchesCaptureLimits({ width: 13040, height: 1636 }) // false
+ * ```
+ */
+export function matchesCaptureLimits(picture: Pick<CapturePicture, 'width' | 'height'>): boolean {
+	const { side, pixels } = CAPTURE_PNG_LIMITS
+	return picture.width <= side && picture.height <= side && picture.width * picture.height <= pixels
+}
+
+/**
+ * Splits contact-sheet rows into consecutive pages of at most `size` rows whose stacked composite
+ * fits `CAPTURE_PNG_LIMITS`.
+ *
+ * @remarks
+ * A page takes each next row while it holds fewer than `size` rows and the stacked composite,
+ * with `gap` between rows, still fits; otherwise the row opens the next page.
+ *
+ * @param rows - The ordered rows, each with its composite width and height
+ * @param size - The most rows a page holds
+ * @param gap - The space between stacked rows
+ * @returns The pages, in order
+ * @throws Thrown with the `USAGE` condition when one row alone does not fit `CAPTURE_PNG_LIMITS`,
+ * naming its composite, the limits, and the narrower `--variant` selection that recovers.
+ *
+ * @example
+ * ```ts
+ * splitCaptureSheets([{ width: 13040, height: 400 }, { width: 13040, height: 400 }], 4, 12).length // 1
+ * ```
+ */
+export function splitCaptureSheets<T extends Pick<CapturePicture, 'width' | 'height'>>(
+	rows: readonly T[],
+	size: number,
+	gap: number,
+): ReadonlyArray<readonly T[]> {
+	const wide = rows.find((row) => !matchesCaptureLimits(row))
+	if (wide !== undefined)
+		throw new CaptureError(
+			`Contact-sheet row is out of range: composite is ${String(wide.width)} × ${String(wide.height)}; expected at most ${String(CAPTURE_PNG_LIMITS.side)} per side and ${String(CAPTURE_PNG_LIMITS.pixels)} pixels; select fewer variants with --variant`,
+			{ code: 'USAGE' },
+		)
+	// Each record holds its page's first row and the page's stacked size through this row.
+	const marks: Array<{ readonly first: number; readonly width: number; readonly height: number }> =
+		[]
+	for (const [index, row] of rows.entries()) {
+		const last = marks.at(-1)
+		const joined =
+			last === undefined
+				? undefined
+				: {
+						first: last.first,
+						width: Math.max(last.width, row.width),
+						height: last.height + gap + row.height,
+					}
+		marks.push(
+			joined !== undefined && index - joined.first < size && matchesCaptureLimits(joined)
+				? joined
+				: { first: index, width: row.width, height: row.height },
+		)
+	}
+	const starts = marks.flatMap((mark, index) => (mark.first === index ? [index] : []))
+	return starts.map((first, page) => rows.slice(first, starts[page + 1] ?? rows.length))
 }
 
 /**
@@ -3039,11 +3237,10 @@ export function scanCaptureFrames(
 export function collectCaptureIdentical(
 	images: readonly CaptureImageResult[],
 ): ReadonlyArray<readonly string[]> {
-	return [...new Set(images.map((image) => image.digest))]
-		.map((digest) =>
-			images.filter((image) => image.digest === digest).map((image) => image.entry.file),
-		)
-		.filter((files) => files.length > 1)
+	// A group keeps the order in which its digest first appears and lists its images in input order.
+	return [...Map.groupBy(images, (image) => image.digest).values()]
+		.filter((group) => group.length > 1)
+		.map((group) => group.map((image) => image.entry.file))
 }
 
 /**
