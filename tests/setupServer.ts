@@ -252,7 +252,17 @@ export async function leaveCaptureUnconfirmed(
 	return { owner, pid: message.pid, published: message.published === true }
 }
 
-/** Leaves a real detached child and its retained ownership protocol artifact after the owner exits. */
+/**
+ * Leaves a real detached child and its retained ownership protocol artifact after the owner exits.
+ *
+ * @remarks The fixture's own ready wait has a 20 s budget, so this wait's 30 s budget outlasts it:
+ * a fixture that exits before reporting fails with its exit and its standard error, and a fixture
+ * that hangs fails with this wait's description.
+ * @param root - The workspace root
+ * @param requests - The workspace-relative request directory
+ * @returns The exited owner's process id and its surviving child's process id
+ * @throws Thrown when the fixture exits before it reports its child, or reports no child pid.
+ */
 export async function leaveCaptureSurvivor(
 	root: string,
 	requests: string,
@@ -261,10 +271,27 @@ export async function leaveCaptureSurvivor(
 	const child = fork(
 		resolve(import.meta.dirname, 'fixtures/capture/DetachedSurvivor.ts'),
 		[root, requests],
-		{ detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+		{ detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] },
+	)
+	const stderr: string[] = []
+	child.stderr?.setEncoding('utf8').on('data', (text: string) => stderr.push(text))
+	const exited = new AbortController()
+	child.once('close', (code: number | null, signal: NodeJS.Signals | null) =>
+		exited.abort(
+			new Error(
+				`The survivor fixture exited (${String(code ?? signal)}) before reporting its child:\n${stderr.join('')}`,
+			),
+		),
 	)
 	try {
-		const [message] = await once(child, 'message', { signal: AbortSignal.timeout(20_000) })
+		const [message] = await waitForEvent<readonly [unknown]>(
+			(receive) => {
+				child.once('message', receive)
+				return () => child.off('message', receive)
+			},
+			'the survivor fixture reports its child',
+			{ budget: 30_000, signal: exited.signal },
+		)
 		if (!isRecord(message) || typeof message.pid !== 'number' || child.pid === undefined)
 			throw new Error('Survivor fixture returned no child pid')
 		const closed = once(child, 'exit', { signal: AbortSignal.timeout(20_000) })

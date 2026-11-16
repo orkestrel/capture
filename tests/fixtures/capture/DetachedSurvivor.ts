@@ -27,8 +27,10 @@ detach(
 	},
 	{ workspace: root },
 )
-await waitForCondition('the detached child reports ready', () =>
-	existsSync(resolve(root, 'survivor-ready')),
+await waitForCondition(
+	'the detached child reports ready',
+	() => existsSync(resolve(root, 'survivor-ready')),
+	{ budget: 20_000 },
 )
 const pid = Number(readFileSync(resolve(root, 'survivor-ready'), 'utf8'))
 if (!Number.isSafeInteger(pid) || pid <= 0)
