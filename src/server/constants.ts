@@ -1,3 +1,54 @@
+import type { CaptureErrorCode, CaptureStatus } from '@src/core'
+
+/**
+ * Names the command that clears each refusal condition, or none where no command clears it.
+ *
+ * @remarks
+ * `registry` is the complete-registry refresh, and `journey` is the selected owner's journey, which
+ * refreshes its state lookups. A runner prints the command after the refusal; a condition with no
+ * command prints none.
+ *
+ * @example
+ * ```ts
+ * CAPTURE_RECOVERIES.REGISTRY // 'registry'
+ * ```
+ */
+export const CAPTURE_RECOVERIES: Readonly<
+	Record<CaptureErrorCode, 'registry' | 'journey' | undefined>
+> = Object.freeze({
+	USAGE: undefined,
+	SELECTION: undefined,
+	HOST: undefined,
+	STAGE: undefined,
+	EVIDENCE: undefined,
+	REGISTRY: 'registry',
+	LOOKUP: 'journey',
+	CONTAINMENT: undefined,
+})
+
+/**
+ * Names the command that clears each freshness classification, or none where no command clears it.
+ *
+ * @remarks
+ * `capture` is a frames run over the read selection. A `duplicate` or an `orphan` names a registry
+ * or a file that no frames run changes, and a `current` frame needs nothing.
+ *
+ * @example
+ * ```ts
+ * CAPTURE_STATUS_RECOVERIES['stale-own'] // 'capture'
+ * ```
+ */
+export const CAPTURE_STATUS_RECOVERIES: Readonly<Record<CaptureStatus, 'capture' | undefined>> =
+	Object.freeze({
+		current: undefined,
+		duplicate: undefined,
+		orphan: undefined,
+		missing: 'capture',
+		unstamped: 'capture',
+		'stale-shared': 'capture',
+		'stale-own': 'capture',
+	})
+
 /**
  * Names the executable subcommand each runner command answers to.
  *

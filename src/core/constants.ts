@@ -5,7 +5,9 @@
  * `USAGE` is a refused command line and exits 64; every other condition exits 1. `SELECTION`
  * names a selector, variant, case, state, or portfolio the host does not declare. `HOST` names a
  * wrapper, configuration, or declaration fault. `STAGE` names a runner stage that did not
- * complete. `EVIDENCE` names a record, report, registry, or manifest that fails its protocol.
+ * complete. `EVIDENCE` names a record, report, journal, or manifest that fails its protocol, and a
+ * document of another version. `REGISTRY` names an accepted registry that is absent, fails
+ * authentication, or lags the declarations. `LOOKUP` names a state lookup that is absent or stale.
  * `CONTAINMENT` names a path that leaves the authorized roots.
  *
  * @example
@@ -19,6 +21,8 @@ export const CAPTURE_ERROR_CODES = Object.freeze([
 	'HOST',
 	'STAGE',
 	'EVIDENCE',
+	'REGISTRY',
+	'LOOKUP',
 	'CONTAINMENT',
 ] as const)
 

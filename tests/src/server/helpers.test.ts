@@ -44,6 +44,7 @@ import {
 	requireCaptureTableEntry,
 	requireCaptureVersion,
 	matchesCaptureVersionRefusal,
+	resolveCaptureRegistryFault,
 	collectCaptureProducers,
 	requireCaptureProducer,
 	buildCaptureDiscoveryConfig,
@@ -818,6 +819,33 @@ describe('requireCaptureVersion', () => {
 			false,
 		)
 		expect(matchesCaptureVersionRefusal(undefined)).toBe(false)
+	})
+
+	it('classifies a registry read failure as REGISTRY and passes a version refusal and every other condition through', () => {
+		const version = captureError(() =>
+			requireCaptureVersion({ version: 1 }, 'Registry', file, [file]),
+		)
+		const selection = new CaptureError('Unknown portfolio: x', { code: 'SELECTION' })
+		const containment = new CaptureError('outside', { code: 'CONTAINMENT' })
+		expect([version, selection, containment].map(resolveCaptureRegistryFault)).toEqual([
+			version,
+			selection,
+			containment,
+		])
+		const evidence = new CaptureError('Invalid accepted registry schema or digest', {
+			code: 'EVIDENCE',
+		})
+		const io = new Error('EACCES: permission denied')
+		const resolved = [evidence, io, 'unreadable'].map(resolveCaptureRegistryFault)
+		expect(
+			resolved.map((error) =>
+				isCaptureError(error) ? [error.code, error.message, error.cause] : undefined,
+			),
+		).toEqual([
+			['REGISTRY', 'Invalid accepted registry schema or digest', evidence],
+			['REGISTRY', 'EACCES: permission denied', io],
+			['REGISTRY', 'unreadable', 'unreadable'],
+		])
 	})
 
 	it('joins two removals with and and one alone', () => {
@@ -2775,6 +2803,35 @@ describe('renderCaptureCommand', () => {
 		)
 	})
 
+	it('renders only the flags the rendered command declares', () => {
+		const root = process.cwd()
+		const parsed = {
+			config: resolve(root, 'wrapper.ts'),
+			variants: ['light-390'],
+			mode: 'vue',
+			case: 'mail shows inbox',
+			state: 'inbox',
+			portfolio: 'focused',
+			bail: false,
+			changed: 'HEAD',
+			plan: true,
+		}
+		expect({
+			journey: renderCaptureCommand('journey', parsed, 'pages:mail', root),
+			capture: renderCaptureCommand('capture', parsed, 'pages:mail', root),
+			stale: renderCaptureCommand('stale', parsed, 'pages:mail', root),
+			registry: renderCaptureCommand('registry', parsed, undefined, root),
+		}).toEqual({
+			journey:
+				"capture journey pages:mail --variant light-390 --mode vue --case 'mail shows inbox' --no-bail --config wrapper.ts",
+			capture:
+				"capture frames pages:mail --variant light-390 --mode vue --case 'mail shows inbox' --state inbox --no-bail --config wrapper.ts",
+			stale:
+				"capture stale pages:mail --variant light-390 --mode vue --case 'mail shows inbox' --state inbox --portfolio focused --config wrapper.ts",
+			registry: 'capture registry --variant light-390 --mode vue --no-bail --config wrapper.ts',
+		})
+	})
+
 	it('quotes a shell-sensitive case and wrapper path in the host shell syntax', () => {
 		const root = process.cwd()
 		const command = renderCaptureCommand(
@@ -3063,9 +3120,15 @@ describe('buildCaptureArguments', () => {
 				],
 			})
 			scratch.write('report.json', `${report}\n`)
-			expect(() => readCaptureTitles(scratch.path, resolve(scratch.path, 'registry.json'))).toThrow(
-				'digest differs',
-			)
+			expect(
+				captureError(() => readCaptureTitles(scratch.path, resolve(scratch.path, 'registry.json'))),
+			).toMatchObject({ code: 'REGISTRY', message: expect.stringContaining('digest differs') })
+			expect(
+				captureError(() => readCaptureTitles(scratch.path, resolve(scratch.path, 'absent.json'))),
+			).toMatchObject({
+				code: 'REGISTRY',
+				message: expect.stringContaining('Missing accepted registry'),
+			})
 		} finally {
 			scratch.destroy()
 		}

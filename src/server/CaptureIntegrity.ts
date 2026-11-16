@@ -102,6 +102,7 @@ import {
 	readCaptureLookupJournal,
 	requireCaptureProducer,
 	requireCaptureVersion,
+	resolveCaptureRegistryFault,
 } from './helpers.js'
 
 /**
@@ -555,7 +556,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 				: []
 		if (unattested.length > 0)
 			throw new CaptureError(`Unattested declared variant: ${unattested.join(', ')}`, {
-				code: 'EVIDENCE',
+				code: 'REGISTRY',
 				context: { variants: unattested },
 			})
 		const registry = this.#destinations(evidence)
@@ -675,8 +676,9 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 	 *
 	 * @param options - The original selector, producing variants, state, and optional exact case
 	 * @returns The agreed declaring case, output mappings, and validated lookup receipts
-	 * @throws Thrown when evidence is missing, stale, ambiguous, or disagrees with the selection;
-	 * the message names the explicit refresh command.
+	 * @throws Thrown when evidence is missing, stale, ambiguous, or disagrees with the selection; a
+	 * refusal of the requested state names the owner's journey refresh, and a fault in the evidence
+	 * read keeps its own message.
 	 *
 	 * @example
 	 * ```ts
@@ -730,7 +732,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 					throw new CaptureError(
 						`Missing or stale state lookup: ${entry.state} in ${entry.project}`,
 						{
-							code: 'EVIDENCE',
+							code: 'LOOKUP',
 						},
 					)
 				const stamp = evidence.manifest?.entries[resolveCaptureKey(entry)]
@@ -746,9 +748,13 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			return { case: name, entries, lookups }
 		} catch (error) {
 			if (matchesCaptureVersionRefusal(error)) throw error
+			const code = isCaptureError(error) ? error.code : 'EVIDENCE'
+			// The journey refresh answers the lookup's own refusals, never a fault in the evidence it read.
 			throw new CaptureError(
-				`${describeCaptureError(error)}. Refresh explicitly with: capture journey ${options.selector}${options.variants.map((variant) => ` --variant ${variant}`).join('')}${options.case === undefined ? '' : ` --case ${JSON.stringify(options.case)}`}. Registry declaration changes require the complete-registry refresh: capture registry.`,
-				{ code: isCaptureError(error) ? error.code : 'EVIDENCE', cause: error },
+				code === 'LOOKUP' || code === 'USAGE' || code === 'SELECTION'
+					? `${describeCaptureError(error)}. Refresh explicitly with: capture journey ${options.selector}${options.variants.map((variant) => ` --variant ${variant}`).join('')}${options.case === undefined ? '' : ` --case ${JSON.stringify(options.case)}`}. Registry declaration changes require the complete-registry refresh: capture registry.`
+					: describeCaptureError(error),
+				{ code, cause: error },
 			)
 		}
 	}
@@ -1131,49 +1137,55 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		snapshots: Map<string, CaptureFileSnapshot | undefined>,
 		paths: Map<string, string>,
 	): CaptureRegistry {
-		if (!existsSync(this.#path(this.#options.registry, paths)))
-			throw new CaptureError(
-				'Missing accepted registry; run the explicit complete-registry refresh',
-				{
-					code: 'EVIDENCE',
-				},
+		try {
+			if (!existsSync(this.#path(this.#options.registry, paths)))
+				throw new CaptureError(
+					'Missing accepted registry; run the explicit complete-registry refresh',
+					{
+						code: 'EVIDENCE',
+					},
+				)
+			const registry = this.#json(this.#options.registry, paths)
+			requireCaptureVersion(registry, 'Registry', this.#options.registry, [
+				this.#options.registry,
+				this.#options.manifest,
+				this.#options.lookups,
+			])
+			if (
+				!isCaptureRegistry(registry) ||
+				registry.digest !== computeRegistryDigest(registry) ||
+				registry.receipts.length === 0
 			)
-		const registry = this.#json(this.#options.registry, paths)
-		requireCaptureVersion(registry, 'Registry', this.#options.registry, [
-			this.#options.registry,
-			this.#options.manifest,
-			this.#options.lookups,
-		])
-		if (
-			!isCaptureRegistry(registry) ||
-			registry.digest !== computeRegistryDigest(registry) ||
-			registry.receipts.length === 0
-		)
-			throw new CaptureError('Invalid accepted registry schema or digest', { code: 'EVIDENCE' })
-		requireCaptureUnique(
-			registry.receipts.map((receipt) => receipt.variant),
-			'complete receipt variants',
-			true,
-		)
-		for (const receipt of registry.receipts) {
-			const report = this.#file(receipt.report.file, snapshots, paths)
-			if (!receipt.complete || report?.image.digest !== receipt.report.digest)
-				throw new CaptureError('Registry receipt is incomplete or its report changed', {
+				throw new CaptureError('Invalid accepted registry schema or digest', { code: 'EVIDENCE' })
+			requireCaptureUnique(
+				registry.receipts.map((receipt) => receipt.variant),
+				'complete receipt variants',
+				true,
+			)
+			for (const receipt of registry.receipts) {
+				const report = this.#file(receipt.report.file, snapshots, paths)
+				if (!receipt.complete || report?.image.digest !== receipt.report.digest)
+					throw new CaptureError('Registry receipt is incomplete or its report changed', {
+						code: 'EVIDENCE',
+					})
+				validateCaptureReceipt(receipt, readCaptureReport(this.#json(receipt.report.file, paths)))
+				for (const path of Object.keys(receipt.inputs)) this.#path(path, paths)
+				requireCaptureUnique(Object.keys(receipt.inputs), 'receipt input paths', true)
+			}
+			if (
+				!matchesCaptureMembers(
+					registry.entries.map(describeCaptureDestination),
+					registry.receipts.flatMap((receipt) => receipt.registry.map(describeCaptureDestination)),
+				)
+			)
+				throw new CaptureError('Registry entries differ from complete receipts', {
 					code: 'EVIDENCE',
 				})
-			validateCaptureReceipt(receipt, readCaptureReport(this.#json(receipt.report.file, paths)))
-			for (const path of Object.keys(receipt.inputs)) this.#path(path, paths)
-			requireCaptureUnique(Object.keys(receipt.inputs), 'receipt input paths', true)
+			for (const entry of registry.entries) this.#destination(entry, paths)
+			return registry
+		} catch (error) {
+			throw resolveCaptureRegistryFault(error)
 		}
-		if (
-			!matchesCaptureMembers(
-				registry.entries.map(describeCaptureDestination),
-				registry.receipts.flatMap((receipt) => receipt.registry.map(describeCaptureDestination)),
-			)
-		)
-			throw new CaptureError('Registry entries differ from complete receipts', { code: 'EVIDENCE' })
-		for (const entry of registry.entries) this.#destination(entry, paths)
-		return registry
 	}
 
 	#evidence(snapshots: Map<string, CaptureFileSnapshot | undefined>): CaptureEvidence {
@@ -1313,7 +1325,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 			)
 				throw new CaptureError(
 					'Collected registry declarations changed; run the explicit complete-registry refresh',
-					{ code: 'EVIDENCE' },
+					{ code: 'REGISTRY' },
 				)
 		} else if (
 			!evidence.registry.receipts.some(
@@ -1322,7 +1334,7 @@ export class CaptureIntegrity implements CaptureIntegrityInterface {
 		) {
 			throw new CaptureError(
 				'Unattested producing variant; run the explicit complete-registry refresh before its owner lookup refresh',
-				{ code: 'EVIDENCE', context: { variant: run.variant } },
+				{ code: 'REGISTRY', context: { variant: run.variant } },
 			)
 		}
 	}

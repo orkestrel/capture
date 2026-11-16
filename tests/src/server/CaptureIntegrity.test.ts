@@ -817,7 +817,10 @@ describe('CaptureIntegrity atomic stage refusals', { timeout: FIXTURE_TIMEOUT },
 			fixture.write('behavior/journeys.ts', '// changed before first desktop collection\n')
 			await expect(
 				fixture.capture({ command: 'journey', selector: 'pages:mail', variants: ['light-1280'] }),
-			).rejects.toThrow('Unattested producing variant')
+			).rejects.toMatchObject({
+				code: 'REGISTRY',
+				message: expect.stringContaining('Unattested producing variant'),
+			})
 			expect(readFixtureManifest(fixture.root)).toBe(before)
 		} finally {
 			fixture.destroy()
@@ -1648,7 +1651,7 @@ describe('CaptureIntegrity refusal conditions', { timeout: FIXTURE_TIMEOUT }, ()
 			await expect(fixture.capture({ fault: 'identity' })).rejects.toSatisfy(isCaptureError)
 			const quiet = new IntegrityFixture({ core, server })
 			try {
-				await expect(quiet.engine.read(MAIL_LIGHT)).rejects.toMatchObject({ code: 'EVIDENCE' })
+				await expect(quiet.engine.read(MAIL_LIGHT)).rejects.toMatchObject({ code: 'REGISTRY' })
 				expect(
 					captureError(
 						() => new CaptureIntegrity({ ...quiet.options, manifest: '../escape.json' }),
@@ -1661,6 +1664,43 @@ describe('CaptureIntegrity refusal conditions', { timeout: FIXTURE_TIMEOUT }, ()
 				quiet.destroy()
 			}
 		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('classifies registry faults under REGISTRY and a stale lookup under LOOKUP, and names the journey only for a lookup', async () => {
+		const absent = new IntegrityFixture({ core, server })
+		const fixture = new IntegrityFixture({ core, server })
+		try {
+			const lookup = { selector: 'pages:mail', state: 'mail-screen', variants: ['light-390'] }
+			const missing: unknown = await absent.engine.lookup(lookup).catch((error: unknown) => error)
+			expect({
+				code: isCaptureError(missing) && missing.code,
+				message: isCaptureError(missing) && missing.message,
+			}).toEqual({
+				code: 'REGISTRY',
+				message: 'Missing accepted registry; run the explicit complete-registry refresh',
+			})
+			absent.write(absent.options.registry, '{')
+			await expect(absent.engine.check(MAIL_LIGHT)).rejects.toMatchObject({
+				code: 'REGISTRY',
+				message: `Invalid JSON document: ${absent.options.registry}`,
+			})
+			fixture.seed()
+			await expect(fixture.engine.lookup(lookup)).rejects.toMatchObject({
+				code: 'LOOKUP',
+				message: expect.stringContaining(
+					'Missing or stale state lookup: mail-screen in journey:light-390. Refresh explicitly with: capture journey pages:mail --variant light-390.',
+				),
+			})
+			await expect(
+				fixture.engine.check({ selector: 'pages:mail', declared: [...VARIANTS, 'light-320'] }),
+			).rejects.toMatchObject({
+				code: 'REGISTRY',
+				message: 'Unattested declared variant: light-320',
+			})
+		} finally {
+			absent.destroy()
 			fixture.destroy()
 		}
 	})
@@ -1714,9 +1754,10 @@ describe('CaptureIntegrity refusal conditions', { timeout: FIXTURE_TIMEOUT }, ()
 				JSON.stringify({ ...raw, digest: computeRegistryDigest(raw) }),
 			)
 			const failure: unknown = await fixture.engine.lookup(lookup).catch((error: unknown) => error)
+			// A journey refresh leaves the duplicated registry claim in place, so the refusal names none.
 			expect(isCaptureError(failure) && failure.code).toBe('EVIDENCE')
 			expect(isCaptureError(failure) && failure.message).toBe(
-				'Destination has no unique producing variant. Refresh explicitly with: capture journey pages:mail --variant light-390. Registry declaration changes require the complete-registry refresh: capture registry.',
+				'Destination has no unique producing variant',
 			)
 			// A read refuses the repeated destination before it attributes any producer.
 			await expect(fixture.engine.read({ selector: 'all' })).rejects.toThrow(
@@ -1893,7 +1934,10 @@ describe('CaptureIntegrity registry reading', { timeout: FIXTURE_TIMEOUT }, () =
 				fixture.write('behavior/journeys.ts', '// edited collection producer\n')
 				await expect(
 					fixture.capture({ command: 'journey', selector: 'examples:board', population }),
-				).rejects.toThrow('Collected registry declarations changed')
+				).rejects.toMatchObject({
+					code: 'REGISTRY',
+					message: expect.stringContaining('Collected registry declarations changed'),
+				})
 				expect(fixture.read(fixture.options.registry)).toEqual(anchor)
 				expect(fixture.read(fixture.options.lookups)).toEqual(journal)
 				await expect(

@@ -1,6 +1,6 @@
 import * as core from '@src/core'
 import * as server from '@src/server'
-import { mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRecord, parseJSON } from '@orkestrel/contract'
 import { isRunning } from '@orkestrel/test/server'
@@ -27,6 +27,9 @@ import {
 	startSleeper,
 	stopFixtureChild,
 	BOARD,
+	CAPTURE_DOCUMENT_FAULTS,
+	CAPTURE_STALE_STATUSES,
+	editCaptureFreshness,
 	COMPOSED_DIRECTORY,
 	COMPOSED_FIRST,
 	COMPOSED_OWNERS,
@@ -291,7 +294,7 @@ describe.each(RUNNER_COMMANDS)(
 			expect(args).toContain(
 				`--outputFile.progress=${resolve(base.root, base.requests, 'runs', readCaptureInvocationId(run.stdout), `${stage}.progress.jsonl`)}`,
 			)
-			expect(run.stdout).toContain(`NEXT capture journey all --config`)
+			expect(run.stdout).toContain(`NEXT capture journey all --variant ${COMPOSED_FIRST} --config`)
 		})
 
 		it('selects an owner and its capture tag, and the union of declared scopes for all', async () => {
@@ -365,6 +368,8 @@ describe.each(RUNNER_COMMANDS)(
 			])
 			expect(run.code).toBe(1)
 			expect(run.stderr).toContain('Empty selected workload')
+			// Rerunning the same selection holds the same empty workload, so no line names it.
+			expect(readCaptureRecoveries(run)).toEqual({ code: 1, stdout: [], stderr: [] })
 			expect(readCaptureHeld(base.root, base.requests)).toEqual([])
 		})
 
@@ -499,11 +504,8 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 			expect(run.stderr).toContain(
 				'Missing accepted registry; run the explicit complete-registry refresh',
 			)
-			expect(run.stderr).toContain(`NEXT capture registry --config '${fixture.config}'`)
-			// The refusal's own recovery is the registry refresh, then the complete journey, once each.
 			expect(run.stderr.split('\n').filter((line) => line.startsWith('NEXT '))).toEqual([
 				`NEXT capture registry --config '${fixture.config}'`,
-				`NEXT capture journey all --config '${fixture.config}'`,
 			])
 			expect(fixture.stages).toEqual([])
 		} finally {
@@ -1133,53 +1135,21 @@ describe('CaptureRunner NEXT lines', { timeout: FIXTURE_TIMEOUT }, () => {
 	const config = `--config '${base.config}'`
 	const flags = `--variant light-1280 ${config}`
 
-	it('prints the complete journey on stderr after a usage refusal', async () => {
+	it('prints no NEXT line after a usage refusal', async () => {
 		expect(readCaptureRecoveries(await base.run('journey', ['missing']))).toEqual({
 			code: 64,
 			stdout: [],
-			stderr: [`NEXT capture journey all ${config}`],
+			stderr: [],
 		})
 	})
 
-	it('prints the complete journey on stderr after an evidence refusal before any stage', async () => {
-		const fixture = new ComposedFixture({ core, server })
-		try {
-			const run = await fixture.run('journey', ['pages:mail', '--case', 'no such case'])
-			expect(run.stderr).toContain('Missing accepted registry')
-			expect(readCaptureRecoveries(run)).toEqual({
-				code: 1,
-				stdout: [],
-				stderr: [`NEXT capture journey all ${config}`],
-			})
-		} finally {
-			fixture.destroy()
-		}
-	})
-
-	it('prints the registry refresh then the complete journey on stderr after a refused changed selection under EVIDENCE', async () => {
-		const fixture = new ComposedFixture({ core, server }, { committed: true })
-		try {
-			expect(readCaptureRecoveries(await fixture.run('journey', ['--changed', 'HEAD']))).toEqual({
-				code: 1,
-				stdout: [],
-				stderr: [`NEXT capture registry ${config}`, `NEXT capture journey all ${config}`],
-			})
-		} finally {
-			fixture.destroy()
-		}
-	})
-
-	it('prints the complete journey on stderr after a refused changed selection under HOST', async () => {
+	it('prints no NEXT line on either stream after a refused changed selection under HOST', async () => {
 		const fixture = new ComposedFixture({ core, server }, { committed: true })
 		try {
 			fixture.seed()
 			const run = await fixture.run('journey', ['--changed', 'missing-ref'])
 			expect(run.stderr).toContain('Git read failed')
-			expect(readCaptureRecoveries(run)).toEqual({
-				code: 1,
-				stdout: [],
-				stderr: [`NEXT capture journey all ${config}`],
-			})
+			expect(readCaptureRecoveries(run)).toEqual({ code: 1, stdout: [], stderr: [] })
 		} finally {
 			fixture.destroy()
 		}
@@ -1196,11 +1166,19 @@ describe('CaptureRunner NEXT lines', { timeout: FIXTURE_TIMEOUT }, () => {
 		})
 	})
 
-	it('prints the complete journey on stdout after a passing single run', async () => {
+	it('prints the complete journey with the run variant on stdout after a passing single run', async () => {
 		const run = await base.run('journey', ['pages:mail', '--variant', COMPOSED_FIRST])
 		expect(readCaptureRecoveries(run)).toEqual({
 			code: 0,
-			stdout: [`NEXT capture journey all ${config}`],
+			stdout: [`NEXT capture journey all --variant ${COMPOSED_FIRST} ${config}`],
+			stderr: [],
+		})
+	})
+
+	it('prints no NEXT line after a passing complete journey, whose closing command is itself', async () => {
+		expect(readCaptureRecoveries(await base.run('journey', ['all']))).toEqual({
+			code: 0,
+			stdout: [],
 			stderr: [],
 		})
 	})
@@ -1350,6 +1328,322 @@ describe('CaptureRunner NEXT lines', { timeout: FIXTURE_TIMEOUT }, () => {
 				code: 64,
 				stdout: [`NEXT capture journey pages:mail ${flags}`, `NEXT capture journey all ${flags}`],
 				stderr: [],
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+})
+
+// Each row reads the NEXT lines of a refusal whose condition has a clearing command, runs that
+// command, and reruns the refused invocation; the control reruns it with no refresh in between.
+describe('CaptureRunner recoveries', { timeout: FIXTURE_TIMEOUT }, () => {
+	const config = `--config '${base.config}'`
+	const registry = `NEXT capture registry ${config}`
+
+	it.each(RUNNER_COMMANDS)(
+		'prints the registry refresh on stdout when %s finds no registry, and the refresh clears it',
+		async (command) => {
+			const fixture = new ComposedFixture({ core, server })
+			try {
+				const first = await fixture.run(command, ['pages:mail'])
+				const control = await fixture.run(command, ['pages:mail'])
+				expect(readCaptureRecoveries(first)).toEqual({ code: 1, stdout: [registry], stderr: [] })
+				expect([control.stderr, readCaptureRecoveries(control)]).toEqual([
+					first.stderr,
+					readCaptureRecoveries(first),
+				])
+				expect((await fixture.refresh()).code).toBe(0)
+				const rerun = await fixture.run(command, ['pages:mail'])
+				expect(rerun.code === 0 ? 0 : rerun.stderr).toBe(0)
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+
+	it('prints the registry refresh on stderr when stale finds no registry, and the refresh clears it', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			const first = await fixture.run('stale', ['pages:mail'])
+			const control = await fixture.run('stale', ['pages:mail'])
+			expect(readCaptureRecoveries(first)).toEqual({ code: 1, stdout: [], stderr: [registry] })
+			expect([control.stderr, readCaptureRecoveries(control)]).toEqual([
+				first.stderr,
+				readCaptureRecoveries(first),
+			])
+			expect((await fixture.refresh()).code).toBe(0)
+			// The refreshed registry declares frames no run has captured, which the frames line clears.
+			const read = await fixture.run('stale', ['pages:mail'])
+			expect({ stderr: read.stderr, next: readCaptureRecoveries(read) }).toEqual({
+				stderr: '',
+				next: { code: 1, stdout: [`NEXT capture frames pages:mail ${config}`], stderr: [] },
+			})
+			expect((await fixture.run('capture', ['pages:mail'])).code).toBe(0)
+			expect((await fixture.run('stale', ['pages:mail'])).code).toBe(0)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints the registry refresh alone on stderr when a case is checked with no registry', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			const args = ['pages:mail', '--case', MAIL]
+			const first = await fixture.run('journey', args)
+			const control = await fixture.run('journey', args)
+			expect(readCaptureRecoveries(first)).toEqual({ code: 1, stdout: [], stderr: [registry] })
+			expect([control.stderr, readCaptureRecoveries(control)]).toEqual([
+				first.stderr,
+				readCaptureRecoveries(first),
+			])
+			expect((await fixture.refresh()).code).toBe(0)
+			const rerun = await fixture.run('journey', args)
+			expect(rerun.code === 0 ? 0 : rerun.stderr).toBe(0)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it.each([{ flags: [] }, { flags: ['--plan'] }])(
+		'prints the registry refresh alone on stderr when a changed selection $flags finds no registry',
+		async ({ flags }) => {
+			const fixture = new ComposedFixture({ core, server }, { committed: true })
+			try {
+				fixture.write('src/mail/view.ts', '// changed mail source\n')
+				const args = ['--changed', 'HEAD', ...flags]
+				const first = await fixture.run('journey', args)
+				const control = await fixture.run('journey', args)
+				expect(readCaptureRecoveries(first)).toEqual({ code: 1, stdout: [], stderr: [registry] })
+				expect([control.stderr, readCaptureRecoveries(control)]).toEqual([
+					first.stderr,
+					readCaptureRecoveries(first),
+				])
+				expect((await fixture.refresh()).code).toBe(0)
+				const rerun = await fixture.run('journey', args)
+				expect(rerun.code === 0 ? 0 : rerun.stderr).toBe(0)
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+
+	it('prints the registry refresh after an invalid registry on each stream, and the refresh clears it', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			fixture.write(`${COMPOSED_DIRECTORY}/registry.json`, '{"version":2,"receipts":"none"}')
+			const journey = await fixture.run('journey', ['pages:mail'])
+			const stale = await fixture.run('stale', ['pages:mail'])
+			expect(journey.stdout).toContain('"reason":"refused before execution"')
+			expect([readCaptureRecoveries(journey), readCaptureRecoveries(stale)]).toEqual([
+				{ code: 1, stdout: [registry], stderr: [] },
+				{ code: 1, stdout: [], stderr: [registry] },
+			])
+			expect((await fixture.refresh()).code).toBe(0)
+			const rerun = await fixture.run('journey', ['pages:mail'])
+			expect(rerun.code === 0 ? 0 : rerun.stderr).toBe(0)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints the registry refresh after an unattested declared variant, and the refresh clears the refusal', async () => {
+		const attested = VARIANTS.filter((variant) => variant !== 'light-1280')
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			fixture.seed({ variants: attested })
+			await fixture.capture({ variants: attested })
+			const first = await fixture.run('stale', ['examples:board'])
+			const control = await fixture.run('stale', ['examples:board'])
+			expect(first.stderr).toContain('Unattested declared variant: light-1280')
+			expect(readCaptureRecoveries(first)).toEqual({ code: 1, stdout: [], stderr: [registry] })
+			expect([control.stderr, readCaptureRecoveries(control)]).toEqual([
+				first.stderr,
+				readCaptureRecoveries(first),
+			])
+			expect((await fixture.refresh()).code).toBe(0)
+			const read = await fixture.run('stale', ['examples:board'])
+			expect({ stderr: read.stderr, next: readCaptureRecoveries(read) }).toEqual({
+				stderr: '',
+				next: { code: 1, stdout: [`NEXT capture frames examples:board ${config}`], stderr: [] },
+			})
+			expect((await fixture.run('capture', ['examples:board'])).code).toBe(0)
+			expect((await fixture.run('stale', ['examples:board'])).code).toBe(0)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints the owner journey on stderr after a stale state lookup, and the journey clears it', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			fixture.seed()
+			const args = ['pages:mail', '--state', 'mail-reader']
+			const first = await fixture.run('capture', args)
+			const control = await fixture.run('capture', args)
+			expect(first.stderr).toContain('Missing or stale state lookup')
+			expect(readCaptureRecoveries(first)).toEqual({
+				code: 1,
+				stdout: [],
+				stderr: [`NEXT capture journey pages:mail ${config}`],
+			})
+			expect([control.stderr, readCaptureRecoveries(control)]).toEqual([
+				first.stderr,
+				readCaptureRecoveries(first),
+			])
+			expect((await fixture.run('journey', ['pages:mail'])).code).toBe(0)
+			const rerun = await fixture.run('capture', args)
+			expect(rerun.code === 0 ? 0 : rerun.stderr).toBe(0)
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it.each(CAPTURE_DOCUMENT_FAULTS)(
+		'prints no NEXT line after $title, and names the file',
+		async (row) => {
+			const fixture = new ComposedFixture({ core, server })
+			try {
+				fixture.seed()
+				expect((await fixture.run('journey', ['pages:mail'])).code).toBe(0)
+				fixture.write(`${COMPOSED_DIRECTORY}/${row.file}`, row.text)
+				const run = await fixture.run('capture', ['pages:mail'])
+				expect(run.stderr).toContain(`${COMPOSED_DIRECTORY}/${row.file}`)
+				expect(readCaptureRecoveries(run)).toEqual({ code: 1, stdout: [], stderr: [] })
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+
+	it('reaches the SUMMARY and names the unrun owner after a host refusal between the owners of a changed run', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			fixture.seed({ variants: ['light-1280'] })
+			fixture.write('src/board/view.ts', '// board\n')
+			fixture.write('src/mail/view.ts', '// mail\n')
+			const requests = resolve(fixture.root, fixture.requests)
+			const stdout: string[] = []
+			const stderr: string[] = []
+			const code = await createCaptureRunner({
+				command: 'journey',
+				root: fixture.root,
+				config: fixture.config,
+				requests: fixture.requests,
+				argv: ['--changed', 'HEAD', '--variant', 'light-1280'],
+				stdout: (text) => {
+					stdout.push(text)
+					// The first owner has passed; the next owner's request directory is a file.
+					if (text.startsWith('STAGES ') && text.includes('"selector":"examples:board"')) {
+						rmSync(requests, { recursive: true, force: true })
+						writeFileSync(requests, 'not a directory\n')
+					}
+				},
+				stderr: (text) => stderr.push(text),
+			}).execute()
+			const run = { code, stdout: stdout.join(''), stderr: stderr.join('') }
+			expect(run.stderr).toContain('Capture request directory is unavailable')
+			expect(fixture.stages.map((request) => request.selector)).toEqual(['examples:board'])
+			expect(run.stdout).toContain(
+				`SUMMARY ${JSON.stringify({ run: ['examples:board'], passed: ['examples:board'], failed: ['pages:mail'], notrun: ['pages:mail'], reason: 'stopped at the first red owner' })}\n`,
+			)
+			expect(readCaptureRecoveries(run)).toEqual({
+				code: 1,
+				stdout: [`NEXT capture journey pages:mail --variant light-1280 ${config}`],
+				stderr: [],
+			})
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints the same complete journey after a passing single run and a passing changed run with --variant and --mode', async () => {
+		const fixture = new ComposedFixture({ core, server }, { committed: true })
+		try {
+			fixture.seed({ variants: ['light-1280'] })
+			fixture.write('src/mail/view.ts', '// mail\n')
+			const flags = ['--variant', 'light-1280', '--mode', 'vue']
+			const single = await fixture.run('journey', ['pages:mail', ...flags])
+			const changed = await fixture.run('journey', ['--changed', 'HEAD', ...flags])
+			const complete = {
+				code: 0,
+				stdout: [`NEXT capture journey all --variant light-1280 --mode vue ${config}`],
+				stderr: [],
+			}
+			expect([readCaptureRecoveries(single), readCaptureRecoveries(changed)]).toEqual([
+				complete,
+				complete,
+			])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it.each(CAPTURE_STALE_STATUSES)(
+		'prints the frames refresh without --variant after the %s reading, and the frames run clears it',
+		async (status) => {
+			const fixture = new ComposedFixture({ core, server })
+			try {
+				fixture.seed()
+				expect((await fixture.run('capture', ['all'])).code).toBe(0)
+				editCaptureFreshness(fixture, status)
+				const args = ['pages:mail', '--variant', COMPOSED_FIRST]
+				const first = await fixture.run('stale', args)
+				expect(readCaptureRunnerStatuses(first.stdout)).toContain(status)
+				expect(readCaptureRecoveries(first)).toEqual({
+					code: 1,
+					stdout: [`NEXT capture frames pages:mail ${config}`],
+					stderr: [],
+				})
+				// The frames line follows the report it recovers.
+				expect(
+					first.stdout
+						.trimEnd()
+						.split('\n')
+						.slice(-2)
+						.map((line) => line.slice(0, line.indexOf(' '))),
+				).toEqual(['INTEGRITY', 'NEXT'])
+				expect((await fixture.run('capture', ['pages:mail'])).code).toBe(0)
+				expect((await fixture.run('stale', args)).code).toBe(0)
+			} finally {
+				fixture.destroy()
+			}
+		},
+	)
+
+	it('prints no frames line after an orphan-only, a standalone, or a current reading', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			fixture.seed()
+			expect((await fixture.run('capture', ['all'])).code).toBe(0)
+			const current = await fixture.run('stale', ['pages:mail'])
+			fixture.write(
+				'tmp/captures/states/pages/unknown--light-390.png',
+				fixture.read('tmp/captures/states/pages/mail-screen--light-390.png'),
+			)
+			const orphan = await fixture.run('stale', ['pages', '--variant', COMPOSED_FIRST])
+			fixture.seed({ vue: true })
+			const standalone = await fixture.run('stale', ['vue'])
+			expect(
+				[orphan, standalone].map((run) => new Set(readCaptureRunnerStatuses(run.stdout))),
+			).toEqual([new Set(['current', 'orphan']), new Set(['unstamped'])])
+			expect([current, orphan, standalone].map((run) => readCaptureRecoveries(run))).toEqual([
+				{ code: 0, stdout: [], stderr: [] },
+				{ code: 1, stdout: [], stderr: [] },
+				{ code: 1, stdout: [], stderr: [] },
+			])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('prints the stale refusal, then the stage line, then its NEXT line', async () => {
+		const fixture = new ComposedFixture({ core, server })
+		try {
+			const run = await fixture.run('stale', ['pages:mail'])
+			expect({ code: run.code, stderr: run.stderr }).toEqual({
+				code: 1,
+				stderr: `Missing accepted registry; run the explicit complete-registry refresh\nNo execution child ran; the command was refused before execution.\n${registry}\n`,
 			})
 		} finally {
 			fixture.destroy()

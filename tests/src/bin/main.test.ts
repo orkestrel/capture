@@ -156,7 +156,8 @@ describe('bin entry', { timeout: FIXTURE_TIMEOUT }, () => {
 			const run = executeCaptureBinary(fixture, argv)
 			expect(run.status).toBe(64)
 			expect(fixture.stages).toHaveLength(before)
-			expect(run.stderr).toContain('NEXT capture')
+			// A usage refusal names its correction in its text and prints no command line.
+			expect(run.stdout + run.stderr).not.toContain('NEXT ')
 		}
 	})
 

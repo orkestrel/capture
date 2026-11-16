@@ -9,6 +9,7 @@ import type {
 	CaptureRequest,
 	CaptureRun,
 	CaptureExpandedManifest,
+	CaptureStatus,
 	CaptureViewport,
 } from '@src/core'
 import type { ExecuteResult, ProcessCommand } from '@orkestrel/process'
@@ -4586,6 +4587,55 @@ export function readCaptureRecoveries(run: ComposedRun) {
 		code: run.code,
 		stdout: run.stdout.split(/\r\n|\n/u).filter((line) => line.startsWith('NEXT ')),
 		stderr: run.stderr.split(/\r\n|\n/u).filter((line) => line.startsWith('NEXT ')),
+	}
+}
+
+/** Describes one malformed portfolio document: the row title, the file in the portfolio, and its bytes. */
+export interface CaptureDocumentFault {
+	readonly title: string
+	readonly file: string
+	readonly text: string
+}
+
+/** Lists the malformed manifest and lookup journal documents a frames run refuses by naming the file. */
+export const CAPTURE_DOCUMENT_FAULTS: readonly CaptureDocumentFault[] = Object.freeze([
+	{ title: 'an unparsable manifest', file: 'manifest.json', text: '{' },
+	{ title: 'a schema-invalid manifest', file: 'manifest.json', text: '{"version":2}' },
+	{ title: 'a schema-invalid lookup journal', file: 'lookups.json', text: '{"version":2}' },
+])
+
+/** Lists the freshness classifications that a frames run over the read selection clears. */
+export const CAPTURE_STALE_STATUSES = Object.freeze([
+	'stale-own',
+	'stale-shared',
+	'missing',
+	'unstamped',
+] as const satisfies readonly CaptureStatus[])
+
+/**
+ * Edits a composed workspace whose `pages:mail` frames are current, so a reading of them reports the
+ * status.
+ *
+ * @param fixture - The workspace whose frames a capture made current
+ * @param status - The classification the reading reports for the first variant's mail screen
+ */
+export function editCaptureFreshness(
+	fixture: ComposedFixture,
+	status: (typeof CAPTURE_STALE_STATUSES)[number],
+): void {
+	const image = `${COMPOSED_DIRECTORY}/pages/mail-screen--${COMPOSED_FIRST}.png`
+	switch (status) {
+		case 'stale-own':
+			fixture.write('src/mail/view.ts', '// own edit\n')
+			return
+		case 'stale-shared':
+			fixture.write('src/shared/theme.ts', '// shared edit\n')
+			return
+		case 'missing':
+			removeCaptureFixtureFile(fixture, image)
+			return
+		case 'unstamped':
+			fixture.write(image, fixture.read(`${COMPOSED_DIRECTORY}/pages/mail-screen--dark-390.png`))
 	}
 }
 

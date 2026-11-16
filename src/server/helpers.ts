@@ -215,8 +215,13 @@ export function buildCaptureChangePlan(
 /**
  * Renders an exact owner command with the selected variants and filters in host shell syntax.
  *
+ * @remarks
+ * A flag is rendered only when the rendered command's `CAPTURE_COMMAND_OPTIONS` entry declares it,
+ * so a journey drops `--state`, a registry refresh drops `--case`, and only `stale` keeps
+ * `--portfolio`. `--changed` and `--plan` are never rendered.
+ *
  * @param command - The request command, translated to its executable name, or the registry command
- * @param parsed - The parsed flags, a `false` bail rendered as `--no-bail` on every command but `stale`; changed and plan flags are deliberately replaced by the owner
+ * @param parsed - The parsed flags, a `false` bail rendered as `--no-bail`; changed and plan flags are deliberately replaced by the owner
  * @param selector - The explicit owner or all selector; omitted for a registry refresh
  * @param root - The workspace that makes the wrapper path relative
  * @returns The command ready to copy into the host shell
@@ -233,19 +238,29 @@ export function renderCaptureCommand(
 	root: string,
 ): string {
 	const config = resolveCaptureRelative(root, parsed.config)
+	const options = CAPTURE_COMMAND_OPTIONS[command]
 	return [
 		'capture',
 		command === 'registry' ? command : CAPTURE_COMMAND_NAMES[command],
 		...(selector === undefined ? [] : [selector]),
-		...parsed.variants.flatMap((variant) => ['--variant', variant]),
-		...(parsed.mode === undefined ? [] : ['--mode', parsed.mode]),
-		...(parsed.case === undefined
+		...(Object.hasOwn(options, 'variant')
+			? parsed.variants.flatMap((variant) => ['--variant', variant])
+			: []),
+		...(parsed.mode === undefined || !Object.hasOwn(options, 'mode')
+			? []
+			: ['--mode', parsed.mode]),
+		...(parsed.case === undefined || !Object.hasOwn(options, 'case')
 			? []
 			: parsed.case.startsWith('-')
 				? [`--case=${parsed.case}`]
 				: ['--case', parsed.case]),
-		...(parsed.state === undefined ? [] : ['--state', parsed.state]),
-		...(parsed.bail === false && command !== 'stale' ? ['--no-bail'] : []),
+		...(parsed.state === undefined || !Object.hasOwn(options, 'state')
+			? []
+			: ['--state', parsed.state]),
+		...(parsed.portfolio === undefined || !Object.hasOwn(options, 'portfolio')
+			? []
+			: ['--portfolio', parsed.portfolio]),
+		...(parsed.bail === false && Object.hasOwn(options, 'bail') ? ['--no-bail'] : []),
 		...(config.startsWith('-') ? [`--config=${config}`] : ['--config', config]),
 	]
 		.map((argument) =>
@@ -947,6 +962,30 @@ export function matchesCaptureVersionRefusal(error: unknown): boolean {
 		typeof error.context?.file === 'string' &&
 		typeof error.context.version === 'number'
 	)
+}
+
+/**
+ * Classifies a failure raised while reading the accepted registry as the registry condition.
+ *
+ * @remarks
+ * The complete-registry refresh clears every such failure but a document of another version, whose
+ * refusal names its own removal and refresh.
+ *
+ * @param error - The value a registry read threw
+ * @returns A `REGISTRY` capture error with the same message and the original as its cause, for a
+ * value that is not a capture error or is an `EVIDENCE` capture error other than a version refusal;
+ * otherwise the value itself
+ *
+ * @example
+ * ```ts
+ * resolveCaptureRegistryFault(new CaptureError('Invalid accepted registry schema or digest', { code: 'EVIDENCE' })) // a REGISTRY capture error
+ * resolveCaptureRegistryFault(new CaptureError('Unknown portfolio: x', { code: 'SELECTION' })) // the same error
+ * ```
+ */
+export function resolveCaptureRegistryFault(error: unknown): unknown {
+	return isCaptureError(error) && (error.code !== 'EVIDENCE' || matchesCaptureVersionRefusal(error))
+		? error
+		: new CaptureError(describeCaptureError(error), { code: 'REGISTRY', cause: error })
 }
 
 /**
@@ -2295,7 +2334,9 @@ export function readCaptureSeparator(entry: string): string {
  * @param selector - The optional owner selector that bounds the case candidates
  * @returns Exact case names mapped to their original title segments within the selected owners
  * @throws Thrown with the removal of the registry and the manifest and lookup journal beside it,
- * and the refresh commands, when the registry declares another protocol version.
+ * and the refresh commands, when the registry declares another protocol version; thrown as a
+ * `REGISTRY` capture error when the registry or a reporter it names is absent, unreadable, or fails
+ * authentication.
  * @example
  * ```ts
  * const titles = readCaptureTitles('/workspace', '/workspace/tmp/captures/states/registry.json')
@@ -2306,64 +2347,68 @@ export function readCaptureTitles(
 	file: string,
 	selector?: string,
 ): Readonly<Record<string, readonly string[]>> {
-	const path = requireCaptureContained(root, file)
-	const loaded = attempt(() => readFileSync(path, 'utf8'))
-	if (!loaded.success)
-		throw new CaptureError(
-			`Missing accepted registry; run the explicit complete-registry refresh: capture registry. Registry path: ${file}`,
-			{ code: 'EVIDENCE', cause: loaded.error },
-		)
-	const registry: unknown = parseJSON(loaded.value)
-	requireCaptureVersion(registry, 'Registry', file, [
-		file,
-		resolve(dirname(file), CAPTURE_MANIFEST_FILE),
-		resolve(dirname(file), CAPTURE_LOOKUPS_FILE),
-	])
-	if (!isCaptureRegistry(registry))
-		throw new CaptureError('Invalid accepted registry for case titles', { code: 'EVIDENCE' })
-	return Object.fromEntries(
-		registry.receipts.flatMap((receipt) => {
-			const text = readFileSync(
-				requireCaptureContained(root, resolve(root, receipt.report.file)),
-				'utf8',
+	try {
+		const path = requireCaptureContained(root, file)
+		const loaded = attempt(() => readFileSync(path, 'utf8'))
+		if (!loaded.success)
+			throw new CaptureError(
+				`Missing accepted registry; run the explicit complete-registry refresh: capture registry. Registry path: ${file}`,
+				{ code: 'EVIDENCE', cause: loaded.error },
 			)
-			if (computeCaptureHash(text) !== receipt.report.digest)
-				throw new CaptureError('Registry reporter digest differs for case titles', {
-					code: 'EVIDENCE',
-				})
-			const report: unknown = parseJSON(text)
-			if (!isRecord(report) || !arrayOf(isRecord)(report.testResults))
-				throw new CaptureError('Invalid registry reporter for case titles', { code: 'EVIDENCE' })
-			const selected =
-				selector === undefined
-					? undefined
-					: new Set(
-							readCaptureReport(report)
-								.assertions.filter((entry) => matchesCaptureSelector(entry.owner, selector))
-								.map((entry) => entry.case),
-						)
-			return report.testResults.flatMap((result) =>
-				!arrayOf(isRecord)(result.assertionResults)
-					? []
-					: result.assertionResults.flatMap((assertion) => {
-							if (
-								!isString(assertion.fullName) ||
-								!isString(assertion.title) ||
-								!arrayOf(isString)(assertion.ancestorTitles)
+		const registry: unknown = parseJSON(loaded.value)
+		requireCaptureVersion(registry, 'Registry', file, [
+			file,
+			resolve(dirname(file), CAPTURE_MANIFEST_FILE),
+			resolve(dirname(file), CAPTURE_LOOKUPS_FILE),
+		])
+		if (!isCaptureRegistry(registry))
+			throw new CaptureError('Invalid accepted registry for case titles', { code: 'EVIDENCE' })
+		return Object.fromEntries(
+			registry.receipts.flatMap((receipt) => {
+				const text = readFileSync(
+					requireCaptureContained(root, resolve(root, receipt.report.file)),
+					'utf8',
+				)
+				if (computeCaptureHash(text) !== receipt.report.digest)
+					throw new CaptureError('Registry reporter digest differs for case titles', {
+						code: 'EVIDENCE',
+					})
+				const report: unknown = parseJSON(text)
+				if (!isRecord(report) || !arrayOf(isRecord)(report.testResults))
+					throw new CaptureError('Invalid registry reporter for case titles', { code: 'EVIDENCE' })
+				const selected =
+					selector === undefined
+						? undefined
+						: new Set(
+								readCaptureReport(report)
+									.assertions.filter((entry) => matchesCaptureSelector(entry.owner, selector))
+									.map((entry) => entry.case),
 							)
-								return []
-							const titles = [...assertion.ancestorTitles, assertion.title]
-							if (titles.join(' ') !== assertion.fullName)
-								throw new CaptureError('Registry reporter title segments differ from its case', {
-									code: 'EVIDENCE',
-								})
-							return selected === undefined || selected.has(assertion.fullName)
-								? [[assertion.fullName, titles] as const]
-								: []
-						}),
-			)
-		}),
-	)
+				return report.testResults.flatMap((result) =>
+					!arrayOf(isRecord)(result.assertionResults)
+						? []
+						: result.assertionResults.flatMap((assertion) => {
+								if (
+									!isString(assertion.fullName) ||
+									!isString(assertion.title) ||
+									!arrayOf(isString)(assertion.ancestorTitles)
+								)
+									return []
+								const titles = [...assertion.ancestorTitles, assertion.title]
+								if (titles.join(' ') !== assertion.fullName)
+									throw new CaptureError('Registry reporter title segments differ from its case', {
+										code: 'EVIDENCE',
+									})
+								return selected === undefined || selected.has(assertion.fullName)
+									? [[assertion.fullName, titles] as const]
+									: []
+							}),
+				)
+			}),
+		)
+	} catch (error) {
+		throw resolveCaptureRegistryFault(error)
+	}
 }
 
 /**

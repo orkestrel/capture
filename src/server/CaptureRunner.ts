@@ -36,8 +36,10 @@ import {
 	CAPTURE_COMMAND_NAMES,
 	CAPTURE_EXIT,
 	CAPTURE_PROGRESS_SUFFIX,
+	CAPTURE_RECOVERIES,
 	CAPTURE_RUNS_DIRECTORY,
 	CAPTURE_STAGES,
+	CAPTURE_STATUS_RECOVERIES,
 	CAPTURE_VITEST_ENTRY,
 } from './constants.js'
 import {
@@ -110,17 +112,10 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		})
 		invocation.attach()
 		const invocations: CaptureInvocationInterface[] = [invocation]
-		// The NEXT commands the outcome's reports record for stdout and its refusals for stderr.
+		// The NEXT commands the outcome's reports record for stdout after the report they follow.
 		const reports: string[] = []
-		const refusals: string[] = []
 		const argumentsResult = attempt(() => readCaptureArguments(argv, command, root, config))
-		const result = await this.#dispatch(
-			invocation,
-			invocations,
-			reports,
-			refusals,
-			argumentsResult,
-		).then(
+		const result = await this.#dispatch(invocation, invocations, reports, argumentsResult).then(
 			(code) => success(code),
 			(error: unknown) => failure(error),
 		)
@@ -132,16 +127,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 				result,
 				invocations,
 				reports,
-				refusals,
-				renderCaptureCommand(
-					command,
-					{
-						config: argumentsResult.success ? argumentsResult.value.config : resolve(root, config),
-						variants: [],
-					},
-					'all',
-					root,
-				),
+				argumentsResult.success ? argumentsResult.value : undefined,
 			)
 			return code
 		} finally {
@@ -157,7 +143,6 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		invocation: CaptureInvocationInterface,
 		invocations: CaptureInvocationInterface[],
 		reports: string[],
-		refusals: string[],
 		argumentsResult: Result<CaptureRunnerArguments>,
 	): Promise<number> {
 		const { command, root } = this.#options
@@ -183,18 +168,10 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		if (command !== 'stale' && parsed.changed !== undefined) {
 			await invocation.release()
 			invocation.attach()
-			return await this.#changed(
-				invocation,
-				invocations,
-				reports,
-				refusals,
-				command,
-				parsed,
-				projects,
-			)
+			return await this.#changed(invocation, invocations, reports, command, parsed, projects)
 		}
 		return command === 'stale'
-			? await this.#check(parsed, projects)
+			? await this.#check(parsed, projects, reports)
 			: await this.#run(invocation, command, parsed, projects, reports)
 	}
 
@@ -203,19 +180,14 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		result: Result<number>,
 		invocations: readonly CaptureInvocationInterface[],
 		reports: readonly string[],
-		refusals: readonly string[],
-		fallback: string,
+		parsed: CaptureRunnerArguments | undefined,
 	): void {
 		const { command } = this.#options
-		// A version refusal names its own recovery, and every command fails until that recovery runs.
+		// A refusal that recorded no report line derives its recovery from its condition alone.
 		const lines =
-			isFailure(result) && matchesCaptureVersionRefusal(result.error)
-				? []
-				: reports.length > 0
-					? reports
-					: refusals.length > 0 || isSuccess(result)
-						? refusals
-						: [fallback]
+			reports.length > 0 || isSuccess(result) || parsed === undefined
+				? reports
+				: this.#recover(result.error, parsed, parsed.selector, false)
 		const next = [...new Set(lines)].map((line) => `NEXT ${line}\n`).join('')
 		if (reports.length > 0 && next !== '') this.#stdout(next)
 		if (isSuccess(result)) return
@@ -233,27 +205,17 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		discovery: CaptureInvocationInterface,
 		invocations: CaptureInvocationInterface[],
 		reports: string[],
-		refusals: string[],
 		command: CaptureRequest['command'],
 		parsed: CaptureRunnerArguments,
 		projects: readonly CaptureProject[],
 	): Promise<number> {
 		const { root, requests } = this.#options
 		const primary = requireCaptureProjects(projects)
-		const plan = this.#changes(parsed, primary, refusals)
+		const plan = this.#changes(parsed, primary)
 		for (const change of plan.changes) this.#stdout(`CHANGE ${JSON.stringify(change)}\n`)
 		const commands = plan.owners.map((owner) => renderCaptureCommand(command, parsed, owner, root))
 		const shared = plan.changes.filter((change) => change.classification === 'shared')
-		const complete = renderCaptureCommand(
-			'journey',
-			{
-				config: parsed.config,
-				variants: parsed.variants,
-				...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
-			},
-			'all',
-			root,
-		)
+		const complete = this.#complete(parsed)
 		for (const next of commands) this.#stdout(`COMMAND ${next}\n`)
 		const variants = resolveCaptureVariants(parsed.variants, projects)
 		if (shared.length > 0) {
@@ -290,6 +252,8 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			return CAPTURE_EXIT.passed
 		}
 		const outcomes: CaptureOwnerOutcome[] = []
+		// The NEXT lines each failed owner's run recorded, in owner order.
+		const recorded: string[] = []
 		for (const owner of plan.owners) {
 			if (discovery.interrupted) break
 			const invocation = new CaptureInvocation({
@@ -301,21 +265,24 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			})
 			invocations.push(invocation)
 			invocation.attach()
+			const owned = { ...parsed, selector: owner }
+			const lines: string[] = []
 			try {
-				invocation.prepare()
-				// The changed run's own NEXT lines name each failed and unrun owner, so this log is never printed.
-				const code = await this.#run(
-					invocation,
-					command,
-					{ ...parsed, selector: owner },
-					projects,
-					[],
-				).catch((error: unknown) => {
-					// A version refusal holds for every owner, so it ends the changed run.
-					if (matchesCaptureVersionRefusal(error)) throw error
-					this.#stderr(`${describeCaptureError(error)}\n`)
-					return resolveCaptureExit(error)
-				})
+				// A refusal before execution, an unusable request directory included, fails this owner alone.
+				const code = await Promise.resolve()
+					.then(async () => {
+						invocation.prepare()
+						return await this.#run(invocation, command, owned, projects, lines)
+					})
+					.catch((error: unknown) => {
+						// A version refusal holds for every owner, so it ends the changed run.
+						if (matchesCaptureVersionRefusal(error)) throw error
+						this.#stderr(`${describeCaptureError(error)}\n`)
+						// A refusal before the owner's stage report recorded no line, so its condition names one.
+						if (lines.length === 0) lines.push(...this.#recover(error, owned, owner, false))
+						return resolveCaptureExit(error)
+					})
+				if (code !== CAPTURE_EXIT.passed) recorded.push(...lines)
 				outcomes.push({
 					owner,
 					code,
@@ -351,11 +318,13 @@ export class CaptureRunner implements CaptureRunnerInterface {
 						: 'every selected owner passed',
 			})}\n`,
 		)
-		const owners = [...failed.map((outcome) => outcome.owner), ...notrun]
 		reports.push(
-			...(owners.length === 0
+			...(failed.length === 0 && notrun.length === 0
 				? [complete]
-				: owners.map((owner) => renderCaptureCommand(command, parsed, owner, root))),
+				: [
+						...recorded,
+						...notrun.map((owner) => renderCaptureCommand(command, parsed, owner, root)),
+					]),
 		)
 		return failed.at(0)?.code ?? (discovery.interrupted ? CAPTURE_EXIT.failed : CAPTURE_EXIT.passed)
 	}
@@ -374,30 +343,13 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			)
 	}
 
-	#changes(
-		parsed: CaptureRunnerArguments,
-		primary: CaptureProject,
-		refusals: string[],
-	): CaptureChangePlan {
+	#changes(parsed: CaptureRunnerArguments, primary: CaptureProject): CaptureChangePlan {
 		try {
 			if (parsed.changed === undefined)
 				throw new CaptureError('Missing value: --changed', { code: 'USAGE' })
 			return this.#integrity(primary).changed(parsed.changed)
 		} catch (error) {
 			if (matchesCaptureVersionRefusal(error)) throw error
-			const { root } = this.#options
-			if (isCaptureError(error) && error.code === 'EVIDENCE')
-				refusals.push(
-					renderCaptureCommand(
-						'registry',
-						{ config: parsed.config, variants: [] },
-						undefined,
-						root,
-					),
-				)
-			refusals.push(
-				renderCaptureCommand('journey', { config: parsed.config, variants: [] }, 'all', root),
-			)
 			throw new CaptureError(
 				`${describeCaptureError(error)}\nNo owner ran; changed selection was refused.`,
 				{ code: isCaptureError(error) ? error.code : 'EVIDENCE', cause: error },
@@ -476,13 +428,17 @@ export class CaptureRunner implements CaptureRunnerInterface {
 								: 'empty selected workload',
 			})}\n`,
 		)
+		const own = renderCaptureCommand(command, parsed, selector, root)
+		// A stage that launched and did not complete, or an interrupt, leaves the selection to rerun.
 		reports.push(
-			renderCaptureCommand(
-				passed ? 'journey' : command,
-				passed ? { config: parsed.config, variants: [] } : parsed,
-				passed ? 'all' : selector,
-				root,
-			),
+			...(passed
+				? [this.#complete(parsed)].filter((line) => line !== own)
+				: this.#recover(
+						isFailure(result) ? result.error : undefined,
+						parsed,
+						selector,
+						failed.length > 0 || invocation.interrupted,
+					)),
 		)
 		if (isFailure(result)) throw result.error
 		return result.value
@@ -506,7 +462,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		}
 		if (outcomes.every((outcome) => outcome.count === 0))
 			throw new CaptureError('Empty selected workload: no requested project held applicable work', {
-				code: 'STAGE',
+				code: 'SELECTION',
 			})
 		return CAPTURE_EXIT.passed
 	}
@@ -645,6 +601,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 	async #check(
 		parsed: CaptureRunnerArguments,
 		projects: readonly CaptureProject[],
+		reports: string[],
 	): Promise<number> {
 		const selector = parsed.selector
 		if (selector === undefined)
@@ -684,9 +641,66 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			...(parsed.portfolio === undefined ? {} : { portfolio: parsed.portfolio }),
 		})
 		this.#stdout(`INTEGRITY ${JSON.stringify({ command: 'stale', ...result })}\n`)
+		// A frames run over the selection restamps every producing variant, so the line names none.
+		if (
+			standalone === undefined &&
+			result.entries.some((entry) => CAPTURE_STATUS_RECOVERIES[entry.status] === 'capture')
+		)
+			reports.push(
+				renderCaptureCommand('capture', { ...parsed, variants: [] }, selector, this.#options.root),
+			)
 		return result.entries.every((entry) => entry.status === 'current')
 			? CAPTURE_EXIT.passed
 			: CAPTURE_EXIT.failed
+	}
+
+	// Returns the commands that clear a refusal's condition, then the run's own when it left work unfinished.
+	#recover(
+		error: unknown,
+		parsed: CaptureRunnerArguments,
+		selector: string | undefined,
+		unfinished: boolean,
+	): readonly string[] {
+		// A version refusal names its own recovery, and every command fails until that recovery runs.
+		if (matchesCaptureVersionRefusal(error)) return []
+		const { command, root } = this.#options
+		const recovery = isCaptureError(error) ? CAPTURE_RECOVERIES[error.code] : undefined
+		return [
+			...(recovery === 'registry'
+				? [
+						renderCaptureCommand(
+							'registry',
+							{
+								config: parsed.config,
+								variants: [],
+								...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
+							},
+							undefined,
+							root,
+						),
+					]
+				: []),
+			...(recovery === 'journey' && selector !== undefined
+				? [renderCaptureCommand('journey', parsed, selector, root)]
+				: []),
+			...(unfinished && selector !== undefined
+				? [renderCaptureCommand(command, parsed, selector, root)]
+				: []),
+		]
+	}
+
+	// Renders the complete journey, which keeps the run's variants, mode, and wrapper.
+	#complete(parsed: CaptureRunnerArguments): string {
+		return renderCaptureCommand(
+			'journey',
+			{
+				config: parsed.config,
+				variants: parsed.variants,
+				...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
+			},
+			'all',
+			this.#options.root,
+		)
 	}
 
 	#usage(selectors: readonly string[]): string {
