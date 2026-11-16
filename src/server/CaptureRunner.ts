@@ -109,6 +109,8 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		})
 		invocation.attach()
 		const invocations: CaptureInvocationInterface[] = [invocation]
+		// Each NEXT line a stage report prints, so a failure prints one recovery, the most specific.
+		const recoveries: string[] = []
 		const argumentsResult = attempt(() => readCaptureArguments(argv, command, root, config))
 		try {
 			invocation.prepare()
@@ -133,13 +135,20 @@ export class CaptureRunner implements CaptureRunnerInterface {
 			if (command !== 'stale' && parsed.changed !== undefined) {
 				await invocation.release()
 				invocation.attach()
-				const code = await this.#changed(invocation, invocations, command, parsed, projects)
+				const code = await this.#changed(
+					invocation,
+					invocations,
+					recoveries,
+					command,
+					parsed,
+					projects,
+				)
 				if (code === 64) rmSync(invocation.directory, { recursive: true, force: true })
 				return code
 			}
 			return command === 'stale'
 				? await this.#check(parsed, projects)
-				: await this.#run(invocation, command, parsed, projects)
+				: await this.#run(invocation, command, parsed, projects, recoveries)
 		} catch (error) {
 			if (resolveCaptureExit(error) === 64)
 				rmSync(invocation.directory, { recursive: true, force: true })
@@ -157,9 +166,13 @@ export class CaptureRunner implements CaptureRunnerInterface {
 				'all',
 				root,
 			)
+			const message = describeCaptureError(error)
 			// A version refusal names its own recovery, and every command fails until that recovery runs.
+			const recovered =
+				matchesCaptureVersionRefusal(error) ||
+				[...recoveries, message].some((text) => /^NEXT /mu.test(text))
 			this.#stderr(
-				`${describeCaptureError(error)}\n${ran.length === 0 ? 'No execution child ran; the command was refused before execution.' : `Execution stopped after stages: ${ran.join(', ')}; no later stage ran.`}\n${matchesCaptureVersionRefusal(error) ? '' : `NEXT ${next}\n`}`,
+				`${message}\n${ran.length === 0 ? 'No execution child ran; the command was refused before execution.' : `Execution stopped after stages: ${ran.join(', ')}; no later stage ran.`}\n${recovered ? '' : `NEXT ${next}\n`}`,
 			)
 			return resolveCaptureExit(error)
 		} finally {
@@ -174,6 +187,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 	async #changed(
 		discovery: CaptureInvocationInterface,
 		invocations: CaptureInvocationInterface[],
+		recoveries: string[],
 		command: CaptureRequest['command'],
 		parsed: CaptureRunnerArguments,
 		projects: readonly CaptureProject[],
@@ -247,6 +261,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 					command,
 					{ ...parsed, selector: owner },
 					projects,
+					recoveries,
 				).catch((error: unknown) => {
 					// A version refusal holds for every owner, so it ends the changed run.
 					if (matchesCaptureVersionRefusal(error)) throw error
@@ -339,6 +354,7 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		command: CaptureRequest['command'],
 		parsed: CaptureRunnerArguments,
 		projects: readonly CaptureProject[],
+		recoveries: string[],
 	): Promise<number> {
 		const { root } = this.#options
 		const primary = requireCaptureProjects(projects)
@@ -404,10 +420,11 @@ export class CaptureRunner implements CaptureRunnerInterface {
 								: 'empty selected workload',
 			})}\n`,
 		)
-		if (isSuccess(result) || !matchesCaptureVersionRefusal(result.error))
-			this.#stdout(
-				`NEXT ${renderCaptureCommand(passed ? 'journey' : command, passed ? { config: parsed.config, variants: [] } : parsed, passed ? 'all' : selector, root)}\n`,
-			)
+		if (isSuccess(result) || !matchesCaptureVersionRefusal(result.error)) {
+			const next = `NEXT ${renderCaptureCommand(passed ? 'journey' : command, passed ? { config: parsed.config, variants: [] } : parsed, passed ? 'all' : selector, root)}`
+			recoveries.push(next)
+			this.#stdout(`${next}\n`)
+		}
 		if (isFailure(result)) throw result.error
 		return result.value
 	}

@@ -1,3 +1,4 @@
+import type { CapturePicture } from '@src/server'
 import * as core from '@src/core'
 import * as server from '@src/server'
 import { spawn } from 'node:child_process'
@@ -133,7 +134,6 @@ import {
 	buildCaptureRacingScopes,
 	buildFixtureVariants,
 	createCaptureCountedPicture,
-	createCaptureWatchedPicture,
 } from './setupServer.js'
 describe('H1 shared infrastructure', () => {
 	it('X7 round 4 stops a real detached fixture and returns false once it has exited', async () => {
@@ -647,17 +647,6 @@ describe('withEnvironment', () => {
 	})
 })
 
-describe('createCaptureWatchedPicture', () => {
-	it('reports each read of its pixel buffer and none of its geometry', () => {
-		const reads = createRecorder<readonly []>()
-		const picture = createCaptureWatchedPicture(3, 2, reads.handler)
-		expect([picture.width, picture.height]).toEqual([3, 2])
-		expect(reads.count).toBe(0)
-		expect(picture.pixels).toHaveLength(0)
-		expect(reads.count).toBe(1)
-	})
-})
-
 describe('buildCaptureRacingScopes', () => {
 	it('runs the action before every membership check and answers each as the plain list does', () => {
 		const actions = createRecorder<readonly []>()
@@ -980,13 +969,20 @@ describe('buildFixtureVariants', () => {
 })
 
 describe('createCaptureCountedPicture', () => {
-	it('reports each read of its width, its height, and its gray pixel buffer', () => {
-		const reads = createRecorder<readonly []>()
+	it('reports each read of its width, its height, and its gray pixel buffer by name', () => {
+		const reads = createRecorder<readonly [keyof CapturePicture]>()
 		const picture = createCaptureCountedPicture(2, 1, reads.handler)
 		expect(reads.count).toBe(0)
 		expect([picture.width, picture.height]).toEqual([2, 1])
 		expect([...picture.pixels]).toEqual([128, 128, 128, 128, 128, 128])
-		expect(reads.count).toBe(3)
+		expect(picture.pixels).toBe(picture.pixels)
+		expect(reads.calls).toEqual([['width'], ['height'], ['pixels'], ['pixels'], ['pixels']])
+	})
+
+	it('holds an empty pixel buffer for an empty geometry', () => {
+		const reads = createRecorder<readonly [keyof CapturePicture]>()
+		expect(createCaptureCountedPicture(0, 0, reads.handler).pixels).toHaveLength(0)
+		expect(reads.calls).toEqual([['pixels']])
 	})
 })
 

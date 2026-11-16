@@ -1138,8 +1138,9 @@ export function predictCaptureByte(left: number, up: number, corner: number): nu
  * @param bytes - The complete PNG
  * @param offset - The next chunk header. Default: 8.
  * @returns Ordered compressed-data chunks
- * @throws Thrown for truncated chunks, bad checksums, a missing closing chunk, an IHDR chunk
- * anywhere but offset 8, a critical chunk other than IHDR, PLTE, IDAT, and IEND, or IDAT chunks
+ * @throws Thrown for bytes over the file budget; a truncated chunk, which a file with no closing
+ * chunk also meets; a bad checksum; a closing chunk that is not empty and last; an IHDR chunk
+ * anywhere but offset 8; a critical chunk other than IHDR, PLTE, IDAT, and IEND; or IDAT chunks
  * that are not consecutive.
  *
  * @example
@@ -1150,17 +1151,22 @@ export function predictCaptureByte(left: number, up: number, corner: number): nu
 export function readCaptureChunks(bytes: Buffer, offset = 8): readonly Buffer[] {
 	requireCaptureImageSize(bytes.length)
 	const positions = scanCaptureChunks(bytes, offset, Infinity)
-	const types = positions.map((position) => bytes.toString('latin1', position + 4, position + 8))
+	// Each type is read once as a big-endian word; a refusal alone renders it as text.
+	const types = positions.map((position) => bytes.readUInt32BE(position + 4))
+	const header = Buffer.from('IHDR', 'latin1').readUInt32BE(0)
+	const palette = Buffer.from('PLTE', 'latin1').readUInt32BE(0)
+	const data = Buffer.from('IDAT', 'latin1').readUInt32BE(0)
+	const end = Buffer.from('IEND', 'latin1').readUInt32BE(0)
 	const last = positions.at(-1)
 	// The walk ends at the closing chunk or refuses, so this guard narrows `last` and never throws.
-	if (last === undefined || types.at(-1) !== 'IEND')
+	if (last === undefined || types.at(-1) !== end)
 		throw new CaptureError(
-			`Missing capture PNG closing chunk: ${last === undefined ? `no chunk follows offset ${preview(offset)}` : `the last chunk is ${preview(types.at(-1))} at offset ${String(last)}`}; expected an empty IEND chunk that ends the file`,
+			`Missing capture PNG closing chunk: ${last === undefined ? `no chunk follows offset ${preview(offset)}` : `the last chunk is ${preview(bytes.toString('latin1', last + 4, last + 8))} at offset ${String(last)}`}; expected an empty IEND chunk that ends the file`,
 			{ code: 'EVIDENCE' },
 		)
-	const first = types.indexOf('IDAT')
-	const final = types.lastIndexOf('IDAT')
-	const placed = positions.find((position, index) => types[index] === 'IHDR' && position !== 8)
+	const first = types.indexOf(data)
+	const final = types.lastIndexOf(data)
+	const placed = positions.find((position, index) => types[index] === header && position !== 8)
 	if (placed !== undefined)
 		throw new CaptureError(
 			`Invalid capture PNG chunk order: ${describeCaptureChunk(bytes, placed)}; expected one IHDR chunk, at offset 8`,
@@ -1170,15 +1176,15 @@ export function readCaptureChunks(bytes: Buffer, offset = 8): readonly Buffer[] 
 	const unknown = positions.find(
 		(position, index) =>
 			((bytes[position + 4] ?? 0) & 32) === 0 &&
-			!['IHDR', 'PLTE', 'IDAT', 'IEND'].includes(types[index] ?? ''),
+			![header, palette, data, end].includes(types[index] ?? 0),
 	)
 	if (unknown !== undefined)
 		throw new CaptureError(
 			`Unsupported capture PNG chunk: critical ${describeCaptureChunk(bytes, unknown)}; expected a critical chunk to be IHDR, PLTE, IDAT, or IEND`,
 			{ code: 'EVIDENCE' },
 		)
-	const gap = types.findIndex((type, index) => index > first && index < final && type !== 'IDAT')
-	const resume = gap === -1 ? -1 : types.indexOf('IDAT', gap)
+	const gap = types.findIndex((type, index) => index > first && index < final && type !== data)
+	const resume = gap === -1 ? -1 : types.indexOf(data, gap)
 	const resumed = positions[resume]
 	const before = positions[resume - 1]
 	if (resumed !== undefined && before !== undefined)
@@ -1186,9 +1192,9 @@ export function readCaptureChunks(bytes: Buffer, offset = 8): readonly Buffer[] 
 			`Invalid capture PNG chunk order: ${describeCaptureChunk(bytes, resumed)} follows ${preview(bytes.toString('latin1', before + 4, before + 8))} at offset ${String(before)}; expected every IDAT chunk in one consecutive run`,
 			{ code: 'EVIDENCE' },
 		)
-	return positions.flatMap((position) => {
+	return positions.flatMap((position, index) => {
 		const length = bytes.readUInt32BE(position)
-		return bytes.toString('latin1', position + 4, position + 8) === 'IDAT' && length > 0
+		return types[index] === data && length > 0
 			? [bytes.subarray(position + 8, position + 8 + length)]
 			: []
 	})
@@ -1237,17 +1243,16 @@ export function scanCaptureChunks(
 			{ code: 'EVIDENCE' },
 		)
 	const end = position + 12 + bytes.readUInt32BE(position)
-	const chunk = describeCaptureChunk(bytes, position)
 	if (end > bytes.length)
 		throw new CaptureError(
-			`Truncated capture PNG chunk: ${chunk} ends at byte ${String(end)}; expected it to end within the file's ${String(bytes.length)} bytes`,
+			`Truncated capture PNG chunk: ${describeCaptureChunk(bytes, position)} ends at byte ${String(end)}; expected it to end within the file's ${String(bytes.length)} bytes`,
 			{ code: 'EVIDENCE' },
 		)
 	const stored = bytes.readUInt32BE(end - 4)
 	const computed = crc32(bytes.subarray(position + 4, end - 4)) >>> 0
 	if (computed !== stored)
 		throw new CaptureError(
-			`Capture PNG checksum differs: ${chunk} stores ${stored.toString(16).padStart(8, '0')}; expected ${computed.toString(16).padStart(8, '0')}`,
+			`Capture PNG checksum differs: ${describeCaptureChunk(bytes, position)} stores ${stored.toString(16).padStart(8, '0')}; expected ${computed.toString(16).padStart(8, '0')}`,
 			{ code: 'EVIDENCE' },
 		)
 	if (
@@ -1255,7 +1260,7 @@ export function scanCaptureChunks(
 		(end !== position + 12 || end !== bytes.length)
 	)
 		throw new CaptureError(
-			`Invalid capture PNG closing chunk: ${chunk} ends at byte ${String(end)} of ${String(bytes.length)}; expected an empty IEND chunk that ends the file`,
+			`Invalid capture PNG closing chunk: ${describeCaptureChunk(bytes, position)} ends at byte ${String(end)} of ${String(bytes.length)}; expected an empty IEND chunk that ends the file`,
 			{ code: 'EVIDENCE' },
 		)
 	return [position]
@@ -1376,7 +1381,8 @@ export function unfilterCaptureRow(
  * Inflates a PNG's compressed stream, refusing one that is corrupt or longer than declared.
  *
  * @param data - The concatenated data-chunk payloads
- * @param length - The inflated length the header's dimensions declare
+ * @param length - The inflated length the header's dimensions declare, a whole number from 1 to
+ * `Number.MAX_SAFE_INTEGER`; any other value gives an unspecified result that might throw
  * @returns The inflated scanlines
  * @throws Thrown when the stream is not valid deflate data or inflates past `length`.
  *
@@ -1552,7 +1558,8 @@ export function encodeCaptureChunk(name: string, data: Buffer): Buffer {
  * @param picture - The complete RGB pixel buffer
  * @param compressed - If `true`, compresses scanlines; if `false`, stores them in the deflate stream. Default: `true`.
  * @returns A PNG file
- * @throws Thrown when dimensions and pixel length disagree.
+ * @throws Thrown when a dimension is not a whole number of at least 1, or when the pixel length is
+ * not `width * height * 3`.
  *
  * @example
  * ```ts
@@ -1596,8 +1603,9 @@ export function encodeCapturePicture(picture: CapturePicture, compressed = true)
  * The caller bounds the run: the call reads one sample per column, inside the bytes or not, so a
  * count that is not above 0 sums nothing and a fractional count reads its ceiling. Each sample reads
  * `pixels[index] ?? 0` at the index the call computes, so an index outside the bytes, a fractional
- * index, or a `NaN` index reads 0. For whole-number arguments whose every index is a safe integer,
- * the sum equals the direct sum of those samples.
+ * index, or a `NaN` index reads 0. For whole-number arguments, the sum equals the direct sum of
+ * those samples where every number the call computes from its arguments is a safe integer, each
+ * sample index among them.
  *
  * @param pixels - The source RGB bytes
  * @param start - The index of the first sample
@@ -1641,8 +1649,10 @@ export function sumCaptureRow(pixels: Uint8Array, start: number, columns: number
  * Source row `top + row` starts its block at `(top + row) * picture.width * 3 + left`, and each row
  * contributes `columns` samples through `sumCaptureRow`. The caller bounds the block: the call reads
  * `rows × columns` samples, inside the bytes or not, so a row count that is not above 0 sums nothing
- * and a fractional row count reads its ceiling. For whole-number arguments whose every index is a
- * safe integer, the sum equals the direct sum of those samples.
+ * and a fractional row count reads its ceiling. For whole-number arguments, the sum equals the
+ * direct sum of those samples where every number the call computes from its arguments is a safe
+ * integer: each row number `row + k`, each row start `(top + row + k) * picture.width * 3 + left`,
+ * and each sample index.
  *
  * @param picture - The source RGB picture
  * @param top - The block's first source row
@@ -1693,9 +1703,9 @@ export function sumCaptureBlock(
  *
  * @param picture - The source RGB picture
  * @param factor - The reduction factor, a whole number of at least 1; any other value gives an
- * unspecified picture
+ * unspecified result that might throw
  * @param limit - The maximum displayed height, a whole number of at least 1; any other value gives
- * an unspecified picture
+ * an unspecified result that might throw
  * @returns A separately owned scaled picture
  *
  * @example
@@ -1893,7 +1903,8 @@ export function matchesCaptureLimits(picture: Pick<CapturePicture, 'width' | 'he
  * with `gap` between rows, still fits; otherwise the row opens the next page.
  *
  * @param rows - The ordered rows, each with its composite width and height
- * @param size - The most rows a page holds
+ * @param size - The most rows a page holds, a whole number of at least 1; any other value gives an
+ * unspecified result that might throw
  * @param gap - The space between stacked rows
  * @returns The pages, in order
  * @throws Thrown with the `USAGE` condition when one row alone does not fit `CAPTURE_PNG_LIMITS`,

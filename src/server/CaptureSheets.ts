@@ -45,8 +45,8 @@ import {
  * selection through `CapturePreflight`, so it judges the same population the preflight does and
  * keeps its refusals. It writes the sheets, an index of every cell, and a notes document into a new
  * directory that is contained in the workspace, has an existing parent, and lies outside every
- * selected capture directory. A frame whose image cannot be read shows as a red mark and is indexed
- * as `missing`.
+ * selected capture directory. A frame whose image cannot be read shows as a red mark with no source
+ * size, and its index cell carries the freshness the engine classified, `missing` for an absent file.
  *
  * @example
  * ```ts

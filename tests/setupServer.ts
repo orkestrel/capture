@@ -4243,55 +4243,31 @@ export function createCaptureGeometry(width: number, height: number): CapturePic
 }
 
 /**
- * Creates a picture of the given geometry whose pixel buffer reports each read, so a proof sees
- * whether any pixel work ran.
+ * Creates a gray picture whose width, height, and pixel buffer each report every read by name, so a
+ * proof can count the reads a composition makes or tell pixel work from geometry reads.
  *
  * @param width - The declared width
  * @param height - The declared height
- * @param read - Runs on each read of the pixel buffer
- * @returns The picture, with an empty pixel buffer
- */
-export function createCaptureWatchedPicture(
-	width: number,
-	height: number,
-	read: () => void,
-): CapturePicture {
-	return {
-		width,
-		height,
-		get pixels() {
-			read()
-			return new Uint8Array(0)
-		},
-	}
-}
-
-/**
- * Creates a gray picture whose width, height, and pixel buffer each report every read, so a proof
- * can count the reads a composition makes.
- *
- * @param width - The declared width
- * @param height - The declared height
- * @param read - Runs on each read of the width, the height, or the pixel buffer
+ * @param read - Runs on each read, with the member read
  * @returns The picture, with a pixel buffer that matches its geometry
  */
 export function createCaptureCountedPicture(
 	width: number,
 	height: number,
-	read: () => void,
+	read: (member: keyof CapturePicture) => void,
 ): CapturePicture {
 	const pixels = new Uint8Array(width * height * 3).fill(128)
 	return {
 		get width() {
-			read()
+			read('width')
 			return width
 		},
 		get height() {
-			read()
+			read('height')
 			return height
 		},
 		get pixels() {
-			read()
+			read('pixels')
 			return pixels
 		},
 	}
@@ -4769,6 +4745,7 @@ export const CAPTURE_PNG_REFUSALS = [
 			[16, 0x40, 'width', '2dfac275'],
 			[24, 16, 'bit depth', 'c0e78f9d'],
 			[25, 3, 'colour type', '28cb34bb'],
+			[28, 1, 'interlace', 'e7706348'],
 		] as const
 	).map(([offset, value, field, checksum]): readonly [string, () => Buffer, string] => [
 		`a corrupt ${field} under a stale header checksum`,
@@ -4782,6 +4759,15 @@ export const CAPTURE_PNG_REFUSALS = [
 		},
 		`Capture PNG checksum differs: "IHDR" at offset 8 with length 13 stores 907753de; expected ${checksum}`,
 	]),
+	// The chunk type sits outside the header fields, so the shape check refuses it before the checksum.
+	[
+		'a corrupt chunk type under a stale header checksum',
+		() => {
+			const png = createPngBytes({ width: 1, height: 1, rows: [[0, 1, 2, 3]] })
+			return Buffer.concat([png.subarray(0, 15), Buffer.from('r', 'latin1'), png.subarray(16)])
+		},
+		'Invalid capture PNG header: the first chunk is "IHDr" with length 13; expected at least 33 bytes that open with the signature 89504e470d0a1a0a and an IHDR chunk with length 13',
+	],
 	[
 		'a second header chunk',
 		() => {

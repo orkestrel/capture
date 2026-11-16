@@ -350,7 +350,7 @@ describe.each(RUNNER_COMMANDS)(
 					`NEXT capture ${name} pages:mail --config '${base.config}'`,
 					'',
 				].join('\n'),
-				stderr: `Capture stage child did not exit successfully\nExecution stopped after stages: ${stage}; no later stage ran.\nNEXT capture ${name} all --config '${base.config}'\n`,
+				stderr: `Capture stage child did not exit successfully\nExecution stopped after stages: ${stage}; no later stage ran.\n`,
 			})
 		})
 
@@ -499,6 +499,11 @@ describe('CaptureRunner process contract', { timeout: FIXTURE_TIMEOUT }, () => {
 				'Missing accepted registry; run the explicit complete-registry refresh',
 			)
 			expect(run.stderr).toContain(`NEXT capture registry --config '${fixture.config}'`)
+			// The refusal's own recovery is the registry refresh, then the complete journey, once each.
+			expect(run.stderr.split('\n').filter((line) => line.startsWith('NEXT '))).toEqual([
+				`NEXT capture registry --config '${fixture.config}'`,
+				`NEXT capture journey all --config '${fixture.config}'`,
+			])
 			expect(fixture.stages).toEqual([])
 		} finally {
 			fixture.destroy()

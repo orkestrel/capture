@@ -161,7 +161,6 @@ import {
 	buildCaptureComposeRefusals,
 	createCaptureCountedPicture,
 	createCaptureGeometry,
-	createCaptureWatchedPicture,
 	createCaptureImportInput,
 	createPngBytes,
 	ALPHA_PICTURE,
@@ -1806,6 +1805,13 @@ describe('sumCaptureBlock', () => {
 		expect(sumCaptureBlock(picture, 0, 6, 0, Number.NaN, 2)).toBe(0)
 	})
 
+	it('sums exactly where the last row number is the largest safe integer', () => {
+		const column = { width: 1, height: 3, pixels: Uint8Array.of(1, 0, 0, 10, 0, 0, 100, 0, 0) }
+		const row = Number.MAX_SAFE_INTEGER - 2
+		expect(sumCaptureBlock(column, -row, 0, row, 3, 1)).toBe(111)
+		expect(sumCaptureBlock(column, 1 - row, 0, row, 2, 1)).toBe(110)
+	})
+
 	it('runs a sample count past the row across the following rows to the end of the bytes', () => {
 		// Row `r` starts at byte `r * 39` and reads every third byte from there to the end.
 		const suffixes = Array.from(new Array(11).keys(), (row) =>
@@ -2140,8 +2146,8 @@ describe('composeCapturePictures', () => {
 	it.each([false, true])(
 		'C3 refuses a picture count whose composite passes the side before any pixel work (vertical %s)',
 		(vertical) => {
-			const reads = createRecorder<readonly []>()
-			const picture = createCaptureWatchedPicture(0, 0, reads.handler)
+			const reads = createRecorder<readonly [keyof CapturePicture]>()
+			const picture = createCaptureCountedPicture(0, 0, reads.handler)
 			// Eight times the side passes the argument count one spread call takes on Node's default stack.
 			const count = CAPTURE_PNG_LIMITS.side * 8
 			const error = captureError(() =>
@@ -2153,7 +2159,8 @@ describe('composeCapturePictures', () => {
 					? `composite is 0 × ${String(6 * (count - 1))}`
 					: `composite is ${String(6 * (count - 1))} × 0`,
 			)
-			expect(reads.count).toBe(0)
+			expect(reads.calls.filter(([member]) => member === 'pixels')).toEqual([])
+			expect(reads.count).toBeGreaterThan(0)
 		},
 	)
 
