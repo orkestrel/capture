@@ -77,9 +77,11 @@ import {
 	arrayOf,
 	attempt,
 	isArray,
+	isCodedError,
 	isError,
 	isFunction,
 	isRecord,
+	isSafeInteger,
 	isString,
 	parseJSON,
 	preview,
@@ -301,8 +303,7 @@ export function readCaptureAncestor(path: string): string {
 		lstatSync(path)
 		return path
 	} catch (error) {
-		if (!isError(error) || !('code' in error) || error.code !== 'ENOENT' || dirname(path) === path)
-			throw error
+		if (!isCodedError(error) || error.code !== 'ENOENT' || dirname(path) === path) throw error
 		return readCaptureAncestor(dirname(path))
 	}
 }
@@ -1276,7 +1277,7 @@ export function scanCaptureChunks(
 		]
 	}
 	if (!(limit >= 1)) return []
-	if (!Number.isSafeInteger(position) || position < 8 || position + 12 > bytes.length)
+	if (!isSafeInteger(position) || position < 8 || position + 12 > bytes.length)
 		throw new CaptureError(
 			`Truncated capture PNG: no 12-byte chunk frame fits at offset ${preview(position)} in ${String(bytes.length)} bytes; expected a whole offset from 8 with 12 bytes after it`,
 			{ code: 'EVIDENCE' },
@@ -1358,7 +1359,7 @@ export function readCaptureImage(file: string): Buffer {
  * ```
  */
 export function requireCaptureImageSize(size: number): void {
-	if (!Number.isSafeInteger(size) || size < 0 || size > CAPTURE_PNG_LIMITS.bytes)
+	if (!isSafeInteger(size) || size < 0 || size > CAPTURE_PNG_LIMITS.bytes)
 		throw new CaptureError(
 			`Capture PNG size is outside the file budget: ${preview(size)} bytes; expected a whole number of bytes from 0 to ${String(CAPTURE_PNG_LIMITS.bytes)}`,
 			{ code: 'EVIDENCE' },
@@ -1496,7 +1497,7 @@ export function decodeCapturePicture(bytes: Buffer): CapturePicture {
 		)
 	const stride = width * channels
 	const length = (stride + 1) * height
-	if (!Number.isSafeInteger(length))
+	if (!isSafeInteger(length))
 		throw new CaptureError(
 			`Invalid capture PNG dimensions: ${size} at ${String(channels)} bytes per pixel; expected scanlines of at most ${String(Number.MAX_SAFE_INTEGER)} bytes in all`,
 			{ code: 'EVIDENCE' },
@@ -1607,8 +1608,8 @@ export function encodeCaptureChunk(name: string, data: Buffer): Buffer {
  */
 export function encodeCapturePicture(picture: CapturePicture, compressed = true): Buffer {
 	if (
-		!Number.isSafeInteger(picture.width) ||
-		!Number.isSafeInteger(picture.height) ||
+		!isSafeInteger(picture.width) ||
+		!isSafeInteger(picture.height) ||
 		picture.width <= 0 ||
 		picture.height <= 0 ||
 		picture.pixels.length !== picture.width * picture.height * 3
@@ -1821,12 +1822,12 @@ export function composeCapturePictures(
 	const faults = [
 		...pictures.flatMap((picture, position) =>
 			(['width', 'height'] as const).flatMap((axis) =>
-				Number.isSafeInteger(picture[axis]) && picture[axis] >= 0 && picture[axis] <= side
+				isSafeInteger(picture[axis]) && picture[axis] >= 0 && picture[axis] <= side
 					? []
 					: [`pictures[${String(position)}].${axis} is ${preview(picture[axis])}`],
 			),
 		),
-		...(Number.isSafeInteger(gap) && gap >= 0 && gap <= side ? [] : [`gap is ${preview(gap)}`]),
+		...(isSafeInteger(gap) && gap >= 0 && gap <= side ? [] : [`gap is ${preview(gap)}`]),
 	]
 	const { width, height } = computeCaptureComposite(pictures, vertical, gap)
 	if (faults.length > 0 || !matchesCaptureLimits({ width, height }))
@@ -2006,7 +2007,7 @@ export function splitCaptureSheets<T extends Pick<CapturePicture, 'width' | 'hei
 export function readCaptureRequestOwner(name: string): number | undefined {
 	const match = new RegExp(`^${CAPTURE_REQUEST_PREFIX}-(\\d+)\\.json(?:\\.tmp)?$`, 'u').exec(name)
 	const pid = Number(match?.[1])
-	return Number.isSafeInteger(pid) && pid > 0 && pid <= CAPTURE_PID_LIMIT ? pid : undefined
+	return isSafeInteger(pid) && pid > 0 && pid <= CAPTURE_PID_LIMIT ? pid : undefined
 }
 
 /**
@@ -3557,7 +3558,7 @@ export function readCaptureListing<TEntry>(
 ): readonly TEntry[] {
 	const listed = attempt(() => list(directory))
 	if (listed.success) return listed.value
-	if (isError(listed.error) && 'code' in listed.error && listed.error.code === 'ENOENT') return []
+	if (isCodedError(listed.error) && listed.error.code === 'ENOENT') return []
 	throw new CaptureError(`Cannot list capture frames under ${directory}`, {
 		code: 'EVIDENCE',
 		cause: listed.error,
@@ -3676,10 +3677,7 @@ export function readCaptureProgress(
 	const writers = new Map(
 		computed
 			.filter((run) => run.state === 'live')
-			.map((run) => [
-				run.pid,
-				Number.isSafeInteger(run.pid) && run.pid > 0 ? alive(run.pid) : undefined,
-			]),
+			.map((run) => [run.pid, isSafeInteger(run.pid) && run.pid > 0 ? alive(run.pid) : undefined]),
 	)
 	return {
 		file: newest.file,

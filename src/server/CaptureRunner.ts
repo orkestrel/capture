@@ -17,7 +17,7 @@ import type {
 } from './types.js'
 import { rmSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { attempt, failure, isFailure, isSuccess, success } from '@orkestrel/contract'
+import { attempt, isFailure, isSuccess, settle } from '@orkestrel/contract'
 import {
 	CAPTURE_LOOKUPS_FILE,
 	CAPTURE_MANIFEST_FILE,
@@ -116,21 +116,17 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		// The NEXT commands the outcome's reports record for stdout after the report they follow.
 		const reports: string[] = []
 		const argumentsResult = attempt(() => readCaptureArguments(argv, command, root, config))
-		const described = await this.#describe(invocation, argumentsResult).then(
-			(description) => success(description),
-			(error: unknown) => failure(error),
-		)
+		const described = await settle(() => this.#describe(invocation, argumentsResult))
 		const result = isFailure(described)
 			? described
-			: await this.#dispatch(
-					invocation,
-					invocations,
-					reports,
-					described.value.parsed,
-					described.value.projects,
-				).then(
-					(code) => success(code),
-					(error: unknown) => failure(error),
+			: await settle(() =>
+					this.#dispatch(
+						invocation,
+						invocations,
+						reports,
+						described.value.parsed,
+						described.value.projects,
+					),
 				)
 		try {
 			const code = isSuccess(result) ? result.value : resolveCaptureExit(result.error)
@@ -430,16 +426,8 @@ export class CaptureRunner implements CaptureRunnerInterface {
 		const outcomes: CaptureOutcome[] = []
 		const stages = resolveCaptureStages(variants, primary.first, command)
 		const completed: CaptureStagePlan[] = []
-		const result = await this.#stages(
-			invocation,
-			integrity,
-			plan,
-			stages,
-			outcomes,
-			completed,
-		).then(
-			(code) => success(code),
-			(error: unknown) => failure(error),
+		const result = await settle(() =>
+			this.#stages(invocation, integrity, plan, stages, outcomes, completed),
 		)
 		const ran = stages.filter((stage) =>
 			invocation.launched(resolve(invocation.directory, `${command}-${stage.name}.log`)),

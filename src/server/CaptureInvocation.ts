@@ -22,7 +22,14 @@ import {
 } from 'node:fs'
 import { resolve } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
-import { attempt, isRecord, parseJSON, preview } from '@orkestrel/contract'
+import {
+	attempt,
+	isCodedError,
+	isRecord,
+	isSafeInteger,
+	parseJSON,
+	preview,
+} from '@orkestrel/contract'
 import { createDuplex, inspectProcess } from '@orkestrel/process/server'
 import { createTimeout } from '@orkestrel/timeout'
 import {
@@ -147,12 +154,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 					const deadline = performance.now() + CAPTURE_OWNER_TIMEOUT
 					const marker = attempt(() => this.#read(deadline))
 					if (!marker.success) {
-						if (
-							marker.error instanceof Error &&
-							'code' in marker.error &&
-							marker.error.code === 'ENOENT'
-						)
-							return
+						if (isCodedError(marker.error) && marker.error.code === 'ENOENT') return
 						throw marker.error
 					}
 					if (this.#owner(marker.value).id !== this.id) return
@@ -381,8 +383,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 			else this.#options.ownership.remove(this.#lock)
 		})
 		if (result.success) return
-		if (result.error instanceof Error && 'code' in result.error && result.error.code === 'ENOENT')
-			return
+		if (isCodedError(result.error) && result.error.code === 'ENOENT') return
 		if (!matchesCaptureTransient(result.error, this.#options.ownership?.platform))
 			throw result.error
 		this.#backoff(deadline, result.error)
@@ -461,7 +462,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 			if (
 				pid !== undefined &&
 				/^\d+$/u.test(pid) &&
-				Number.isSafeInteger(Number(pid)) &&
+				isSafeInteger(Number(pid)) &&
 				Number(pid) > 0 &&
 				this.#alive(Number(pid)) === false
 			)
@@ -507,19 +508,10 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 			this.#backoff(deadline, opened.error)
 			return this.#acquire(temporary, deadline)
 		}
-		if (
-			!(opened.error instanceof Error) ||
-			!('code' in opened.error) ||
-			opened.error.code !== 'EEXIST'
-		)
-			throw opened.error
+		if (!isCodedError(opened.error) || opened.error.code !== 'EEXIST') throw opened.error
 		const marker = attempt(() => this.#read(deadline))
 		if (!marker.success) {
-			if (
-				marker.error instanceof Error &&
-				'code' in marker.error &&
-				marker.error.code === 'ENOENT'
-			) {
+			if (isCodedError(marker.error) && marker.error.code === 'ENOENT') {
 				this.#backoff(deadline)
 				return this.#acquire(temporary, deadline)
 			}
@@ -538,11 +530,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 		if (!owner.success) this.#backoff(deadline)
 		const confirmed = attempt(() => this.#read(deadline))
 		if (!confirmed.success) {
-			if (
-				confirmed.error instanceof Error &&
-				'code' in confirmed.error &&
-				confirmed.error.code === 'ENOENT'
-			) {
+			if (isCodedError(confirmed.error) && confirmed.error.code === 'ENOENT') {
 				this.#backoff(deadline)
 				return this.#acquire(temporary, deadline)
 			}
@@ -575,7 +563,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 			!owner.success ||
 			!isRecord(owner.value) ||
 			typeof owner.value.pid !== 'number' ||
-			!Number.isSafeInteger(owner.value.pid) ||
+			!isSafeInteger(owner.value.pid) ||
 			owner.value.pid <= 0 ||
 			typeof owner.value.id !== 'string' ||
 			owner.value.id === ''
@@ -634,7 +622,7 @@ export class CaptureInvocation implements CaptureInvocationInterface {
 				!Number.isFinite(Date.parse(record.at)) ||
 				!Array.isArray(record.children) ||
 				!record.children.every(
-					(pid: unknown) => typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0,
+					(pid: unknown) => typeof pid === 'number' && isSafeInteger(pid) && pid > 0,
 				)
 			)
 				return `Child record could not be read (EINVAL): ${file}.`

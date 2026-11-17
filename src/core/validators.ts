@@ -21,7 +21,15 @@ import type {
 	CaptureStamp,
 	CaptureViewport,
 } from './types.js'
-import { arrayOf, holds, isFiniteNumber, isObject, isRecord, isString } from '@orkestrel/contract'
+import {
+	arrayOf,
+	holds,
+	isFiniteNumber,
+	isObject,
+	isRecord,
+	isSafeInteger,
+	isString,
+} from '@orkestrel/contract'
 import { CAPTURE_VERSION } from './constants.js'
 
 /**
@@ -199,7 +207,7 @@ export function isCaptureIdentity(value: unknown): value is CaptureIdentity {
 			isCaptureSegment(value.id) &&
 			isCaptureSegment(value.stage) &&
 			typeof value.pid === 'number' &&
-			Number.isSafeInteger(value.pid) &&
+			isSafeInteger(value.pid) &&
 			value.pid > 0 &&
 			isCapturePath(value.config),
 	)
@@ -533,7 +541,7 @@ export function isCaptureStamp(value: unknown): value is CaptureStamp {
 			isRecord(value.image) &&
 			isCaptureHash(value.image.digest) &&
 			isFiniteNumber(value.image.size) &&
-			Number.isSafeInteger(value.image.size) &&
+			isSafeInteger(value.image.size) &&
 			value.image.size > 0 &&
 			isFiniteNumber(value.image.modified) &&
 			value.image.modified >= 0,
