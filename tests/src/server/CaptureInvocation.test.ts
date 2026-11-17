@@ -184,6 +184,8 @@ describe('CaptureInvocation', { timeout: FIXTURE_TIMEOUT }, () => {
 					mkdirSync(file)
 					writeFileSync(resolve(file, 'content'), 'directory prevents nonrecursive removal')
 				},
+				// Windows retries EACCES as contention until the deadline; the host contract pins it permanent.
+				platform: 'linux',
 				link: createCapturePermanentFault([], 'EACCES'),
 			},
 		})
