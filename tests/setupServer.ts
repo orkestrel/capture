@@ -5162,10 +5162,12 @@ export const CAPTURE_CLOSURE_LIMIT = 4
 /**
  * Bounds, in milliseconds, one closure cell under full-suite contention.
  * Three `test:src` runs on a 4-core Linux host (2026-11-16) measured the slowest cell at 4.57 s,
- * 5.30 s, and, over the 413-cell matrix, 5.30 s. The required 2.5× budget is 13.26 s; rounding up
- * to 15 s retains 2.83× headroom.
+ * 5.30 s, and, over the 413-cell matrix, 5.30 s. On a Windows host (2026-11-20), two release
+ * chains ran cells past 15 s, and a contended run of the `src:core`, `src:browser`, and `src:server`
+ * projects measured the slowest of 414 cells at 11.20 s. The required 2.5× budget is 28.0 s;
+ * rounding up to 30 s retains 2.68× headroom.
  */
-export const CAPTURE_CLOSURE_TIMEOUT = 15_000
+export const CAPTURE_CLOSURE_TIMEOUT = 30_000
 
 /**
  * Runs a closure cell, follows every `NEXT` line it prints in order, and reruns it until it prints none.
